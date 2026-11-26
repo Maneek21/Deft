@@ -4,8 +4,6 @@ import {
   files,
   messageAttachments,
   messages,
-  notes,
-  noteShares,
   projects,
   spaceMembers,
   spaces,
@@ -16,11 +14,9 @@ import {
   taskAttachments,
   tasks,
 } from '@deft/db/schema';
-import { noteFiles } from '@deft/db/note-files';
 import { db } from './db.js';
 import { documentAttachmentReadableSql } from './document-attachment-access.js';
 import { visibleTaskCondition } from './task-visibility.js';
-import { visibleNoteCondition, visibleNoteConditionFromLockedGrants } from './note-visibility.js';
 import { unjoinedPublicSpaceReadableSql } from './space-membership.js';
 
 /**
@@ -73,30 +69,6 @@ export async function canAccessAttachmentTask(
 }
 
 /**
- * A file on no task or message that a note shows (note_files, kept in step
- * with the note's content by note-file-claims.ts) is read by everyone who can
- * read that note: the note is in the same workspace, not deleted, and visible
- * to the caller under the note rule (note-visibility.ts, role-aware).
- */
-export async function canReadAttachmentThroughNote(
-  fileId: string,
-  orgId: string,
-  userId: string,
-): Promise<boolean> {
-  const [row] = await db.select({ id: notes.id })
-    .from(noteFiles)
-    .innerJoin(notes, and(eq(notes.id, noteFiles.note_id), eq(notes.org_id, noteFiles.org_id)))
-    .where(and(
-      eq(noteFiles.org_id, orgId),
-      eq(noteFiles.file_id, fileId),
-      eq(notes.is_deleted, false),
-      visibleNoteCondition(userId),
-    ))
-    .limit(1);
-  return Boolean(row);
-}
-
-/**
  * For a query over document_attachments: the link admits `userId`
  * (document-attachment-access.ts: view while the file is in the document,
  * edit otherwise).
@@ -130,6 +102,10 @@ export async function canReadAttachmentThroughDocument(fileId: string, orgId: st
  * throughout the compatibility window. Multiple typed targets fail closed.
  * A file on no task or message that documents link is decided by those
  * documents alone (canReadAttachmentThroughDocument), its uploader included.
+ * Any other file is its uploader's alone. Note images are document images
+ * since the notes move (F14 linked each image a note showed to its
+ * document); one it couldn't link shows in no document, and note_files
+ * grants nothing any more (F15).
  */
 export async function getVisibleAttachment(fileId: string, orgId: string, userId: string) {
   const [file] = await db.select()
@@ -170,9 +146,8 @@ export async function getVisibleAttachment(fileId: string, orgId: string, userId
   // In documents: whoever one of them admits, and nobody else.
   const throughDocument = await canReadAttachmentThroughDocument(fileId, orgId, userId);
   if (throughDocument !== null) return throughDocument ? file : null;
-  // On no task, message or document: its uploader, or a reader of a note that shows it.
-  if (file.uploaded_by === userId) return file;
-  return await canReadAttachmentThroughNote(fileId, orgId, userId) ? file : null;
+  // On no task, message or document: its uploader.
+  return file.uploaded_by === userId ? file : null;
 }
 
 export class AttachmentDownloadAuthorityError extends Error {
@@ -196,12 +171,6 @@ export async function authorizeAttachmentDownload(params: Readonly<{
     const [member] = await tx.select({ active: orgMembers.is_active }).from(orgMembers).where(and(
       eq(orgMembers.org_id, params.org_id), eq(orgMembers.user_id, params.user_id))).for('share');
     if (!member?.active) throw new AttachmentDownloadAuthorityError('INVALID_TOKEN', 401);
-    // A note's save locks the note, then the files it links or releases. Take
-    // the notes that link this file first, in the same order, so a save and a
-    // download of the same image wait for each other instead of timing out.
-    await tx.select({ id: notes.id }).from(notes).where(and(eq(notes.org_id, params.org_id), inArray(notes.id,
-      tx.select({ id: noteFiles.note_id }).from(noteFiles).where(and(eq(noteFiles.org_id, params.org_id), eq(noteFiles.file_id, params.file.id))))))
-      .orderBy(notes.id).for('share');
     // An upload into a document locks its drive, then the document, then
     // writes the file and its link (routes/upload.ts, in lib/drive-locks.ts's
     // order). Take the drives, then the documents, that link this file before
@@ -283,31 +252,9 @@ export async function authorizeAttachmentDownload(params: Readonly<{
         inArray(documentAttachments.document_id, documentIds), documentImageReadableSql(params.user_id, params.org_id))).limit(1);
       if (!admitted) throw missing();
     } else if (file.uploaded_by !== params.user_id) {
-      // On no task or message and not the caller's upload: only a reader of a
-      // note that shows it. The file row is UPDATE-locked above, which fences
-      // new links (their foreign key); the links, the notes, and the caller's
-      // shares and space memberships those notes could grant through are
-      // SHARE-locked, so an unshare, a removal, a delete or a visibility change
-      // in flight is decided before this read or waits for it. The decision
-      // counts only the grant rows locked here, never one inserted since.
-      const links = await tx.select({ note_id: noteFiles.note_id }).from(noteFiles).where(and(
-        eq(noteFiles.org_id, params.org_id), eq(noteFiles.file_id, file.id))).for('share');
-      if (links.length === 0) throw missing();
-      const noteIds = links.map((link) => link.note_id);
-      const linked = await tx.select({ id: notes.id, space_id: notes.visibility_space_id }).from(notes).where(and(
-        inArray(notes.id, noteIds), eq(notes.org_id, params.org_id))).for('share');
-      const shares = await tx.select({ note_id: noteShares.note_id }).from(noteShares).where(and(
-        inArray(noteShares.note_id, noteIds), eq(noteShares.shared_with_user_id, params.user_id))).for('share');
-      const spaceIds = [...new Set(linked.map((note) => note.space_id).filter((id): id is string => Boolean(id)))];
-      const memberships = spaceIds.length === 0 ? [] : await tx.select({ space_id: spaceMembers.space_id }).from(spaceMembers)
-        .where(and(inArray(spaceMembers.space_id, spaceIds), eq(spaceMembers.user_id, params.user_id))).for('share');
-      const [visible] = await tx.select({ id: notes.id }).from(notes).where(and(
-        inArray(notes.id, linked.map((note) => note.id)), eq(notes.org_id, params.org_id), eq(notes.is_deleted, false),
-        visibleNoteConditionFromLockedGrants(params.user_id, {
-          sharedNoteIds: shares.map((share) => share.note_id),
-          memberSpaceIds: memberships.map((membership) => membership.space_id),
-        }))).limit(1);
-      if (!visible) throw missing();
+      // On no task, message or document and not the caller's upload: nobody
+      // else's (getVisibleAttachment). Notes grant nothing since the move (F15).
+      throw missing();
     }
     // SID is last. Parent/member/link locks protect all preceding decisions
     // through its possible wait; sample both deadlines after the final query.

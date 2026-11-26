@@ -366,8 +366,16 @@ test('a non-member cannot untag a message in a private space or read its tags', 
 });
 
 test('the tag entity list shows only entities of the caller\'s workspace that the caller can see', async () => {
+  // Notes are documents since F15: the member's note is a document in their My drive (keeping the note's id), and its
+  // tag is the document's, as the move rewrote it. Org B's note never moved here, so its tag names nothing visible.
+  const drive = p('tag-drive');
+  await q(`INSERT INTO drives (id, org_id, name, kind, owner_user_id, created_by) VALUES ($1, $2, 'My drive', 'personal', $3, $3)`, [drive, ORG_A, MEMBER]);
+  await q(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'full')`,
+    [p('tag-drive-owner'), ORG_A, drive, MEMBER]);
+  await q(`INSERT INTO documents (id, org_id, drive_id, title, content_json, created_by)
+    VALUES ($1, $2, $3, $4, '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb, $5)`, [PRIVATE_NOTE, ORG_A, drive, `${SECRET} note`, MEMBER]);
   const rows: Array<[string, string]> = [
-    ['message', MESSAGE], ['task', RESTRICTED_TASK], ['note', PRIVATE_NOTE],
+    ['message', MESSAGE], ['task', RESTRICTED_TASK], ['document', PRIVATE_NOTE],
     ['message', MESSAGE_B], ['task', TASK_B], ['note', NOTE_B],
   ];
   for (const [type, id] of rows) {
@@ -389,6 +397,9 @@ test('the tag entity list shows only entities of the caller\'s workspace that th
     assert.ok(member.text.includes(`${SECRET} note`));
   } finally {
     await q(`DELETE FROM entity_tags WHERE tag_id = $1`, [TAG_A]);
+    await q(`DELETE FROM documents WHERE id = $1`, [PRIVATE_NOTE]);
+    await q(`DELETE FROM drive_members WHERE drive_id = $1`, [drive]);
+    await q(`DELETE FROM drives WHERE id = $1`, [drive]);
   }
 });
 

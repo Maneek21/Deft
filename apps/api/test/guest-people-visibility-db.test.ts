@@ -57,6 +57,7 @@ const hiddenAgentUser = randomUUID(), hiddenAgentEmployee = randomUUID();
 const sharedRoom = randomUUID(), privateRoom = randomUUID(), strangerRoom = randomUUID();
 const dmRoom = randomUUID(), archivedRoom = randomUUID(), otherOrgRoom = randomUUID();
 const group = randomUUID(), team = randomUUID(), project = randomUUID(), task = randomUUID(), note = randomUUID();
+const noteDrive = randomUUID(), noteDocument = randomUUID();
 // [id, name, org role, active, kind]
 const people: Array<[string, string, string, boolean, 'human' | 'agent']> = [
   [owner, 'Olive Owner', 'owner', true, 'human'],
@@ -127,11 +128,22 @@ before(async () => {
   await c.query(`INSERT INTO task_comments (id, org_id, task_id, user_id, content) VALUES (gen_random_uuid()::text, $1, $2, $3, 'gpv comment')`, [org, task, stranger]);
   await c.query(`INSERT INTO notes (id, org_id, user_id, title) VALUES ($1, $2, $3, 'gpv note')`, [note, org, guest]);
   await c.query(`INSERT INTO note_shares (id, note_id, shared_with_user_id, permission) VALUES (gen_random_uuid()::text, $1, $2, 'view')`, [note, sharer]);
+  // The notes move (F14): the guest's note is a document in their My drive; the old share list reads through it (F15).
+  await c.query(`INSERT INTO drives (id, org_id, name, kind, owner_user_id, created_by) VALUES ($1, $2, 'My drive', 'personal', $3, $3)`, [noteDrive, org, guest]);
+  await c.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES (gen_random_uuid()::text, $1, $2, 'user', $3, 'full')`,
+    [org, noteDrive, guest]);
+  await c.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, created_by)
+    VALUES ($1, $2, $3, 'gpv note', '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb, $4)`, [noteDocument, org, noteDrive, guest]);
+  await c.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+    VALUES (gen_random_uuid()::text, $1, 'note', $2, 'document', $3)`, [org, note, noteDocument]);
 });
 
 after(async () => {
   const all = people.map(([id]) => id);
   await c.query(`DELETE FROM oneone_preps WHERE org_id = $1`, [org]).catch(() => {});
+  for (const table of ['note_document_map', 'document_shares', 'documents', 'drive_members', 'drives']) {
+    await c.query(`DELETE FROM ${table} WHERE org_id = $1`, [org]).catch(() => {});
+  }
   await c.query(`DELETE FROM note_shares WHERE note_id = $1`, [note]);
   await c.query(`DELETE FROM notes WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM task_comments WHERE org_id = $1`, [org]);
@@ -305,7 +317,8 @@ test('a guest cannot make a hidden person visible: DMs, room adds and note share
 
   const shareHidden = await call(guest, `/api/daily-notes/${note}/shares`, { method: 'POST', body: { user_id: stranger } });
   const shareUnknown = await call(guest, `/api/daily-notes/${note}/shares`, { method: 'POST', body: { user_id: unknown } });
-  assert.equal(shareHidden.status, 404);
+  // Sharing a note is gone (410, F15); the answer is the same whoever is named.
+  assert.equal(shareHidden.status, 410);
   assert.deepEqual(shareHidden, shareUnknown);
   const shares = await get(guest, `/api/daily-notes/${note}/shares`);
   assert.equal(shares.status, 200);

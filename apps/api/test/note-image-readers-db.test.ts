@@ -1,8 +1,10 @@
 // An image pasted into a note loads for everyone who can read that note, and
-// for nobody else: the note keeps a link to each file its images show
-// (note_files), and GET /api/files/:id serves a file on no task or message to
-// its uploader or to a reader of a live note that links it. Removing an image
-// stages its file again, so the sweep deletes it 24 hours later.
+// for nobody else. Since notes became documents (F15), that is through the
+// note's document: the notes move (F14, run here with moveOrg) links each
+// image a note showed to its document (document_attachments), and GET
+// /api/files/:id serves a file documents link to whoever one of them admits.
+// note_files (kept in step with a note's saves before the move, and by the
+// backfill) only keeps a file from the staged-upload sweep: it grants nothing.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
@@ -44,8 +46,7 @@ let mod: {
   sweep: typeof import('../src/lib/attachment-retention.js')['sweepExpiredStagedAttachments'];
   claims: typeof import('../src/lib/note-file-claims.js');
   access: typeof import('../src/lib/attachment-access.js');
-  human: typeof import('../src/lib/mcp-tools/human.js');
-  actions: typeof import('../src/lib/agent-actions.js');
+  move: typeof import('../src/lib/drives-move/move-org.js')['moveOrg'];
 };
 
 before(async () => {
@@ -53,13 +54,13 @@ before(async () => {
   await ensureTwoStepTables(url!);
   await ensureNoteFilesTable(url!);
   await c.connect();
-  const [{ db, closeDb }, { localFileStore }, retention, claims, access, human, actions, web, { Hono }, { serve }, { authMiddleware }, upload, notes] = await Promise.all([
+  const [{ db, closeDb }, { localFileStore }, retention, claims, access, moveOrgModule, web, { Hono }, { serve }, { authMiddleware }, upload] = await Promise.all([
     import('../src/lib/db.js'), import('../src/lib/file-store.js'), import('../src/lib/attachment-retention.js'),
-    import('../src/lib/note-file-claims.js'), import('../src/lib/attachment-access.js'), import('../src/lib/mcp-tools/human.js'),
-    import('../src/lib/agent-actions.js'), import('../src/lib/web-sessions.js'), import('hono'), import('@hono/node-server'),
-    import('../src/middleware/auth.js'), import('../src/routes/upload.js'), import('../src/routes/daily-notes.js'),
+    import('../src/lib/note-file-claims.js'), import('../src/lib/attachment-access.js'), import('../src/lib/drives-move/move-org.js'),
+    import('../src/lib/web-sessions.js'), import('hono'), import('@hono/node-server'),
+    import('../src/middleware/auth.js'), import('../src/routes/upload.js'),
   ]);
-  mod = { db, closeDb, localFileStore, sweep: retention.sweepExpiredStagedAttachments, claims, access, human, actions };
+  mod = { db, closeDb, localFileStore, sweep: retention.sweepExpiredStagedAttachments, claims, access, move: moveOrgModule.moveOrg };
 
   await c.query(`INSERT INTO orgs (id, name, slug) VALUES ($1, 'Note image readers', $2)`, [org, `nir2-${run}`]);
   for (const [name, { role }] of Object.entries(people) as Array<[Person, { role: string }]>) {
@@ -77,7 +78,6 @@ before(async () => {
   app.use('/api/*', authMiddleware);
   app.route('/api/files', upload.fileServingRoutes);
   app.route('/api/upload', upload.uploadRoutes);
-  app.route('/api/daily-notes', notes.dailyNoteRoutes);
   base = await new Promise<string>((resolve) => {
     server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }, (info) => resolve(`http://127.0.0.1:${info.port}`));
   });
@@ -94,6 +94,11 @@ after(async () => {
   }
   await c.query(`DELETE FROM agent_actions WHERE org_id = ANY($1::text[])`, [orgs]);
   await c.query(`DELETE FROM audit_log WHERE org_id = ANY($1::text[])`, [orgs]).catch(() => {});
+  for (const table of ['attention_events', 'attention_items', 'notifications', 'doc_favorites', 'note_document_map', 'drives_move_runs',
+    'document_attachments', 'document_versions', 'document_shares', 'documents', 'doc_folders', 'drive_members', 'drives']) {
+    await c.query(`DELETE FROM ${table} WHERE org_id = ANY($1::text[])`, [orgs]).catch(() => {});
+  }
+  await c.query(`DELETE FROM note_shares WHERE note_id IN (SELECT id FROM notes WHERE org_id = ANY($1::text[]))`, [orgs]);
   await c.query(`DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE org_id = ANY($1::text[]))`, [orgs]);
   await c.query(`DELETE FROM notes WHERE org_id = ANY($1::text[])`, [orgs]);
   await c.query(`DELETE FROM files WHERE org_id = ANY($1::text[])`, [orgs]);
@@ -134,11 +139,24 @@ async function call(who: Person, method: string, path: string, body?: unknown) {
   return { status: res.status, body: await res.json().catch(() => null) as any };
 }
 
-async function createNote(body: Record<string, unknown>): Promise<string> {
-  const res = await call('author', 'POST', '/api/daily-notes', { title: `nir2 ${run}`, ...body });
-  assert.equal(res.status, 201, JSON.stringify(res.body));
-  return res.body.id;
+/** A note as Notes saved it before the move: the row, and its links to the images it shows (note-file-claims.ts). */
+async function createNote(body: { content: string; visibility?: 'private' | 'org' | 'space'; visibility_space_id?: string }): Promise<string> {
+  const id = randomUUID();
+  const { rows: [note] } = await c.query(`INSERT INTO notes (id, org_id, user_id, title, content, visibility, visibility_space_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+  [id, org, ids.author, `nir2 ${run}`, body.content, body.visibility ?? 'private', body.visibility_space_id ?? null]);
+  await mod.claims.syncNoteFiles(mod.db, { id: ids.author, org_id: org }, note);
+  return id;
 }
+
+/** The notes move for this workspace: each note not moved yet becomes its document, its images linked to it. */
+async function move(): Promise<void> {
+  const report = await mod.move(org);
+  assert.deepEqual(report.errors, [], 'the move finished');
+}
+
+const documentOf = async (noteId: string) => (await c.query(`SELECT target_id FROM note_document_map WHERE source_type = 'note' AND source_id = $1`,
+  [noteId])).rows[0]?.target_id as string;
 
 async function load(who: Person, fileId: string): Promise<number> {
   const res = await fetch(`${base}/api/files/${fileId}`, { headers: { Authorization: `Bearer ${tokens[who]}` } });
@@ -168,7 +186,7 @@ test('note_files on this database is the table the upgrade creates', { skip }, a
     + ' | CREATE UNIQUE INDEX note_files_pkey ON public.note_files USING btree (note_id, file_id)');
 });
 
-test('the same note image loads for each person who can read the note, and is an unknown file to everyone else', { skip }, async () => {
+test('after the move, the same note image loads for each person who can read the note, and is an unknown file to everyone else', { skip }, async () => {
   const shared = await upload('author');
   const inSpace = await upload('author');
   const workspace = await upload('author');
@@ -179,10 +197,17 @@ test('the same note image loads for each person who can read the note, and is an
   const spaceNote = await createNote({ content: img(inSpace), visibility: 'space', visibility_space_id: space });
   const workspaceNote = await createNote({ content: img(workspace), visibility: 'org' });
   assert.deepEqual(await links(privateNote), [shared]);
-  assert.deepEqual(await links(spaceNote), [inSpace]);
-  assert.deepEqual(await links(workspaceNote), [workspace]);
-  for (const id of [shared, inSpace, workspace]) assert.equal(await expiryOf(id), null, 'a linked image is kept');
+  // Before the move a note link grants nothing: only the uploader loads it.
+  assert.equal(await load('sharedMember', shared), 404);
+  assert.equal(await load('author', shared), 200);
+  await move();
+  for (const [note, file] of [[privateNote, shared], [spaceNote, inSpace], [workspaceNote, workspace]] as const) {
+    const { rows } = await c.query(`SELECT in_current FROM document_attachments WHERE document_id = $1 AND file_id = $2`, [await documentOf(note), file]);
+    assert.deepEqual(rows, [{ in_current: true }], 'the move linked the image to its document');
+    assert.equal(await expiryOf(file), null, 'a linked image is kept');
+  }
 
+  // As the note rule had it: the workspace note is in the open Shared notes drive, which admits no guest.
   const expected: Record<Person, [privateNote: number, spaceNote: number, workspaceNote: number]> = {
     author: [200, 200, 200],
     sharedMember: [200, 404, 200],
@@ -206,25 +231,28 @@ test('the same note image loads for each person who can read the note, and is an
   assert.equal(await mod.access.getVisibleAttachment(workspace, org, ids.outsiderGuest), null);
 });
 
-test('a deleted note grants nothing; restored, its images load again', { skip }, async () => {
+test('a deleted document grants nothing, its uploader included; restored, its images load again', { skip }, async () => {
   const file = await upload('author');
   const note = await createNote({ content: img(file), visibility: 'org' });
+  await move();
+  const documentId = await documentOf(note);
   assert.equal(await load('workspaceMember', file), 200);
-  assert.equal((await call('author', 'DELETE', `/api/daily-notes/${note}`)).status, 200);
-  assert.equal(await load('workspaceMember', file), 404, 'deleted note: unknown file');
-  assert.equal(await load('author', file), 200, 'the uploader still loads it');
-  assert.deepEqual(await links(note), [file], 'a deleted note keeps its links');
-  assert.equal(await expiryOf(file), null, 'and its images are kept');
+  await c.query(`UPDATE documents SET is_deleted = true, deleted_at = now() WHERE id = $1`, [documentId]);
+  assert.equal(await load('workspaceMember', file), 404, 'deleted document: unknown file');
+  assert.equal(await load('author', file), 404, 'a file in documents is decided by them alone');
+  assert.equal(await expiryOf(file), null, 'its image is kept');
   await sweepAfter25h();
   assert.equal(await exists(file), true);
-  await c.query(`UPDATE notes SET is_deleted = false WHERE id = $1`, [note]);
-  assert.equal(await load('workspaceMember', file), 200, 'restored note: loads again');
+  await c.query(`UPDATE documents SET is_deleted = false, deleted_at = NULL WHERE id = $1`, [documentId]);
+  assert.equal(await load('workspaceMember', file), 200, 'restored document: loads again');
 });
 
 test('a download in progress is refused when the share is withdrawn before it is handed over', { skip }, async () => {
   const file = await upload('author');
   const note = await createNote({ content: img(file) });
   await c.query(`INSERT INTO note_shares (id, note_id, shared_with_user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [note, ids.sharedMember]);
+  await move();
+  const documentId = await documentOf(note);
   assert.equal(await load('sharedMember', file), 200);
   const { rows } = await c.query(`SELECT storage_key FROM files WHERE id = $1`, [file]);
   const store = mod.localFileStore;
@@ -239,7 +267,7 @@ test('a download in progress is refused when the share is withdrawn before it is
   try {
     const pending = load('sharedMember', file);
     await reading;
-    await c.query(`DELETE FROM note_shares WHERE note_id = $1 AND shared_with_user_id = $2`, [note, ids.sharedMember]);
+    await c.query(`DELETE FROM document_shares WHERE document_id = $1 AND principal_type = 'user' AND principal_id = $2`, [documentId, ids.sharedMember]);
     release();
     assert.equal(await pending, 404);
   } finally {
@@ -252,65 +280,13 @@ test("another person's upload named in my note is not linked, and stays unknown 
   const theirs = await upload('outsider');
   const note = await createNote({ content: img(theirs), visibility: 'org' });
   assert.deepEqual(await links(note), []);
+  await move();
+  const { rows } = await c.query(`SELECT 1 FROM document_attachments WHERE file_id = $1`, [theirs]);
+  assert.equal(rows.length, 0, 'the move does not link it either');
   assert.notEqual(await expiryOf(theirs), null, 'their upload keeps its expiry');
   assert.equal(await load('workspaceMember', theirs), 404);
   assert.equal(await load('author', theirs), 404, 'nor does it reach me');
   assert.equal(await load('outsider', theirs), 200, 'its uploader still loads it');
-  // Saving again does not link it either.
-  assert.equal((await call('author', 'PATCH', `/api/daily-notes/${note}`, { content: `<p>again</p>${img(theirs)}` })).status, 200);
-  assert.deepEqual(await links(note), []);
-});
-
-test('removing an image from a note stages it again, and the sweep then deletes it', { skip }, async () => {
-  const kept = await upload('author');
-  const removed = await upload('author');
-  const note = await createNote({ content: `${img(kept)}${img(removed)}`, visibility: 'org' });
-  assert.deepEqual(await links(note), [kept, removed].sort());
-  assert.equal((await call('author', 'PATCH', `/api/daily-notes/${note}`, { content: img(kept) })).status, 200);
-  assert.deepEqual(await links(note), [kept]);
-  const expiry = await expiryOf(removed) as Date | null;
-  assert.ok(expiry, 'staged again');
-  assert.equal(await load('workspaceMember', removed), 404, 'no longer shown: unknown to readers');
-  assert.equal(await load('author', removed), 200, 'its uploader can still load it until it expires');
-  await sweepAfter25h();
-  assert.equal(await exists(removed), false, 'swept');
-  assert.equal(await exists(kept), true);
-});
-
-test('a file two notes show stays while either still shows it', { skip }, async () => {
-  const file = await upload('author');
-  const first = await createNote({ content: img(file), visibility: 'org' });
-  const second = await createNote({ content: `<p>also</p>${img(file)}` });
-  assert.deepEqual(await links(first), [file]);
-  assert.deepEqual(await links(second), [file], 'my own image, kept already, is linked from a second note');
-  assert.equal((await call('author', 'PATCH', `/api/daily-notes/${first}`, { content: '<p>gone</p>' })).status, 200);
-  assert.equal(await expiryOf(file), null, 'the second note still shows it');
-  assert.equal(await load('workspaceMember', file), 404, 'the workspace note no longer shows it');
-  await sweepAfter25h();
-  assert.equal(await exists(file), true);
-  assert.equal((await call('author', 'PATCH', `/api/daily-notes/${second}`, { content: '<p>gone too</p>' })).status, 200);
-  assert.notEqual(await expiryOf(file), null, 'staged once no note shows it');
-  await sweepAfter25h();
-  assert.equal(await exists(file), false);
-});
-
-test('MCP note_create and note_update and Defty create_note keep the links too', { skip }, async () => {
-  const ctx = { org_id: org, user_id: ids.author, role: 'member', scopes: ['read:workspace', 'write:workspace'] } as import('../src/lib/mcp-tools/human.js').HumanToolContext;
-  const first = await upload('author');
-  const second = await upload('author');
-  const created = await mod.human.humanNoteCreate({ title: `nir2 mcp ${run}`, content: img(first), visibility: 'org' }, ctx);
-  const note = JSON.parse(created.content[0]!.text).note as { id: string };
-  assert.deepEqual(await links(note.id), [first]);
-  await mod.human.humanNoteUpdate({ note_id: note.id, content: img(second) }, ctx);
-  assert.deepEqual(await links(note.id), [second]);
-  assert.notEqual(await expiryOf(first), null, 'the removed image is staged again');
-  assert.equal(await load('workspaceMember', second), 200);
-
-  const defty = await upload('author');
-  const res = await mod.actions.executeActionDirect('create_note', { title: `nir2 defty ${run}`, content: img(defty) }, org, ids.author, null, 'auto');
-  assert.equal((res as { success?: boolean }).success, true, JSON.stringify(res));
-  const { rows } = await c.query(`SELECT note_id FROM note_files WHERE file_id = $1`, [defty]);
-  assert.equal(rows.length, 1);
 });
 
 test('the backfill links the images of notes saved before note_files by the save rule, and running it again changes nothing', { skip }, async () => {
@@ -343,8 +319,10 @@ test('the backfill links the images of notes saved before note_files by the save
   await mod.claims.backfillNoteFileLinks(mod.db);
   assert.deepEqual(await links(live), [kept, staged].sort(), 'an older unprocessed upload is not linked: it is not known to be an image');
   assert.equal(await expiryOf(staged), null, 'an image still staged is linked and kept');
-  assert.deepEqual(await links(deleted), [inDeleted], 'a deleted note is linked too, so restoring it restores its images');
-  assert.ok(await mod.access.getVisibleAttachment(kept, org, ids.workspaceMember), 'its readers can load it');
+  assert.deepEqual(await links(deleted), [inDeleted], 'a deleted note is linked too, so its images are kept');
+  // The link keeps the file from the sweep, and grants nothing since F15: a reader reads it through a document.
+  assert.equal(await mod.access.getVisibleAttachment(kept, org, ids.workspaceMember), null);
+  assert.ok(await mod.access.getVisibleAttachment(kept, org, ids.author), 'its uploader can load it');
   assert.equal(await mod.access.getVisibleAttachment(theirs, org, ids.workspaceMember), null);
   assert.equal(await mod.access.getVisibleAttachment(inDeleted, org, ids.workspaceMember), null);
 
@@ -352,24 +330,4 @@ test('the backfill links the images of notes saved before note_files by the save
   assert.deepEqual(await links(live), [kept, staged].sort(), 'idempotent');
   assert.deepEqual(await links(deleted), [inDeleted]);
   assert.equal(await mod.access.getVisibleAttachment(legacy, org, ids.workspaceMember), null);
-});
-
-test('the locked download decides only by the grant rows it locked: a share it did not lock does not count', { skip }, async () => {
-  const [{ visibleNoteCondition, visibleNoteConditionFromLockedGrants }, { notes }, { and, eq }] = await Promise.all([
-    import('../src/lib/note-visibility.js'), import('@deft/db/schema'), import('drizzle-orm'),
-  ]);
-  const shared = await createNote({ content: '<p>shared</p>' });
-  const inSpace = await createNote({ content: '<p>space</p>', visibility: 'space', visibility_space_id: space });
-  await c.query(`INSERT INTO note_shares (id, note_id, shared_with_user_id) VALUES (gen_random_uuid()::text, $1, $2)`, [shared, ids.sharedMember]);
-  const sees = async (noteId: string, userId: string, grants?: { sharedNoteIds: string[]; memberSpaceIds: string[] }) =>
-    (await mod.db.select({ id: notes.id }).from(notes).where(and(eq(notes.id, noteId),
-      grants ? visibleNoteConditionFromLockedGrants(userId, grants) : visibleNoteCondition(userId)))).length === 1;
-  const none = { sharedNoteIds: [], memberSpaceIds: [] };
-  assert.equal(await sees(shared, ids.sharedMember), true);
-  assert.equal(await sees(shared, ids.sharedMember, none), false, 'an unlocked share is not counted');
-  assert.equal(await sees(shared, ids.sharedMember, { ...none, sharedNoteIds: [shared] }), true);
-  assert.equal(await sees(inSpace, ids.spaceMember), true);
-  assert.equal(await sees(inSpace, ids.spaceMember, none), false, 'an unlocked membership is not counted');
-  assert.equal(await sees(inSpace, ids.spaceMember, { ...none, memberSpaceIds: [space] }), true);
-  assert.equal(await sees(shared, ids.author, none), true, 'the author needs no grant row');
 });

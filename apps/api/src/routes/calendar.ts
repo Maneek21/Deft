@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
 import { eq, and, between, desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tasks, events, notes, projects, meetingBriefs, reminders, automationRuns, orgMembers } from '@deft/db/schema';
+import { tasks, events, projects, meetingBriefs, reminders, automationRuns, orgMembers } from '@deft/db/schema';
+import { documents } from '@deft/db/documents';
+import { visibleDocumentCondition } from '../lib/document-access.js';
 import { getOrgTimezone, getDayBoundaries } from '../lib/task-dates.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
 
@@ -41,7 +43,7 @@ calendarRoutes.get('/', async (c) => {
   const { end: to } = getDayBoundaries(orgTz, 0, toWC);
 
   // Run three queries in parallel
-  const [taskRows, eventRows, noteRows, reminderRows, invitationOccurrences] = await Promise.all([
+  const [taskRows, eventRows, documentRows, reminderRows, invitationOccurrences] = await Promise.all([
     // Tasks assigned to this user with due dates in range
     db.select({
       id: tasks.id,
@@ -81,20 +83,22 @@ calendarRoutes.get('/', async (c) => {
       ))
       .orderBy(events.timestamp),
 
-    // Notes created by this user in range
+    // Documents this user created in range, that they can still open (the
+    // notes of the day before the notes move, F15).
     db.select({
-      id: notes.id,
-      title: notes.title,
-      icon: notes.icon,
-      created_at: notes.created_at,
-    }).from(notes)
+      id: documents.id,
+      title: documents.title,
+      icon: documents.icon,
+      created_at: documents.created_at,
+    }).from(documents)
       .where(and(
-        eq(notes.org_id, user.org_id),
-        eq(notes.user_id, user.id),
-        eq(notes.is_deleted, false),
-        between(notes.created_at, from, to),
+        eq(documents.org_id, user.org_id),
+        eq(documents.created_by, user.id),
+        between(documents.created_at, from, to),
+        visibleDocumentCondition(user.id, user.org_id),
       ))
-      .orderBy(desc(notes.created_at)),
+      .orderBy(desc(documents.created_at))
+      .limit(200),
 
     // Reminders for this user in range
     db.select({
@@ -115,7 +119,9 @@ calendarRoutes.get('/', async (c) => {
   return c.json({
     tasks: taskRows,
     events: [...eventRows,...invitationOccurrences].sort((a,b)=>a.timestamp.getTime()-b.timestamp.getTime()),
-    notes: noteRows,
+    documents: documentRows.map((row) => ({ ...row, url: `/d/${row.id}` })),
+    // Empty, for clients that still read the old key until the web reads documents (F16).
+    notes: [],
     reminders: reminderRows,
   });
 });

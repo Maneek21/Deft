@@ -30,13 +30,11 @@ import {
   wikiOpsLog,
   agentEmployees,
   agentActions,
-  canvases,
-  notes,
 } from '@deft/db/schema';
 import { getMCPToolsForAgent, parseMCPToolName } from './mcp-tools.js';
 import { isDestructiveAction } from './agent-approval.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
-import { visibleNoteCondition } from './note-visibility.js';
+import { readCanvasDocument, readNoteDocument, searchNoteDocuments } from './legacy-notes.js';
 import { capabilityService } from './capability-service.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
 import { resolveReadableRoom, retrieveContext, retrievedWikiAudienceCondition } from './retrieve-context.js';
@@ -2541,9 +2539,10 @@ export async function executeToolCall(
     }
 
     // B06/C12: advertised read tools that previously fell through to
-    // "Unknown tool". Each read answers with the asker's visibility: a canvas
-    // only for a room the asker belongs to, notes only when owned, shared,
-    // org-visible, or space-visible in a room the asker belongs to.
+    // "Unknown tool". Notes and canvases are documents now (F15,
+    // lib/legacy-notes.ts): each read answers with the asker's access to the
+    // document (lib/document-access.ts), and a canvas only for a room the
+    // asker belongs to. Content comes back as Markdown.
     case 'read_canvas': {
       await requireActiveOrgMembership(orgId, _userId);
       const spaceName = typeof params.space_name === 'string' ? params.space_name : '';
@@ -2554,15 +2553,11 @@ export async function executeToolCall(
         return { result: { error: resolvedRoom.error, code: resolvedRoom.code }, citations: [] };
       }
       const room = resolvedRoom.room;
-      const [canvas] = await db
-        .select({ id: canvases.id, title: canvases.title, content: canvases.content, updated_at: canvases.updated_at })
-        .from(canvases)
-        .where(and(eq(canvases.space_id, room.id), eq(canvases.org_id, orgId)))
-        .limit(1);
+      const canvas = await readCanvasDocument(orgId, _userId, room.id);
       if (!canvas) return { result: { space: room.name, canvas: null, exists: false }, citations: [] };
       return {
         result: { space: room.name, canvas, exists: true },
-        citations: [{ type: 'canvas', id: canvas.id, title: `${room.name} canvas`.slice(0, 80) }],
+        citations: [{ type: 'document', id: canvas.id, title: `${room.name} canvas`.slice(0, 80), url: canvas.url }],
       };
     }
 
@@ -2572,28 +2567,10 @@ export async function executeToolCall(
       if (!query) return { result: { error: 'query is required', code: 'QUERY_REQUIRED' }, citations: [] };
       const scope = ['mine', 'org', 'all'].includes(params.scope) ? params.scope : 'all';
       const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 50);
-      const pattern = `%${escapeSearchLike(query.slice(0, 200))}%`;
-      const rows = await db
-        .select({
-          id: notes.id,
-          title: notes.title,
-          visibility: notes.visibility,
-          updated_at: notes.updated_at,
-          snippet: sql<string>`substring(coalesce(${notes.content}, '') from 1 for 240)`,
-        })
-        .from(notes)
-        .where(and(
-          eq(notes.org_id, orgId),
-          eq(notes.is_deleted, false),
-          visibleNoteCondition(_userId),
-          scope === 'mine' ? eq(notes.user_id, _userId) : scope === 'org' ? eq(notes.visibility, 'org') : undefined,
-          or(ilike(notes.title, pattern), sql`coalesce(${notes.content}, '') ILIKE ${pattern}`),
-        ))
-        .orderBy(desc(notes.updated_at))
-        .limit(limit);
+      const rows = await searchNoteDocuments({ orgId, userId: _userId, query: query.slice(0, 200), scope, limit });
       return {
         result: { notes: rows, count: rows.length },
-        citations: rows.map((row) => ({ type: 'note', id: row.id, title: (row.title || 'Untitled note').slice(0, 80) })),
+        citations: rows.map((row) => ({ type: 'document', id: row.id, title: (row.title || 'Untitled').slice(0, 80), url: row.url })),
       };
     }
 
@@ -2601,20 +2578,12 @@ export async function executeToolCall(
       await requireActiveOrgMembership(orgId, _userId);
       const noteId = typeof params.note_id === 'string' ? params.note_id : '';
       if (!noteId) return { result: { error: 'note_id is required', code: 'NOTE_REQUIRED' }, citations: [] };
-      const [row] = await db
-        .select({ id: notes.id, title: notes.title, content: notes.content, visibility: notes.visibility, updated_at: notes.updated_at })
-        .from(notes)
-        .where(and(
-          eq(notes.id, noteId),
-          eq(notes.org_id, orgId),
-          eq(notes.is_deleted, false),
-          visibleNoteCondition(_userId),
-        ))
-        .limit(1);
+      const row = await readNoteDocument(orgId, _userId, noteId);
       if (!row) return { result: { error: 'Note not found or not visible to caller', code: 'NOTE_NOT_FOUND' }, citations: [] };
       return {
-        result: { id: row.id, title: row.title, content: row.content ?? '', visibility: row.visibility, updated_at: row.updated_at },
-        citations: [{ type: 'note', id: row.id, title: (row.title || 'Untitled note').slice(0, 80) }],
+        result: { id: row.id, document_id: row.id, title: row.title, content: row.content, content_format: row.content_format,
+          updated_at: row.updated_at, url: row.url },
+        citations: [{ type: 'document', id: row.id, title: (row.title || 'Untitled').slice(0, 80), url: row.url }],
       };
     }
 

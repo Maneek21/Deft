@@ -3,7 +3,6 @@ import {
   agentEmployees,
   icsSubscriptions,
   messages,
-  notes,
   projects,
   spaceMembers,
   spaces,
@@ -18,7 +17,9 @@ import {
 import { db } from '../db.js';
 import { unrestrictedTaskCondition, visibleTaskCondition } from '../task-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
-import { visibleNoteCondition } from '../note-visibility.js';
+import { documents } from '@deft/db/documents';
+import { visibleDocumentCondition } from '../document-access.js';
+import { mappedTargetIds } from '../legacy-notes.js';
 import { publicSpaceVisibleSql } from '../space-visibility.js';
 import { canSeePerson, emailFor, peopleViewer, visiblePersonIds, type PeopleViewer } from '../people-visibility.js';
 import { errorResult, textResult, type ToolContext, type ToolResult } from './types.js';
@@ -447,26 +448,35 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
     rows.forEach((row) => put('wiki_page', row.id, row));
   }
 
-  const noteIds = idsByType.get('note') ?? [];
-  const hiddenNotes = new Set<string>();
-  if (noteIds.length) {
+  // Documents, and old note links standing for the document each note moved
+  // to (F15). One the reader can't open (lib/document-access.ts), a deleted
+  // one, or a note that never moved is listed like a restricted space: no
+  // title, no label. As REST (routes/teams.ts decorateResourcesForUser).
+  // Without a reader there is nobody to check access for: all are restricted.
+  const documentLinkIds = idsByType.get('document') ?? [];
+  const noteLinkIds = idsByType.get('note') ?? [];
+  const noteDocuments = await mappedTargetIds(access.org_id, 'note', noteLinkIds);
+  const linkedDocumentIds = [...new Set([...documentLinkIds, ...noteDocuments.values()])];
+  const openable = new Map<string, Record<string, unknown>>();
+  if (linkedDocumentIds.length && access.user_id) {
     const rows = await db.select({
-      id: notes.id,
-      title: notes.title,
-      icon: notes.icon,
-      visibility: notes.visibility,
-      is_pinned: notes.is_pinned,
-      updated_at: notes.updated_at,
-      is_deleted: notes.is_deleted,
-      visible: access.user_id ? sql<boolean>`${visibleNoteCondition(access.user_id)}` : sql<boolean>`true`,
-    }).from(notes).where(and(eq(notes.org_id, access.org_id), inArray(notes.id, noteIds)));
-    // A note the reader may not see (lib/note-visibility.ts), deleted or not,
-    // is listed like a restricted space: no title, no label. As REST
-    // (routes/teams.ts decorateResourcesForUser).
-    rows.forEach(({ visible, is_deleted, ...row }) => {
-      if (!visible) hiddenNotes.add(row.id);
-      else if (!is_deleted) put('note', row.id, row);
-    });
+      id: documents.id,
+      title: documents.title,
+      icon: documents.icon,
+      drive_id: documents.drive_id,
+      updated_at: documents.updated_at,
+    }).from(documents).where(and(inArray(documents.id, linkedDocumentIds), visibleDocumentCondition(access.user_id, access.org_id)));
+    rows.forEach((row) => openable.set(row.id, { ...row, url: `/d/${row.id}` }));
+  }
+  const hiddenDocuments = new Set<string>();
+  for (const id of documentLinkIds) {
+    const row = openable.get(id);
+    if (row) put('document', id, row); else hiddenDocuments.add(`document:${id}`);
+  }
+  for (const id of noteLinkIds) {
+    const documentId = noteDocuments.get(id);
+    const row = documentId ? openable.get(documentId) : undefined;
+    if (row) put('note', id, { ...row, document_id: documentId }); else hiddenDocuments.add(`note:${id}`);
   }
 
   const feedIds = idsByType.get('calendar_feed') ?? [];
@@ -517,7 +527,7 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
   return resources.map((row) => {
     const rowMetadata = metadata.get(`${row.resource_type}:${row.resource_id}`) ?? null;
     const restrictedSpace = row.resource_type === 'space' && rowMetadata?.access === 'restricted';
-    const hiddenNote = row.resource_type === 'note' && hiddenNotes.has(row.resource_id);
+    const hiddenNote = hiddenDocuments.has(`${row.resource_type}:${row.resource_id}`);
     const restricted = restrictedSpace || hiddenNote;
     return {
       id: row.id,
@@ -525,7 +535,8 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
       resource_id: row.resource_id,
       label: restricted ? null : row.label,
       access: restricted ? 'restricted' : 'visible',
-      restricted_reason: restrictedSpace ? 'space_membership_required' : hiddenNote ? 'note_not_visible' : null,
+      restricted_reason: restrictedSpace ? 'space_membership_required' : hiddenNote
+        ? (row.resource_type === 'note' ? 'note_not_visible' : 'document_not_visible') : null,
       created_at: row.created_at,
       metadata: rowMetadata,
     };

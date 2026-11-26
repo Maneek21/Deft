@@ -9,16 +9,19 @@ import {
   projects,
   users,
   spaces,
-  notes,
 } from '@deft/db/schema';
-import { visibleNoteCondition } from '../lib/note-visibility.js';
+import { documents } from '@deft/db/documents';
+import { visibleDocumentCondition } from '../lib/document-access.js';
+import { mappedTargetId } from '../lib/legacy-notes.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 import { toPlainText } from '../lib/plain-text.js';
 
 export const crossReferenceRoutes = new Hono();
 
 // GET /api/tasks/:taskId/references — list cross-references pointing at a task
-// Includes both message and note sources (Task 5.1).
+// Includes message and document sources (Task 5.1; notes moved to documents
+// keep their references, rewritten by the notes move, F14). A document is
+// listed only while the caller can open it (lib/document-access.ts).
 crossReferenceRoutes.get('/tasks/:taskId/references', async (c) => {
   try {
     const user = c.get('user');
@@ -42,8 +45,8 @@ crossReferenceRoutes.get('/tasks/:taskId/references', async (c) => {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
 
-    // Fetch raw refs (message + note). We join sources separately to keep the
-    // query readable; note rows will have null message fields and vice versa.
+    // Fetch raw refs (message + document). We join sources separately to keep
+    // the query readable; document rows have null message fields.
     const rawRefs = await db
       .select({
         id: crossReferences.id,
@@ -83,39 +86,33 @@ crossReferenceRoutes.get('/tasks/:taskId/references', async (c) => {
       )
       .orderBy(crossReferences.created_at);
 
-    // Resolve note-source rows in a second pass
-    const noteIds = rawRefs.filter((r) => r.source_type === 'note').map((r) => r.source_id);
-    const noteMap = new Map<string, { title: string; content: string | null; icon: string | null }>();
-    if (noteIds.length > 0) {
+    // Resolve document-source rows in a second pass, as the caller can open them.
+    const documentIds = [...new Set(rawRefs.filter((r) => r.source_type === 'document').map((r) => r.source_id))];
+    const documentMap = new Map<string, { title: string; text: string; icon: string | null }>();
+    if (documentIds.length > 0) {
       const rows = await db
-        .select({ id: notes.id, title: notes.title, content: notes.content, icon: notes.icon })
-        .from(notes)
-        .where(and(
-          inArray(notes.id, noteIds),
-          eq(notes.org_id, user.org_id),
-          eq(notes.is_deleted, false),
-          visibleNoteCondition(user.id),
-        ));
-      for (const r of rows) noteMap.set(r.id, { title: r.title, content: r.content, icon: r.icon });
+        .select({ id: documents.id, title: documents.title, text: documents.content_text, icon: documents.icon })
+        .from(documents)
+        .where(and(inArray(documents.id, documentIds), visibleDocumentCondition(user.id, user.org_id)));
+      for (const r of rows) documentMap.set(r.id, { title: r.title, text: r.text, icon: r.icon });
     }
 
     const result = rawRefs.flatMap<Record<string, unknown>>((r) => {
-      if (r.source_type === 'note') {
-        const note = noteMap.get(r.source_id);
-        if (!note) return [];
+      if (r.source_type === 'document') {
+        const document = documentMap.get(r.source_id);
+        if (!document) return [];
         return [{
           id: r.id,
-          source_type: 'note' as const,
+          source_type: 'document' as const,
           source_id: r.source_id,
           // Historical rows may contain source excerpts written before source
           // visibility was enforced. Never return that denormalized content.
           context: null,
           created_at: r.created_at,
-          note_title: note.title,
-          note_icon: note.icon,
-          note_preview: note.content
-            ? toPlainText(note.content).slice(0, 200)
-            : null,
+          document_title: document.title,
+          document_icon: document.icon,
+          document_preview: document.text ? document.text.slice(0, 200) : null,
+          url: `/d/${r.source_id}`,
           author_name: r.author_name,
           author_avatar: r.author_avatar,
         }];
@@ -142,24 +139,22 @@ crossReferenceRoutes.get('/tasks/:taskId/references', async (c) => {
   }
 });
 
-// GET /api/notes/:noteId/references — list tasks referenced from a note (Task 5.1)
+// GET /api/notes/:noteId/references — list tasks referenced from a note (Task 5.1).
+// The note is its document now (F15): `noteId` is an old note id, mapped to
+// its document, or a document id; the caller must be able to open the document.
 crossReferenceRoutes.get('/notes/:noteId/references', async (c) => {
   try {
     const user = c.get('user');
     const noteId = c.req.param('noteId');
+    const documentId = (await mappedTargetId(user.org_id, 'note', noteId)) ?? noteId;
 
-    const [sourceNote] = await db
-      .select({ id: notes.id })
-      .from(notes)
-      .where(and(
-        eq(notes.id, noteId),
-        eq(notes.org_id, user.org_id),
-        eq(notes.is_deleted, false),
-        visibleNoteCondition(user.id),
-      ))
+    const [sourceDocument] = await db
+      .select({ id: documents.id })
+      .from(documents)
+      .where(and(eq(documents.id, documentId), visibleDocumentCondition(user.id, user.org_id)))
       .limit(1);
 
-    if (!sourceNote) {
+    if (!sourceDocument) {
       return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
     }
 
@@ -189,8 +184,8 @@ crossReferenceRoutes.get('/notes/:noteId/references', async (c) => {
         eq(projects.is_deleted, false),
       ))
       .where(and(
-        eq(crossReferences.source_type, 'note'),
-        eq(crossReferences.source_id, noteId),
+        eq(crossReferences.source_type, 'document'),
+        eq(crossReferences.source_id, sourceDocument.id),
         eq(crossReferences.org_id, user.org_id),
         visibleTaskCondition(user.id),
       ))

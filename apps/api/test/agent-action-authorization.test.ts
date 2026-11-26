@@ -20,6 +20,7 @@ import pg from 'pg';
 
 import { closeDb } from '../src/lib/db.js';
 import { executeAction } from '../src/lib/agent-actions.js';
+import { ensureDeftyMembership } from '../src/lib/ensure-defty-membership.js';
 import { wikiProposalTargetValues } from '../src/lib/wiki-proposal-target.js';
 import { createPlanRow } from '../src/lib/agent-plans.js';
 import { persistAgentReplyWithActions } from '../src/lib/agent-action-proposals.js';
@@ -29,6 +30,9 @@ import { dashboardRoutes } from '../src/routes/dashboard.js';
 import { inboxRoutes } from '../src/routes/inbox.js';
 import { handlePlanExecutor } from '../src/workers/handlers/plan-executor.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
+
+// write_canvas stores the canvas document without a live server (F15).
+process.env.DEFT_DOCUMENTS_LIVE ??= 'off';
 
 const databaseUrl = safeTestDatabaseUrl();
 const canRun = Boolean(databaseUrl);
@@ -150,6 +154,9 @@ after(async () => {
     }
     await client.query('DELETE FROM wiki_page_versions WHERE page_id IN (SELECT id FROM wiki_pages WHERE org_id = $1)', [orgId]).catch(() => undefined);
     await client.query('DELETE FROM wiki_pages WHERE org_id = $1', [orgId]);
+    for (const table of ['note_document_map', 'attention_events', 'document_shares', 'documents', 'doc_folders', 'drive_members', 'drives']) {
+      await client.query(`DELETE FROM ${table} WHERE org_id = $1`, [orgId]).catch(() => undefined);
+    }
     await client.query('DELETE FROM notes WHERE org_id = $1', [orgId]);
     await client.query('DELETE FROM canvases WHERE org_id = $1', [orgId]);
     await client.query('DELETE FROM messages WHERE org_id = $1', [orgId]);
@@ -165,6 +172,40 @@ after(async () => {
     await closeDb();
   }
 });
+
+/**
+ * A chat canvas as the notes move (F14) leaves it: the old row, and its
+ * document shared with the chat ("can edit"), mapped. write_canvas writes
+ * the document since F15, and a chat with no canvas gets none.
+ */
+async function movedCanvas(spaceId: string, ownerId: string): Promise<string> {
+  const canvasId = randomUUID(), driveId = randomUUID(), documentId = randomUUID();
+  await client.query(`INSERT INTO canvases (id, org_id, space_id, title, content) VALUES ($1, $2, $3, 'Canvas', NULL)`, [canvasId, orgId, spaceId]);
+  await client.query(`INSERT INTO drives (id, org_id, name, kind, created_by) VALUES ($1, $2, 'Canvases', 'private', $3)`, [driveId, orgId, ownerId]);
+  await client.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'full')`,
+    [randomUUID(), orgId, driveId, ownerId]);
+  await client.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, created_by)
+    VALUES ($1, $2, $3, 'Canvas', '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb, $4)`, [documentId, orgId, driveId, ownerId]);
+  await client.query(`INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'space', $4, 'edit')`,
+    [randomUUID(), orgId, documentId, spaceId]);
+  await client.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+    VALUES ($1, $2, 'canvas', $3, 'document', $4)`, [randomUUID(), orgId, canvasId, documentId]);
+  return documentId;
+}
+
+/** A space note as the notes move leaves it: its document in the author's drive, shared with the space ("can view"), mapped. */
+async function movedSpaceNote(noteId: string, authorId: string, spaceId: string, title: string): Promise<void> {
+  const driveId = randomUUID(), documentId = randomUUID();
+  await client.query(`INSERT INTO drives (id, org_id, name, kind, created_by) VALUES ($1, $2, 'Notes', 'private', $3)`, [driveId, orgId, authorId]);
+  await client.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'full')`,
+    [randomUUID(), orgId, driveId, authorId]);
+  await client.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, content_text, created_by)
+    VALUES ($1, $2, $3, $4, '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb, 'body', $5)`, [documentId, orgId, driveId, title, authorId]);
+  await client.query(`INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'space', $4, 'view')`,
+    [randomUUID(), orgId, documentId, spaceId]);
+  await client.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+    VALUES ($1, $2, 'note', $3, 'document', $4)`, [randomUUID(), orgId, noteId, documentId]);
+}
 
 // ─── C01 ─────────────────────────────────────────────────────────────────────
 
@@ -370,13 +411,20 @@ test('C03: write_canvas, post_thread_reply, post_message and space notes require
   assert.equal(msgs.rows[0]?.n, 0);
   const note = await client.query('SELECT count(*)::int AS n FROM notes WHERE org_id = $1 AND visibility_space_id = $2', [orgId, privateSpaceId]);
   assert.equal(note.rows[0]?.n, 0);
+  const shared = await client.query(`SELECT count(*)::int AS n FROM document_shares WHERE org_id = $1 AND principal_id = $2`, [orgId, privateSpaceId]);
+  assert.equal(shared.rows[0]?.n, 0, 'no document shared into the space');
 
-  // A member of the space keeps every one of these writes.
+  // A member of the space keeps every one of these writes: the canvas is its document (F15), written by Defty for them,
+  // and the space note a document shared with the space.
+  await ensureDeftyMembership(orgId);
+  const canvasDocument = await movedCanvas(privateSpaceId, requesterId);
   for (const [action, params] of cases) {
     const actionId = await insertAction({ userId: requesterId, action, params, status: 'pending', executed: false });
     const result = await executeAction(actionId, action, params, orgId, requesterId);
     assert.equal(result.success, true, `${action}: ${result.error}`);
   }
+  const written = await client.query('SELECT content_text FROM documents WHERE id = $1', [canvasDocument]);
+  assert.equal(String(written.rows[0]?.content_text).trim(), 'canvas body');
 });
 
 test('R2-2: malformed target types are rejected before any native write', { skip: !canRun }, async () => {
@@ -425,6 +473,8 @@ test('R2-4: one accessible target resolves even when an inaccessible sibling sha
     `INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3), ($4, $5, $6), ($7, $8, $6)`,
     [randomUUID(), openId, otherMemberId, randomUUID(), siblingId, requesterId, randomUUID(), dupHiddenId],
   );
+  await ensureDeftyMembership(orgId);
+  const openCanvas = await movedCanvas(openId, otherMemberId);
   const cases: Array<[string, Record<string, unknown>]> = [
     ['add_knowledge', { space_name: base, title: `sibling knowledge ${suffix}`, content: 'k' }],
     ['write_canvas', { space_name: base, content: 'sibling canvas' }],
@@ -437,8 +487,11 @@ test('R2-4: one accessible target resolves even when an inaccessible sibling sha
   }
   const knowledge = await client.query('SELECT space_id FROM wiki_pages WHERE org_id = $1 AND title = $2', [orgId, `sibling knowledge ${suffix}`]);
   assert.deepEqual(knowledge.rows.map((r) => r.space_id), [openId]);
+  // The canvas written is the plainly named space's document; no other space has one.
   const canvas = await client.query('SELECT space_id FROM canvases WHERE space_id = ANY($1::text[])', [[openId, siblingId, dupHiddenId]]);
   assert.deepEqual(canvas.rows.map((r) => r.space_id), [openId]);
+  const canvasText = await client.query('SELECT content_text FROM documents WHERE id = $1', [openCanvas]);
+  assert.equal(String(canvasText.rows[0]?.content_text).trim(), 'sibling canvas');
   const post = await client.query('SELECT space_id FROM messages WHERE org_id = $1 AND content = $2', [orgId, `sibling post ${suffix}`]);
   assert.deepEqual(post.rows.map((r) => r.space_id), [openId]);
 
@@ -466,6 +519,9 @@ test('C13: note_to_wiki executes for a space-visible note when the actor is a sp
      VALUES ($1, $3, $4, $5, 'shared body', 'space', $6), ($2, $3, $4, $7, 'hidden body', 'space', $8)`,
     [sharedNoteId, hiddenNoteId, orgId, requesterId, `Shared note ${suffix}`, sharedSpaceId, `Hidden note ${suffix}`, privateSpaceId],
   );
+  // Notes are documents since F15: each note's document is shared with its space.
+  await movedSpaceNote(sharedNoteId, requesterId, sharedSpaceId, `Shared note ${suffix}`);
+  await movedSpaceNote(hiddenNoteId, requesterId, privateSpaceId, `Hidden note ${suffix}`);
   const sharedParams = { note_id: sharedNoteId, type: 'fact' };
   const sharedAction = await insertAction({ userId: otherMemberId, action: 'note_to_wiki', params: sharedParams, status: 'pending', executed: false });
   const shared = await executeAction(sharedAction, 'note_to_wiki', sharedParams, orgId, otherMemberId);
@@ -550,6 +606,9 @@ test('R3-2: approved canvas, knowledge and space-note writes reach an archived s
     [archivedId, orgId, archivedName, requesterId],
   );
   await client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), archivedId, requesterId]);
+  // The archived space's canvas, moved to its document (F15).
+  await ensureDeftyMembership(orgId);
+  const canvasDocument = await movedCanvas(archivedId, requesterId);
   const writes: Array<[string, Record<string, unknown>]> = [
     ['write_canvas', { space_name: archivedName, content: 'archived canvas' }],
     ['add_knowledge', { space_name: archivedName, title: `archived knowledge ${suffix}`, content: 'k' }],
@@ -560,12 +619,13 @@ test('R3-2: approved canvas, knowledge and space-note writes reach an archived s
     const result = await executeAction(actionId, action, params, orgId, requesterId);
     assert.equal(result.success, true, `${action}: ${result.error}`);
   }
-  const canvas = await client.query('SELECT count(*)::int AS n FROM canvases WHERE space_id = $1', [archivedId]);
-  assert.equal(canvas.rows[0]?.n, 1);
+  const canvas = await client.query('SELECT content_text FROM documents WHERE id = $1', [canvasDocument]);
+  assert.equal(String(canvas.rows[0]?.content_text).trim(), 'archived canvas');
   const knowledge = await client.query('SELECT space_id FROM wiki_pages WHERE org_id = $1 AND title = $2', [orgId, `archived knowledge ${suffix}`]);
   assert.deepEqual(knowledge.rows.map((r) => r.space_id), [archivedId]);
-  const note = await client.query('SELECT count(*)::int AS n FROM notes WHERE visibility_space_id = $1', [archivedId]);
-  assert.equal(note.rows[0]?.n, 1);
+  const note = await client.query(`SELECT count(*)::int AS n FROM documents d JOIN document_shares s ON s.document_id = d.id
+    WHERE d.org_id = $1 AND d.title = $2 AND s.principal_type = 'space' AND s.principal_id = $3`, [orgId, `archived note ${suffix}`, archivedId]);
+  assert.equal(note.rows[0]?.n, 1, 'the space note is a document shared with the archived space');
   for (const params of [{ space_id: archivedId, content: 'x' }, { space_name: archivedName, content: 'x' }]) {
     const actionId = await insertAction({ userId: requesterId, action: 'post_message', params, status: 'pending', executed: false });
     const post = await executeAction(actionId, 'post_message', params, orgId, requesterId);

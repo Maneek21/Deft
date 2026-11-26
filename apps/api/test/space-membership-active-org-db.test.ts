@@ -104,6 +104,15 @@ before(async () => {
       `INSERT INTO notes (id, org_id, user_id, title, folder_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
       [NOTE_B, ORG_B, USER_ID, `${SECRET} note B`, FOLDER_B],
     );
+    // The notes move (F14): note B is a document in its author's My drive in org B; its old routes read through it (F15).
+    await c.query(`INSERT INTO drives (id, org_id, name, kind, owner_user_id, created_by) VALUES ($1, $2, 'My drive', 'personal', $3, $3)`,
+      [`${NOTE_B}-drive`, ORG_B, USER_ID]);
+    await c.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'full')`,
+      [`${NOTE_B}-owner`, ORG_B, `${NOTE_B}-drive`, USER_ID]);
+    await c.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, created_by)
+      VALUES ($1, $2, $3, $4, '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb, $5)`, [`${NOTE_B}-doc`, ORG_B, `${NOTE_B}-drive`, `${SECRET} note B`, USER_ID]);
+    await c.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+      VALUES ($1, $2, 'note', $3, 'document', $4)`, [`${NOTE_B}-map`, ORG_B, NOTE_B, `${NOTE_B}-doc`]);
   });
 });
 
@@ -112,6 +121,9 @@ after(async () => {
     const spacesList = [SPACE_A, SPACE_B, SPACE_A_OTHER];
     await c.query(`DELETE FROM job_queue WHERE payload::text LIKE $1`, [`%w1g-%${stamp}%`]).catch(() => undefined);
     await c.query(`DELETE FROM scheduled_messages WHERE user_id = $1`, [USER_ID]);
+    for (const table of ['note_document_map', 'documents', 'drive_members', 'drives']) {
+      await c.query(`DELETE FROM ${table} WHERE org_id = $1`, [ORG_B]).catch(() => undefined);
+    }
     await c.query(`DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE user_id = $1)`, [USER_ID]).catch(() => undefined);
     await c.query(`DELETE FROM note_shares WHERE note_id IN (SELECT id FROM notes WHERE user_id = $1)`, [USER_ID]).catch(() => undefined);
     await c.query(`DELETE FROM notes WHERE user_id = $1`, [USER_ID]);
@@ -209,9 +221,10 @@ test('W1g: canvas refuses a space outside the caller\'s active org', async () =>
   await assertLooksLikeNonMember('canvas', 'PATCH', (s) => `/api/spaces/${s}/canvas`, () => ({ title: 'cross-org' }));
   assert.equal(await rowCount(`SELECT count(*)::int AS n FROM canvases WHERE space_id = $1`, [SPACE_B]), 0);
 
+  // A canvas is its document since F15: reading a space with none creates nothing, in the right org too.
   const ok = await call('canvas', ORG_B, 'GET', `/api/spaces/${SPACE_B}/canvas`);
-  assert.equal(ok.status, 201, ok.text);
-  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM canvases WHERE space_id = $1 AND org_id = $2`, [SPACE_B, ORG_B]), 1);
+  assert.equal(ok.status, 404, ok.text);
+  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM canvases WHERE space_id = $1 AND org_id = $2`, [SPACE_B, ORG_B]), 0);
 });
 
 test('W1g: wiki refuses a space outside the caller\'s active org', async () => {
@@ -240,20 +253,18 @@ test('W1g: scheduled messages refuses a space outside the caller\'s active org',
   assert.equal(await rowCount(`SELECT count(*)::int AS n FROM scheduled_messages WHERE space_id = $1 AND org_id = $2 AND id <> $3`, [SPACE_B, ORG_B, SCHEDULED_B]), 1);
 });
 
-test('W1g: daily-notes refuses a space outside the caller\'s active org', async () => {
-  await assertLooksLikeNonMember('daily-notes', 'POST', () => '/api/daily-notes', (s) => ({ title: 'w1g note', visibility: 'space', visibility_space_id: s }));
+test('W1g: daily-notes writes nothing, in any org (notes are documents since F15)', async () => {
+  for (const [org, space] of [[ORG_A, SPACE_B], [ORG_A, MISSING_SPACE], [ORG_B, SPACE_B]] as const) {
+    const res = await call('daily-notes', org, 'POST', '/api/daily-notes', { title: 'w1g note', visibility: 'space', visibility_space_id: space });
+    assert.equal(res.status, 410, res.text);
+    assert.equal((res.json as { code: string }).code, 'NOTES_MOVED');
+    assert.ok(!res.text.includes(SECRET));
+  }
   assert.equal(await rowCount(`SELECT count(*)::int AS n FROM notes WHERE visibility_space_id = $1`, [SPACE_B]), 0);
-
-  // PATCH: an org-A note cannot be re-pointed at the org-B space.
-  const own = await call('daily-notes', ORG_A, 'POST', '/api/daily-notes', { title: 'w1g org A note' });
-  assert.equal(own.status, 201, own.text);
-  const noteId = (own.json as { id: string }).id;
-  await assertLooksLikeNonMember('daily-notes', 'PATCH', () => `/api/daily-notes/${noteId}`, (s) => ({ visibility: 'space', visibility_space_id: s }));
+  const patched = await call('daily-notes', ORG_A, 'PATCH', `/api/daily-notes/${NOTE_B}`, { visibility: 'space', visibility_space_id: SPACE_B });
+  assert.equal(patched.status, 410, patched.text);
+  assert.equal((patched.json as { document_id?: string }).document_id, undefined, 'an org-B note names no document to an org-A session');
   assert.equal(await rowCount(`SELECT count(*)::int AS n FROM notes WHERE visibility_space_id = $1`, [SPACE_B]), 0);
-
-  const ok = await call('daily-notes', ORG_B, 'POST', '/api/daily-notes', { title: 'w1g note', visibility: 'space', visibility_space_id: SPACE_B });
-  assert.equal(ok.status, 201, ok.text);
-  assert.equal(await rowCount(`SELECT count(*)::int AS n FROM notes WHERE visibility_space_id = $1 AND org_id = $2`, [SPACE_B, ORG_B]), 1);
 });
 
 test('W1g: spaces refuses a space outside the caller\'s active org', async () => {
@@ -380,17 +391,20 @@ test('W1g: daily-notes owner-only routes are bound to the active org', async () 
   assert.equal(folders.status, 200, folders.text);
   assert.ok(!folders.text.includes(SECRET), `org-A folder list exposed an org-B folder: ${folders.text}`);
 
-  const attempts: Array<[string, string, unknown]> = [
-    ['GET', `/api/daily-notes/${NOTE_B}/history`, undefined],
-    ['GET', `/api/daily-notes/${NOTE_B}/shares`, undefined],
-    ['POST', `/api/daily-notes/${NOTE_B}/shares`, { user_id: USER_ID }],
-    ['DELETE', `/api/daily-notes/${NOTE_B}/shares/${USER_ID}`, undefined],
-    ['DELETE', `/api/daily-notes/${NOTE_B}`, undefined],
-    ['PATCH', `/api/daily-notes/folders/${FOLDER_B}`, { name: 'w1g renamed' }],
+  // Reads treat an org-B note as missing; writes answer 410 NOTES_MOVED (F15) and name nothing of org B.
+  const attempts: Array<[string, string, unknown, number]> = [
+    ['GET', `/api/daily-notes/${NOTE_B}/history`, undefined, 404],
+    ['GET', `/api/daily-notes/${NOTE_B}/shares`, undefined, 404],
+    ['GET', `/api/daily-notes/${NOTE_B}`, undefined, 404],
+    ['POST', `/api/daily-notes/${NOTE_B}/shares`, { user_id: USER_ID }, 410],
+    ['DELETE', `/api/daily-notes/${NOTE_B}/shares/${USER_ID}`, undefined, 410],
+    ['DELETE', `/api/daily-notes/${NOTE_B}`, undefined, 410],
+    ['PATCH', `/api/daily-notes/folders/${FOLDER_B}`, { name: 'w1g renamed' }, 410],
   ];
-  for (const [method, path, body] of attempts) {
+  for (const [method, path, body, status] of attempts) {
     const res = await call('daily-notes', ORG_A, method, path, body);
-    assert.equal(res.status, 404, `${method} ${path} must treat an org-B note/folder as missing (body: ${res.text})`);
+    assert.equal(res.status, status, `${method} ${path} must treat an org-B note/folder as missing (body: ${res.text})`);
+    assert.ok(!res.text.includes(SECRET) && !res.text.includes('document_id'), `${method} ${path} named org-B data`);
   }
   await call('daily-notes', ORG_A, 'DELETE', `/api/daily-notes/folders/${FOLDER_B}`);
   assert.equal(await rowCount(`SELECT count(*)::int AS n FROM notes WHERE id = $1 AND is_deleted = false AND folder_id = $2`, [NOTE_B, FOLDER_B]), 1,

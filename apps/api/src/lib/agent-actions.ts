@@ -17,8 +17,6 @@ import {
   users,
   wikiPages,
   reminders,
-  notes,
-  canvases,
   crossReferences,
   agentEmployees,
   moduleRecords,
@@ -51,9 +49,12 @@ import {
 import { getApprovalTier, isDestructiveAction, mandatoryApprovalTier, shouldAutoExecute, type ToolAnnotations } from './agent-approval.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 import { clientSafeErrorMessage } from './client-safe-error.js';
-import { authorizeNativeActionTarget, promotableNoteSql } from './agent-action-visibility.js';
-import { syncNoteFiles } from './note-file-claims.js';
-import { visibleNoteCondition } from './note-visibility.js';
+import { authorizeNativeActionTarget } from './agent-action-visibility.js';
+import {
+  canvasDocumentToWrite, createNoteDocument, noteContentJson, noteToolActor, noteToolError, promotableNoteDocument,
+  readCanvasDocument, readNoteDocument, replaceDocumentContent, searchNoteDocuments, type JSONContent as NoteJSONContent,
+} from './legacy-notes.js';
+import { updateDocument } from './documents.js';
 import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
@@ -3111,7 +3112,9 @@ export async function executeAction(
       }
 
       case 'read_canvas': {
-        // Block 2.3 — read a space's shared canvas by space_name.
+        // Block 2.3 — read a space's shared canvas by space_name: its document
+        // since the notes move (F15, lib/legacy-notes.ts), as the caller can
+        // open it, content in Markdown.
         const spaceName = typeof params.space_name === 'string' ? params.space_name : '';
         if (!spaceName.trim()) return { success: false, result: null, error: 'space_name is required' };
 
@@ -3129,34 +3132,20 @@ export async function executeAction(
           };
         }
         const space = resolvedRoom.room;
-
-        const [canvas] = await db
-          .select({ id: canvases.id, title: canvases.title, content: canvases.content, updated_at: canvases.updated_at })
-          .from(canvases)
-          .where(and(eq(canvases.space_id, space.id), eq(canvases.org_id, orgId)))
-          .limit(1);
-
+        const canvas = await readCanvasDocument(orgId, userId, space.id);
         if (!canvas) {
           return { success: true, result: { space: space.name, canvas: null, exists: false } };
         }
-
-        return {
-          success: true,
-          result: {
-            space: space.name,
-            canvas: {
-              id: canvas.id,
-              title: canvas.title,
-              content: canvas.content,
-              updated_at: canvas.updated_at,
-            },
-            exists: true,
-          },
-        };
+        return { success: true, result: { space: space.name, canvas, exists: true } };
       }
 
       case 'write_canvas': {
-        // Block 2.3 — upsert the canvas row for a space.
+        // Block 2.3 — replace a space's canvas content. The canvas is its
+        // document since the notes move (F15): written through the one writer
+        // (rule C2) as the agent (Defty for the person who asked), so the
+        // writer checks their edit role and refuses an agent on a drive set to
+        // suggestions only. A space with no canvas gets none: canvases are
+        // documents now.
         const spaceName = typeof params.space_name === 'string' ? params.space_name.trim() : '';
         const content = params.content;
         const title = typeof params.title === 'string' ? params.title.trim() : undefined;
@@ -3172,47 +3161,26 @@ export async function executeAction(
           .limit(1);
         if (!space) return { success: false, result: null, error: `Space "${spaceName}" not found` };
 
-        const jsonContent: any = typeof content === 'string' ? { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: content }] }] } : content;
-
-        const [existing] = await db
-          .select({ id: canvases.id })
-          .from(canvases)
-          .where(eq(canvases.space_id, space.id))
-          .limit(1);
-
-        let resultRow;
-        if (existing) {
-          const [updated] = await db
-            .update(canvases)
-            .set({
-              content: jsonContent,
-              last_edited_by: userId,
-              last_edited_at: new Date(),
-              ...(title ? { title } : {}),
-            })
-            .where(eq(canvases.id, existing.id))
-            .returning();
-          resultRow = updated;
-        } else {
-          const [inserted] = await db
-            .insert(canvases)
-            .values({
-              org_id: orgId,
-              space_id: space.id,
-              title: title ?? 'Canvas',
-              content: jsonContent,
-              last_edited_by: userId,
-              last_edited_at: new Date(),
-            })
-            .returning();
-          resultRow = inserted;
+        const target = await canvasDocumentToWrite(orgId, space.id);
+        if ('error' in target) return { success: false, result: null, error: target.error };
+        const json: NoteJSONContent = typeof content === 'string' ? noteContentJson(content) : content;
+        const actor = await noteToolActor(userId, { agentEmployeeId, humanPrincipal: options?.trustedHumanMcpPrincipal });
+        let revision: number;
+        try {
+          ({ revision } = await replaceDocumentContent({ orgId, documentId: target.documentId, actor, json }));
+          // The title is the asker's (or the agent's) own edit, needing edit on the document.
+          if (title) await updateDocument({ orgId, userId, documentId: target.documentId, patch: { title } });
+        } catch (error) {
+          const refusal = noteToolError(error);
+          if (refusal) return { success: false, result: null, error: refusal };
+          throw error;
         }
 
         await db
           .update(agentActions)
           .set({
-            result: { canvas_id: resultRow!.id, space: space.name } as any,
-            after_state: { canvas_id: resultRow!.id, space_id: space.id, title: resultRow!.title } as any,
+            result: { canvas_document_id: target.documentId, space: space.name } as any,
+            after_state: { document_id: target.documentId, space_id: space.id, revision } as any,
             executed_at: new Date(),
           })
           .where(eq(agentActions.id, actionId));
@@ -3222,14 +3190,14 @@ export async function executeAction(
           actorType: 'agent',
           actorId: userId,
           action: 'write_canvas',
-          entityType: 'canvas',
-          entityId: resultRow!.id,
+          entityType: 'document',
+          entityId: target.documentId,
           beforeState: null,
-          afterState: { space_id: space.id, title: resultRow!.title } as any,
+          afterState: { space_id: space.id, revision } as any,
           metadata: { action_id: actionId, space_name: space.name },
         });
 
-        return { success: true, result: { canvas_id: resultRow!.id, space: space.name, title: resultRow!.title } };
+        return { success: true, result: { canvas_document_id: target.documentId, document_id: target.documentId, space: space.name, url: `/d/${target.documentId}` } };
       }
 
       case 'post_thread_reply': {
@@ -3303,58 +3271,22 @@ export async function executeAction(
       }
 
       case 'search_notes': {
-        // Block 2.1 — search the notes the user may see (lib/note-visibility.ts).
+        // Block 2.1 — search the notes the user may see: documents since the
+        // notes move (F15), as the access check lets them open them.
         const query = typeof params.query === 'string' ? params.query.trim() : '';
         const scope = ['mine', 'org', 'all'].includes(params.scope) ? params.scope : 'all';
         const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 50);
         if (!query) {
           return { success: false, result: null, error: 'query is required' };
         }
-        const pattern = `%${query.replace(/[%_]/g, (m) => `\\${m}`)}%`;
-        const scopeClause =
-          scope === 'mine'
-            ? eq(notes.user_id, userId)
-            : scope === 'org'
-              ? eq(notes.visibility, 'org')
-              : undefined;
-        const rows = await db
-          .select({
-            id: notes.id,
-            title: notes.title,
-            visibility: notes.visibility,
-            updated_at: notes.updated_at,
-            snippet: sql<string>`substring(coalesce(${notes.content}, '') from 1 for 240)`,
-          })
-          .from(notes)
-          .where(
-            and(
-              eq(notes.org_id, orgId),
-              eq(notes.is_deleted, false),
-              visibleNoteCondition(userId),
-              scopeClause,
-              sql`(${notes.title} ILIKE ${pattern} OR coalesce(${notes.content}, '') ILIKE ${pattern})`,
-            ),
-          )
-          .orderBy(desc(notes.updated_at))
-          .limit(limit);
+        const rows = await searchNoteDocuments({ orgId, userId, query: query.slice(0, 200), scope, limit });
         return { success: true, result: { notes: rows, count: rows.length } };
       }
 
       case 'read_note': {
         const noteId = typeof params.note_id === 'string' ? params.note_id : '';
         if (!noteId) return { success: false, result: null, error: 'note_id is required' };
-        const [row] = await db
-          .select()
-          .from(notes)
-          .where(
-            and(
-              eq(notes.id, noteId),
-              eq(notes.org_id, orgId),
-              eq(notes.is_deleted, false),
-              visibleNoteCondition(userId),
-            ),
-          )
-          .limit(1);
+        const row = await readNoteDocument(orgId, userId, noteId);
         if (!row) {
           return { success: false, result: null, error: 'Note not found or not visible to caller' };
         }
@@ -3362,15 +3294,21 @@ export async function executeAction(
           success: true,
           result: {
             id: row.id,
+            document_id: row.id,
             title: row.title,
-            content: row.content ?? '',
-            visibility: row.visibility,
+            content: row.content,
+            content_format: row.content_format,
             updated_at: row.updated_at,
+            url: row.url,
           },
         };
       }
 
       case 'create_note': {
+        // A document since the notes move (F15, lib/legacy-notes.ts): in the
+        // creator's My drive, shared with the space (can view) for a space
+        // note, or in Shared notes for an org note, as the move places notes.
+        // The creator is the person who asked (Defty) or the agent itself.
         const title = typeof params.title === 'string' ? params.title.trim() : '';
         const content = typeof params.content === 'string' ? params.content : '';
         const visibility = ['private', 'org', 'space'].includes(params.visibility)
@@ -3385,29 +3323,20 @@ export async function executeAction(
           return { success: false, result: null, error: 'visibility_space_id is required when visibility=space' };
         }
 
-        // One transaction: the note and the links to the images it shows that
-        // this person uploaded (note-file-claims.ts).
-        const inserted = await db.transaction(async (tx) => {
-          const [row] = await tx
-            .insert(notes)
-            .values({
-              org_id: orgId,
-              user_id: userId,
-              title,
-              content,
-              visibility,
-              visibility_space_id: visibility === 'space' ? spaceId : null,
-            })
-            .returning();
-          await syncNoteFiles(tx, { id: userId, org_id: orgId }, row!);
-          return row;
-        });
+        let document;
+        try {
+          document = await createNoteDocument({ orgId, userId, title, json: noteContentJson(content), visibility, spaceId });
+        } catch (error) {
+          const refusal = noteToolError(error);
+          if (refusal) return { success: false, result: null, error: refusal };
+          throw error;
+        }
 
         await db
           .update(agentActions)
           .set({
-            result: { note_id: inserted!.id, title: inserted!.title } as any,
-            after_state: { note_id: inserted!.id, title, visibility } as any,
+            result: { note_id: document.id, document_id: document.id, title: document.title } as any,
+            after_state: { document_id: document.id, title, visibility } as any,
             executed_at: new Date(),
           })
           .where(eq(agentActions.id, actionId));
@@ -3417,17 +3346,20 @@ export async function executeAction(
           actorType: 'agent',
           actorId: userId,
           action: 'create_note',
-          entityType: 'note',
-          entityId: inserted!.id,
+          entityType: 'document',
+          entityId: document.id,
           beforeState: null,
           afterState: { title, visibility } as any,
           metadata: { action_id: actionId },
         });
 
-        return { success: true, result: { note_id: inserted!.id, title: inserted!.title } };
+        return { success: true, result: { note_id: document.id, document_id: document.id, title: document.title, url: `/d/${document.id}` } };
       }
 
       case 'note_to_wiki': {
+        // Until H3 ("Use in Knowledge"): a copy of the document's Markdown as
+        // a workspace wiki page, for a document the caller may publish
+        // (promotableDocumentSql, lib/legacy-notes.ts).
         const noteId = typeof params.note_id === 'string' ? params.note_id : '';
         const pageType = ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'].includes(
           params.type,
@@ -3436,18 +3368,7 @@ export async function executeAction(
           : 'fact';
         if (!noteId) return { success: false, result: null, error: 'note_id is required' };
 
-        const [note] = await db
-          .select()
-          .from(notes)
-          .where(
-            and(
-              eq(notes.id, noteId),
-              eq(notes.org_id, orgId),
-              eq(notes.is_deleted, false),
-              promotableNoteSql(userId),
-            ),
-          )
-          .limit(1);
+        const note = await promotableNoteDocument(orgId, userId, noteId);
         if (!note) {
           return { success: false, result: null, error: 'Note not found or not visible to caller' };
         }
@@ -3477,7 +3398,7 @@ export async function executeAction(
             type: pageType as any,
             title: note.title,
             slug,
-            content: note.content ?? '',
+            content: note.markdown,
             confidence: 0.8,
           })
           .returning();
@@ -3486,7 +3407,7 @@ export async function executeAction(
           .update(agentActions)
           .set({
             result: { wiki_page_id: page!.id, slug: page!.slug } as any,
-            after_state: { wiki_page_id: page!.id, source_note_id: noteId } as any,
+            after_state: { wiki_page_id: page!.id, source_document_id: note.id } as any,
             executed_at: new Date(),
           })
           .where(eq(agentActions.id, actionId));
@@ -3499,7 +3420,7 @@ export async function executeAction(
           entityType: 'wiki_page',
           entityId: page!.id,
           beforeState: null,
-          afterState: { title: note.title, slug, source_note_id: noteId } as any,
+          afterState: { title: note.title, slug, source_document_id: note.id } as any,
           metadata: { action_id: actionId },
         });
 

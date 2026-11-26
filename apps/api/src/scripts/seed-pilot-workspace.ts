@@ -17,6 +17,9 @@ import { and, eq, gte, inArray, lt, or, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import type { PendingAccessLoss } from '../lib/document-access-change.js';
 import { endDriveAccessOnDepartureInTx, finishDriveLosses } from '../lib/drives.js';
+import { docFavorites, documents } from '@deft/db/documents';
+import { softDeleteDocument } from '../lib/documents.js';
+import { createNoteDocument, noteContentJson } from '../lib/legacy-notes.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { reconcileProjectTaskCountersForOrg } from '../lib/task-numbering.js';
 import {
@@ -37,7 +40,6 @@ import {
   mcpTokens,
   messageClassifications,
   messages,
-  notes,
   notifications,
   orgMembers,
   orgs,
@@ -107,7 +109,7 @@ type PilotNotificationChannels = {
   agents: boolean;
 };
 type PilotTeamRole = 'lead' | 'member' | 'viewer';
-type PilotTeamResourceType = 'space' | 'project' | 'wiki_page' | 'note' | 'calendar_feed' | 'task_template' | 'agent_employee';
+type PilotTeamResourceType = 'space' | 'project' | 'wiki_page' | 'note' | 'document' | 'calendar_feed' | 'task_template' | 'agent_employee';
 
 function expectOne<T>(rows: T[], label: string): T {
   const [row] = rows;
@@ -2354,26 +2356,37 @@ async function seedRecordingNotes(params: {
     },
   ];
 
-  await db
-    .delete(notes)
-    .where(and(
-      eq(notes.org_id, params.orgId),
-      eq(notes.user_id, params.diegoId),
-      inArray(notes.title, noteInputs.map((note) => note.title)),
-    ));
+  // Notes are documents (F15): each is created where a note of its
+  // visibility moves (lib/legacy-notes.ts). A rerun puts the previous seed's
+  // documents in the trash first.
+  const previous = await db.select({ id: documents.id }).from(documents).where(and(
+    eq(documents.org_id, params.orgId),
+    eq(documents.created_by, params.diegoId),
+    eq(documents.is_deleted, false),
+    inArray(documents.title, noteInputs.map((note) => note.title)),
+  ));
+  for (const row of previous) {
+    await softDeleteDocument({ orgId: params.orgId, userId: params.diegoId, documentId: row.id }).catch(() => undefined);
+  }
 
-  await db.insert(notes).values(noteInputs.map((note, index) => ({
-    org_id: params.orgId,
-    user_id: params.diegoId,
-    title: note.title,
-    icon: note.icon,
-    is_pinned: note.isPinned,
-    visibility: note.visibility,
-    visibility_space_id: note.visibilitySpaceId,
-    content: note.content,
-    created_at: hoursAgo(7 - index),
-    updated_at: hoursAgo(2 - index * 0.25),
-  })));
+  for (const [index, note] of noteInputs.entries()) {
+    const document = await createNoteDocument({
+      orgId: params.orgId,
+      userId: params.diegoId,
+      title: note.title,
+      icon: note.icon,
+      json: noteContentJson(note.content),
+      visibility: note.visibility as 'private' | 'org' | 'space',
+      spaceId: note.visibilitySpaceId,
+    });
+    // Demo times only: the content was written by createNoteDocument.
+    await db.update(documents).set({ created_at: hoursAgo(7 - index), updated_at: hoursAgo(2 - index * 0.25) })
+      .where(eq(documents.id, document.id));
+    if (note.isPinned) {
+      await db.insert(docFavorites).values({ org_id: params.orgId, user_id: params.diegoId, target_type: 'document', target_id: document.id })
+        .onConflictDoNothing();
+    }
+  }
 }
 
 async function seedOperatingDay(params: {
@@ -2929,9 +2942,9 @@ async function seedPeopleAndTeamManagement(params: {
       'demo-video-recording-map',
     ])));
   const noteRows = await db
-    .select({ id: notes.id, title: notes.title })
-    .from(notes)
-    .where(and(eq(notes.org_id, params.orgId), inArray(notes.title, [
+    .select({ id: documents.id, title: documents.title })
+    .from(documents)
+    .where(and(eq(documents.org_id, params.orgId), eq(documents.is_deleted, false), inArray(documents.title, [
       'Manual demo notes - Sun Gold launch',
       'Diego scratchpad - launch blockers',
       'Chef Amara call prep',
@@ -2993,7 +3006,7 @@ async function seedPeopleAndTeamManagement(params: {
         resource('project', projectByPrefix.get('OPS'), 'Route + Packing Reliability'),
         resource('project', projectByPrefix.get('SAFE'), 'Food Safety Claims Review'),
         resource('wiki_page', wikiBySlug.get('cold-room-handoff-sop'), 'Cold-room handoff SOP'),
-        resource('note', noteByTitle.get('Diego scratchpad - launch blockers'), 'Launch blocker scratchpad'),
+        resource('document', noteByTitle.get('Diego scratchpad - launch blockers'), 'Launch blocker scratchpad'),
       ],
       snapshot: {
         headline: 'Farm Operations is steady, but route and cold-room promises need close review.',
@@ -3032,7 +3045,7 @@ async function seedPeopleAndTeamManagement(params: {
         resource('project', projectByPrefix.get('BUY'), 'Chef Sample Program'),
         resource('wiki_page', wikiBySlug.get('sun-gold-trial-launch-decision'), 'Sun Gold launch decision'),
         resource('wiki_page', wikiBySlug.get('sun-gold-buyer-personas'), 'Buyer personas'),
-        resource('note', noteByTitle.get('Chef Amara call prep'), 'Chef Amara call prep'),
+        resource('document', noteByTitle.get('Chef Amara call prep'), 'Chef Amara call prep'),
         resource('agent_employee', employeeBySlug.get('tom'), 'Tom marketing agent'),
         resource('agent_employee', employeeBySlug.get('maya'), 'Maya communications agent'),
       ],
@@ -3075,7 +3088,7 @@ async function seedPeopleAndTeamManagement(params: {
         resource('wiki_page', wikiBySlug.get('byoa-employee-operating-model'), 'BYOA operating model'),
         resource('wiki_page', wikiBySlug.get('agent-approval-rails-for-launch-work'), 'Agent approval rails'),
         resource('wiki_page', wikiBySlug.get('demo-video-recording-map'), 'Demo recording map'),
-        resource('note', noteByTitle.get('Agent receipt moments to show'), 'Agent receipt moments'),
+        resource('document', noteByTitle.get('Agent receipt moments to show'), 'Agent receipt moments'),
       ],
       snapshot: {
         headline: 'Leadership has one place to see launch narrative, operational risk, and agent governance.',
@@ -3149,7 +3162,8 @@ async function seedPeopleAndTeamManagement(params: {
       team.spec.resources.filter((item): item is NonNullable<typeof item> => Boolean(item)).map((item) => ({
         org_id: params.orgId,
         team_id: team.id,
-        resource_type: item.resource_type,
+        // `document` is a team_resource_type label added by upgrade SQL only, as routes/teams.ts widens it.
+        resource_type: item.resource_type as (typeof teamResources.$inferInsert)['resource_type'],
         resource_id: item.resource_id,
         label: item.label,
         created_by: params.createdBy,

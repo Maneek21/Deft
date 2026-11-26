@@ -379,6 +379,58 @@ function productApp() {
   return app;
 }
 
+/**
+ * The documents the notes move (F14) would leave for workspace A's notes, and
+ * their map rows, placed as the move places them: a private note in its
+ * author's own drive, a workspace note in an open drive everyone may view
+ * (its author with an edit share), a chat note shared with its chat, a
+ * shared note shared with its recipient, a deleted note deleted. Private
+ * drives stand in for My drive so the fixture's own drives are left alone.
+ * Notes are read through these documents' access since F15, and exported
+ * only as them. Returns the cleanup.
+ */
+async function mapNotesToDocuments(a: ExportWorld['a']): Promise<() => Promise<void>> {
+  const drives: string[] = [];
+  const driveFor = new Map<string, string>();
+  const drive = async (kind: 'private' | 'open', holder?: string) => {
+    const id = randomUUID();
+    drives.push(id);
+    await client.query(`INSERT INTO drives (id, org_id, name, kind, default_role, created_by) VALUES ($1, $2, 'Notes', $3, $4, $5)`,
+      [id, a.orgId, kind, kind === 'open' ? 'view' : null, holder ?? a.owner]);
+    if (holder) await client.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role)
+      VALUES ($1, $2, $3, 'user', $4, 'full')`, [randomUUID(), a.orgId, id, holder]);
+    return id;
+  };
+  const own = async (userId: string) => driveFor.get(userId) ?? (driveFor.set(userId, await drive('private', userId)), driveFor.get(userId)!);
+  const sharedNotes = await drive('open');
+  const share = (documentId: string, type: 'user' | 'space', principalId: string, role: 'edit' | 'view') => client.query(
+    `INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role) VALUES ($1, $2, $3, $4, $5, $6)`,
+    [randomUUID(), a.orgId, documentId, type, principalId, role]);
+  const { rows } = await client.query<{ id: string; user_id: string; title: string; visibility: string; visibility_space_id: string | null; is_deleted: boolean }>(
+    'SELECT id, user_id, title, visibility, visibility_space_id, is_deleted FROM notes WHERE org_id = $1', [a.orgId]);
+  for (const note of rows) {
+    const documentId = randomUUID();
+    await client.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, created_by, is_deleted, deleted_at)
+      VALUES ($1, $2, $3, $4, '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb, $5, $6, CASE WHEN $6 THEN now() END)`,
+    [documentId, a.orgId, note.visibility === 'org' ? sharedNotes : await own(note.user_id), note.title, note.user_id, note.is_deleted]);
+    if (note.visibility === 'org') await share(documentId, 'user', note.user_id, 'edit');
+    const { rows: [inOrg] } = await client.query('SELECT 1 FROM spaces WHERE id = $1 AND org_id = $2', [note.visibility_space_id, a.orgId]);
+    if (note.visibility === 'space' && inOrg) await share(documentId, 'space', note.visibility_space_id!, 'view');
+    const { rows: recipients } = await client.query<{ user_id: string }>(`SELECT share.shared_with_user_id AS user_id FROM note_shares share
+      JOIN org_members member ON member.user_id = share.shared_with_user_id AND member.org_id = $2 WHERE share.note_id = $1`, [note.id, a.orgId]);
+    for (const { user_id } of recipients) await share(documentId, 'user', user_id, 'view');
+    await client.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+      VALUES ($1, $2, 'note', $3, 'document', $4)`, [randomUUID(), a.orgId, note.id, documentId]);
+  }
+  return async () => {
+    await client.query(`DELETE FROM note_document_map WHERE org_id = $1 AND source_type = 'note'`, [a.orgId]);
+    await client.query('DELETE FROM document_shares WHERE document_id IN (SELECT id FROM documents WHERE drive_id = ANY($1))', [drives]);
+    await client.query('DELETE FROM documents WHERE drive_id = ANY($1)', [drives]);
+    await client.query('DELETE FROM drive_members WHERE drive_id = ANY($1)', [drives]);
+    await client.query('DELETE FROM drives WHERE id = ANY($1)', [drives]);
+  };
+}
+
 test('notes, folders, wiki and events: member scope equals what the product routes return', { skip }, async () => {
   const { dailyNoteRoutes } = await import('../src/routes/daily-notes.js');
   const { wikiRoutes } = await import('../src/routes/wiki.js');
@@ -389,16 +441,20 @@ test('notes, folders, wiki and events: member scope equals what the product rout
   const calendarPath = `/api/calendar?from=${new Date(Date.now() - day).toISOString()}&to=${new Date(Date.now() + 10 * day).toISOString()}`;
   for (const userId of [world.a.owner, world.a.member, world.a.guest, world.a.other]) {
     const exported = await runExport({ scope: { kind: 'member', member: userId } });
-    // Notes: exactly those GET /api/daily-notes/:id opens, with the same title and body.
+    // Notes that never moved (the fixture's, before any move): exactly those the rule notes had shows, with the
+    // same title and body. Since F15 the product reads notes through their documents (the next test).
     const noteRows = new Map(rows(exported, 'data/notes.jsonl').map((row) => [row.id, row]));
-    for (const noteId of Object.values(world.a.notes)) {
-      const response = await as(userId, `/api/daily-notes/${noteId}`);
-      assert.equal(noteRows.has(noteId), response.status === 200, `note ${noteId} for ${userId}`);
-      if (response.status === 200) {
-        const product = await response.json() as any;
-        assert.equal(noteRows.get(noteId)!.content, product.content);
-        assert.equal(noteRows.get(noteId)!.title, product.title);
-      }
+    const { rows: seen } = await client.query<{ id: string; title: string; content: string }>(`SELECT n.id, n.title, n.content FROM notes n
+      WHERE n.org_id = $1 AND n.is_deleted = false AND (n.user_id = $2
+        OR (n.visibility = 'org' AND EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = n.org_id AND m.user_id = $2 AND m.is_active
+          AND m.role IN ('owner', 'admin', 'member')))
+        OR EXISTS (SELECT 1 FROM note_shares s WHERE s.note_id = n.id AND s.shared_with_user_id = $2)
+        OR (n.visibility = 'space' AND EXISTS (SELECT 1 FROM space_members m WHERE m.space_id = n.visibility_space_id AND m.user_id = $2)))`,
+    [world.a.orgId, userId]);
+    assert.deepEqual([...noteRows.keys()].sort(), seen.map((row) => row.id).sort(), `notes for ${userId}`);
+    for (const row of seen) {
+      assert.equal(noteRows.get(row.id)!.content, row.content);
+      assert.equal(noteRows.get(row.id)!.title, row.title);
     }
     // Folders: the member's own, as GET /folders lists them.
     const folders = await (await as(userId, '/api/daily-notes/folders')).json() as any;
@@ -415,14 +471,13 @@ test('notes, folders, wiki and events: member scope equals what the product rout
     for (const id of exportedEvents) assert.ok(calendarIds.has(id), `event ${id} exported but not on the Calendar for ${userId}`);
     const leftOut = new Set([world.a.events.memberCanceled, world.a.events.otherWriter, world.a.events.githubKeysElsewhere]);
     assert.deepEqual(exportedEvents.sort(), calendar.events.map((row: any) => row.id).filter((id: string) => !leftOut.has(id)).sort(), `events for ${userId}`);
-    // Note shares: exactly what GET /api/daily-notes/:id/shares lists for the member's own notes.
-    const ownNotes = (await client.query<{ id: string }>('SELECT id FROM notes WHERE org_id = $1 AND user_id = $2 AND NOT is_deleted',
-      [world.a.orgId, userId])).rows;
-    const productShares: string[] = [];
-    for (const { id } of ownNotes) {
-      const shares = await (await as(userId, `/api/daily-notes/${id}/shares`)).json() as any;
-      productShares.push(...shares.shares.map((share: any) => `${id}:${share.user_id}`));
-    }
+    // Note shares: those of the member's own live notes, to active members of this workspace, as the old share list
+    // (GET /api/daily-notes/:id/shares) listed them.
+    const { rows: ownShares } = await client.query<{ pair: string }>(`SELECT s.note_id || ':' || s.shared_with_user_id AS pair
+      FROM note_shares s JOIN notes n ON n.id = s.note_id
+      JOIN org_members m ON m.org_id = n.org_id AND m.user_id = s.shared_with_user_id AND m.is_active
+      WHERE n.org_id = $1 AND n.user_id = $2 AND NOT n.is_deleted`, [world.a.orgId, userId]);
+    const productShares = ownShares.map((row) => row.pair);
     assert.deepEqual(rows(exported, 'data/note_shares.jsonl').map((row) => `${row.note_id}:${row.shared_with_user_id}`).sort(),
       productShares.sort(), `note shares for ${userId}`);
     // Spaces named by notes and pages are spaces in the export.
@@ -453,6 +508,93 @@ test('notes, folders, wiki and events: member scope equals what the product rout
   assert.equal(member.recurrence.start.time_zone, 'Europe/London');
   assert.ok(!rows(whole, 'data/wiki_pages.jsonl').some((row) => row.id === world.a.wiki.deleted));
   assert.ok(!rows(whole, 'data/notes.jsonl').some((row) => row.id === world.a.notes.deleted));
+});
+
+test('moved notes are exported only as their documents, which follow GET /api/daily-notes/:id (F15)', { skip }, async () => {
+  const unmap = await mapNotesToDocuments(world.a);
+  try {
+    const { dailyNoteRoutes } = await import('../src/routes/daily-notes.js');
+    const app = productApp().route('/api/daily-notes', dailyNoteRoutes);
+    const noteIds = Object.values(world.a.notes);
+    const documentOf = new Map((await client.query<{ source_id: string; target_id: string }>(
+      `SELECT source_id, target_id FROM note_document_map WHERE org_id = $1 AND source_type = 'note'`, [world.a.orgId])).rows
+      .map((row) => [row.source_id, row.target_id]));
+    // The whole workspace: no old note row or share, every live note as its document.
+    const whole = await runExport({ scope: { kind: 'workspace' } });
+    assert.deepEqual(idsIn(whole, 'data/notes.jsonl', noteIds), []);
+    assert.deepEqual(rows(whole, 'data/note_shares.jsonl').filter((row) => noteIds.includes(row.note_id)), []);
+    assert.deepEqual(idsIn(whole, 'data/documents.jsonl', [...documentOf.values()]).sort(),
+      noteIds.filter((id) => id !== world.a.notes.deleted).map((id) => documentOf.get(id)!).sort());
+    // One person: a note's document is in their export exactly when GET /api/daily-notes/:id opens the note.
+    for (const userId of [world.a.owner, world.a.member, world.a.guest, world.a.other]) {
+      const exported = await runExport({ scope: { kind: 'member', member: userId } });
+      assert.deepEqual(idsIn(exported, 'data/notes.jsonl', noteIds), [], `no old note row for ${userId}`);
+      const documents = new Set(idsIn(exported, 'data/documents.jsonl', [...documentOf.values()]));
+      for (const noteId of noteIds) {
+        const response = await app.request(`/api/daily-notes/${noteId}`, { headers: { 'x-test-user': userId } });
+        assert.equal(documents.has(documentOf.get(noteId)!), response.status === 200, `note ${noteId} for ${userId}`);
+      }
+    }
+    // Positive sets, so an empty export cannot pass.
+    const forMember = idsIn(await runExport({ scope: { kind: 'member', member: world.a.member } }), 'data/documents.jsonl', [...documentOf.values()]);
+    assert.deepEqual(forMember.sort(), [world.a.notes.orgWide, world.a.notes.sharedWithMember, world.a.notes.spacePrivateWithMember]
+      .map((id) => documentOf.get(id)!).sort());
+  } finally {
+    await unmap();
+  }
+});
+
+test('text removed from a moved note through its document reaches no export (F15)', { skip }, async () => {
+  const { a } = world;
+  const phrase = `F15-REMOVED-PHRASE-${randomUUID().slice(0, 8)}`;
+  const kept = `F15-KEPT-PHRASE-${randomUUID().slice(0, 8)}`;
+  const paragraph = (text: string) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+  const noteId = randomUUID();
+  const driveId = randomUUID();
+  const documentId = randomUUID();
+  try {
+    // A note shared with a member, as the move leaves it: the old row untouched, its document in the author's drive.
+    await client.query(`INSERT INTO notes (id, org_id, user_id, title, content, visibility) VALUES ($1, $2, $3, 'F15 moved note', $4, 'private')`,
+      [noteId, a.orgId, a.other, `<p>${kept} ${phrase}</p>`]);
+    await client.query('INSERT INTO note_shares (id, note_id, shared_with_user_id) VALUES ($1, $2, $3)', [randomUUID(), noteId, a.member]);
+    await client.query(`INSERT INTO drives (id, org_id, name, kind, created_by) VALUES ($1, $2, 'Notes', 'private', $3)`, [driveId, a.orgId, a.other]);
+    await client.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'full')`,
+      [randomUUID(), a.orgId, driveId, a.other]);
+    await client.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, content_text, created_by)
+      VALUES ($1, $2, $3, 'F15 moved note', $4::jsonb, $5, $6)`,
+    [documentId, a.orgId, driveId, JSON.stringify(paragraph(`${kept} ${phrase}`)), `${kept} ${phrase}`, a.other]);
+    await client.query(`INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'view')`,
+      [randomUUID(), a.orgId, documentId, a.member]);
+    await client.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+      VALUES ($1, $2, 'note', $3, 'document', $4)`, [randomUUID(), a.orgId, noteId, documentId]);
+
+    // Its author removes the phrase from the document, which stores its content as every write does (the old row
+    // keeps it: nothing writes notes any more).
+    await client.query(`UPDATE documents SET content_json = $2::jsonb, content_text = $3, revision = revision + 1 WHERE id = $1`,
+      [documentId, JSON.stringify(paragraph(kept)), kept]);
+    const { rows: [old] } = await client.query('SELECT content FROM notes WHERE id = $1', [noteId]);
+    assert.ok(String(old.content).includes(phrase), 'the old row still holds it');
+
+    for (const scope of [{ kind: 'workspace' as const }, { kind: 'member' as const, member: a.other }, { kind: 'member' as const, member: a.member }]) {
+      const exported = await runExport({ scope });
+      let keptSeen = false;
+      for (const [path, bytes] of exported.files) {
+        const content = bytes.toString('utf8');
+        assert.ok(!content.includes(phrase), `${path} (${JSON.stringify(scope)}) holds the removed phrase`);
+        keptSeen ||= content.includes(kept);
+      }
+      assert.ok(keptSeen, `the document's current text is exported (${JSON.stringify(scope)})`);
+    }
+  } finally {
+    await client.query('DELETE FROM note_document_map WHERE source_id = $1', [noteId]);
+    await client.query('DELETE FROM document_shares WHERE document_id = $1', [documentId]);
+    await client.query('DELETE FROM document_versions WHERE document_id = $1', [documentId]);
+    await client.query('DELETE FROM documents WHERE id = $1', [documentId]);
+    await client.query('DELETE FROM drive_members WHERE drive_id = $1', [driveId]);
+    await client.query('DELETE FROM drives WHERE id = $1', [driveId]);
+    await client.query('DELETE FROM note_shares WHERE note_id = $1', [noteId]);
+    await client.query('DELETE FROM notes WHERE id = $1', [noteId]);
+  }
 });
 
 test('attachments: member scope equals getVisibleAttachment for every file', { skip }, async () => {
@@ -1519,10 +1661,11 @@ test('deleting per the deletion decisions reaches both the old note and its docu
       VALUES ($1, $2, 'note', $3, 'document', $4, $5::jsonb)`, [randomUUID(), a.orgId, noteId, documentId, JSON.stringify({ parts: [documentId] })]);
 
     const scopes = [{ kind: 'workspace' as const }, { kind: 'member' as const, member: a.member }, { kind: 'member' as const, member: a.other }];
-    // Before: the document, and the old note it came from, are in the export.
+    // Before: the document is in the export. The old note it came from is not: moved content is exported only as
+    // its document (F15's ruling, unmovedLegacySourceSql).
     const whole = await runExport({ scope: { kind: 'workspace' } });
     assert.deepEqual(idsIn(whole, 'data/documents.jsonl', [documentId]), [documentId]);
-    assert.deepEqual(idsIn(whole, 'data/notes.jsonl', [noteId]), [noteId]);
+    assert.deepEqual(idsIn(whole, 'data/notes.jsonl', [noteId]), []);
 
     // A person deletes the document, as Deft deletes anything: to the drive's trash (DELETE /api/documents/:id).
     await softDeleteDocument({ orgId: a.orgId, userId: a.member, documentId });

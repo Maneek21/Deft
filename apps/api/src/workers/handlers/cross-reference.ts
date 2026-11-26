@@ -1,6 +1,8 @@
 import { logId } from '../../lib/log-metadata.js';
-// Handler: cross-reference — scans messages or notes for task identifiers
+// Handler: cross-reference — scans messages or documents for task identifiers
 // (e.g. PROJ-42) and creates cross_references + task comments linking them.
+// Notes are documents now (F15): a queued note job reads the document the
+// note moved to, and records the reference from that document.
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
@@ -9,7 +11,6 @@ import {
   projects,
   taskComments,
   spaces,
-  notes,
   messages,
   spaceMembers,
   orgMembers,
@@ -17,7 +18,9 @@ import {
   users,
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { visibleNoteCondition } from '../../lib/note-visibility.js';
+import { documents, drives } from '@deft/db/documents';
+import { visibleDocumentCondition } from '../../lib/document-access.js';
+import { mappedTargetId } from '../../lib/legacy-notes.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
 import { toPlainText } from '../../lib/plain-text.js';
 
@@ -25,8 +28,8 @@ interface CrossReferenceJobData {
   // Message-sourced (legacy shape)
   messageId?: string;
   spaceId?: string;
-  // Note-sourced (Task 5.1)
-  sourceType?: 'message' | 'note';
+  // Document-sourced; 'note' is an old queued job, read as its document (F15).
+  sourceType?: 'message' | 'note' | 'document';
   sourceId?: string;
   noteId?: string;
   content: string;
@@ -42,10 +45,13 @@ export async function handleCrossReference(job: JobData): Promise<void> {
 
   // Resolve source: explicit sourceType takes priority, else fall back to
   // messageId (legacy enqueue shape from messages.ts).
-  let sourceType: 'message' | 'note' = data.sourceType ?? 'message';
+  const sourceType: 'message' | 'document' = data.sourceType === 'note' || data.sourceType === 'document' ? 'document' : 'message';
   let sourceId: string;
   if (data.sourceType === 'note') {
-    sourceId = data.sourceId || data.noteId || '';
+    const noteId = data.sourceId || data.noteId || '';
+    sourceId = noteId ? (await mappedTargetId(orgId, 'note', noteId)) ?? '' : '';
+  } else if (data.sourceType === 'document') {
+    sourceId = data.sourceId || '';
   } else {
     sourceId = data.sourceId || data.messageId || '';
   }
@@ -85,24 +91,22 @@ export async function handleCrossReference(job: JobData): Promise<void> {
   // This both closes stale-job leaks and proves the actor may still see it.
   let plainContent: string;
   let sourceMayCreateComment = false;
-  if (sourceType === 'note') {
-    const [note] = await db
+  if (sourceType === 'document') {
+    const [document] = await db
       .select({
-        content: notes.content,
-        visibility: notes.visibility,
+        text: documents.content_text,
+        drive_kind: drives.kind,
       })
-      .from(notes)
-      .where(and(
-        eq(notes.id, sourceId),
-        eq(notes.org_id, orgId),
-        eq(notes.is_deleted, false),
-        visibleNoteCondition(userId),
-      ))
+      .from(documents)
+      .innerJoin(drives, and(eq(drives.id, documents.drive_id), eq(drives.org_id, documents.org_id)))
+      .where(and(eq(documents.id, sourceId), visibleDocumentCondition(userId, orgId)))
       .limit(1);
-    if (!note) return;
+    if (!document) return;
 
-    plainContent = toPlainText(note.content);
-    sourceMayCreateComment = note.visibility === 'org';
+    plainContent = document.text;
+    // Only a document in an open drive (every full member can read it) leaves
+    // the org-wide comment, as only an org-visible note did.
+    sourceMayCreateComment = document.drive_kind === 'open';
   } else {
     const [message] = await db
       .select({
@@ -196,11 +200,11 @@ export async function handleCrossReference(job: JobData): Promise<void> {
       if (inserted.length === 0) continue;
 
       // A task comment is visible to every viewer of the target. Only leave a
-      // generic pointer for org-wide sources; never copy private/shared note or
-      // private/DM message text into the target.
+      // generic pointer for org-wide sources; never copy private or shared
+      // document text, or private/DM message text, into the target.
       if (!sourceMayCreateComment) continue;
-      const commentLabel = sourceType === 'note'
-        ? 'Referenced from an org-visible note'
+      const commentLabel = sourceType === 'document'
+        ? 'Referenced from a document in an open drive'
         : 'Referenced from a public-space message';
       await db.insert(taskComments).values({
         org_id: orgId,

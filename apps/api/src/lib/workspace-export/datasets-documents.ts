@@ -24,9 +24,10 @@
 // its documents up to its parent folder or the drive root (deleteFolder,
 // lib/documents.ts), so they are exported there; the ones it held in the
 // trash stay out, as no deleted note is (NOT_INCLUDED). A note, note
-// folder or canvas the notes move turned into a document or folder counts as
-// deleted once that is (legacySourceLiveSql): deleting the document reaches
-// its old row too.
+// folder or canvas the notes move turned into a document or folder is
+// exported only as that (unmovedLegacySourceSql, F15's ruling): its old row
+// is never exported, so deleting the document, or removing text from it,
+// reaches the export too.
 //
 // Planning memory (document-access-planning-db.test.ts): a statement holds at
 // most one copy of each check it needs (the document check at view, at edit
@@ -58,29 +59,17 @@ function liveDocumentSql(orgId: string, ref: SQL): SQL {
     WHERE live_document.id = ${ref} AND live_document.org_id = ${orgId} AND live_document.is_deleted = false AND live_home.is_deleted = false)`;
 }
 
-/** A live folder of `orgId` in a live drive. */
-function liveDocFolderSql(orgId: string, ref: SQL): SQL {
-  return sql`EXISTS (SELECT 1 FROM doc_folders live_folder
-    JOIN drives live_home ON live_home.id = live_folder.drive_id AND live_home.org_id = live_folder.org_id
-    WHERE live_folder.id = ${ref} AND live_folder.org_id = ${orgId} AND live_folder.is_deleted = false AND live_home.is_deleted = false)`;
-}
-
 /**
- * False for a note, note folder or chat canvas (`ref`) that the notes move
- * (F14) turned into a document or folder (note_document_map) once that, or
- * any page a long note was split into (`details.parts`), is deleted or gone.
- * The move leaves the old rows as they were, read-only, so this is how
- * deleting the document reaches its old row in the export too (the consult's
- * change to F17). True for a source that never moved.
+ * True for a note, note folder or chat canvas (`ref`) the notes move (F14)
+ * never turned into a document or folder (no note_document_map row). Moved
+ * content is exported only as its document (DRIVES_DOCUMENTS), never
+ * through the old row the move left read-only: that row is stale, so text
+ * removed from the document, and the document's deletion, would otherwise
+ * reach the export (F15's ruling, which replaces F17's deleted-document check).
  */
-export function legacySourceLiveSql(orgId: string, sourceType: 'note' | 'note_folder' | 'canvas', ref: SQL): SQL {
-  const live = sourceType === 'note_folder' ? liveDocFolderSql : liveDocumentSql;
+export function unmovedLegacySourceSql(orgId: string, sourceType: 'note' | 'note_folder' | 'canvas', ref: SQL): SQL {
   return sql`NOT EXISTS (SELECT 1 FROM note_document_map moved_source
-    WHERE moved_source.org_id = ${orgId} AND moved_source.source_type = ${sourceType} AND moved_source.source_id = ${ref}
-      AND (NOT ${live(orgId, col('moved_source.target_id'))}
-        OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(moved_source.details->'parts') = 'array'
-            THEN moved_source.details->'parts' ELSE '[]'::jsonb END) AS moved_part(id)
-          WHERE NOT ${live(orgId, col('moved_part.id'))})))`;
+    WHERE moved_source.org_id = ${orgId} AND moved_source.source_type = ${sourceType} AND moved_source.source_id = ${ref})`;
 }
 
 /** The ids (`id`) of the documents the export holds; for the member scope, those the person holds at least `min` on. */

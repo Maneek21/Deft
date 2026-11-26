@@ -720,7 +720,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'read_canvas',
     description:
-      'Read the shared canvas (TipTap JSON document) attached to a space. One canvas per space. Returns title + content.',
+      'Read the shared canvas of a space: since canvases became documents, the space\'s canvas document, if the caller can open it. Returns title + content (Markdown) + its /d/ link.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -732,7 +732,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'write_canvas',
     description:
-      'Replace the canvas content for a space. Upserts the canvas row (one per space). Pass the full next content as a TipTap JSON document or HTML string.',
+      'Replace the content of a space\'s canvas document (canvases became documents; a space with no canvas gets none). Pass the full next content as a TipTap JSON document, an HTML string or Markdown.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -767,7 +767,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'search_notes',
     description:
-      'Search the notes the caller may open (their own, notes shared with them, notes in their spaces and, unless they are a guest, org-visible notes) by title/content. Returns up to `limit` matches (default 10).',
+      'Search the notes (documents, since notes became documents) the caller can open, by title/content. Returns up to `limit` matches (default 10), each with its /d/ link.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -785,12 +785,12 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'create_note',
     description:
-      'Create a new note owned by the caller. Defaults to private visibility. Use when the user asks you to "save this as a note" or "jot this down".',
+      'Create a new note, as a document: in the caller\'s My drive by default, shared with a space for "space", in Shared notes for "org". Use when the user asks you to "save this as a note" or "jot this down".',
     input_schema: {
       type: 'object' as const,
       properties: {
         title: { type: 'string', description: 'Note title (required, may be short)' },
-        content: { type: 'string', description: 'HTML body (TipTap-compatible)' },
+        content: { type: 'string', description: 'Body: HTML (TipTap-compatible) or Markdown' },
         visibility: {
           type: 'string',
           enum: ['private', 'org', 'space'],
@@ -807,7 +807,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'read_note',
     description:
-      'Read a single note by id. Returns title, content (HTML), visibility, updated_at. Respects visibility: you can only read notes the caller may open (own, shared with them, in their spaces, or org-visible unless they are a guest).',
+      'Read a single note (a document, or an old note id) by id. Returns title, content (Markdown), updated_at and its /d/ link. Only a document the caller can open.',
     input_schema: {
       type: 'object' as const,
       properties: {

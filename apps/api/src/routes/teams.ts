@@ -7,7 +7,6 @@ import {
   agentActions,
   agentEmployees,
   icsSubscriptions,
-  notes,
   orgMembers,
   projects,
   spaceMembers,
@@ -28,7 +27,9 @@ import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membershi
 import type { AuthUser } from '../middleware/auth.js';
 import { canSeePerson, emailFor, peopleViewer, visiblePersonIds } from '../lib/people-visibility.js';
 import { visibleTaskSql } from '../lib/task-visibility.js';
-import { visibleNoteCondition } from '../lib/note-visibility.js';
+import { documents } from '@deft/db/documents';
+import { visibleDocumentCondition } from '../lib/document-access.js';
+import { mappedTargetId, mappedTargetIds } from '../lib/legacy-notes.js';
 
 export const teamRoutes = new Hono();
 
@@ -190,7 +191,30 @@ async function validateActiveOrgUsers(orgId: string, userIds: string[]) {
   return userIds.every((id) => active.has(id));
 }
 
-/** `viewerId`, when given, must be able to see a note (lib/note-visibility.ts); a hidden note answers like a missing one. */
+/**
+ * The document `id` of `orgId`: live, and, with `viewerId`, one they can
+ * open (lib/document-access.ts). A hidden document answers like a missing one.
+ */
+async function documentInOrg(orgId: string, id: string, viewerId?: string): Promise<boolean> {
+  const [row] = await db.select({ id: documents.id }).from(documents).where(and(
+    eq(documents.id, id),
+    viewerId ? visibleDocumentCondition(viewerId, orgId) : and(eq(documents.org_id, orgId), eq(documents.is_deleted, false)),
+  )).limit(1);
+  return Boolean(row);
+}
+
+/**
+ * The resource a link names, as it is stored: an old note id is the
+ * document it moved to (F15), as the notes move rewrote every note link.
+ * Null for a note that never moved.
+ */
+async function storedResource(orgId: string, type: ResourceType, id: string): Promise<{ type: ResourceType; id: string } | null> {
+  if (type !== 'note') return { type, id };
+  const documentId = await mappedTargetId(orgId, 'note', id);
+  return documentId ? { type: 'document', id: documentId } : null;
+}
+
+/** `viewerId`, when given, must be able to open a document (lib/document-access.ts); a hidden one answers like a missing one. */
 async function resourceBelongsToOrg(orgId: string, type: ResourceType, id: string, viewerId?: string) {
   switch (type) {
     case 'space': {
@@ -214,17 +238,9 @@ async function resourceBelongsToOrg(orgId: string, type: ResourceType, id: strin
       return Boolean(row);
     }
     case 'note': {
-      const [row] = await db
-        .select({ id: notes.id })
-        .from(notes)
-        .where(and(
-          eq(notes.org_id, orgId),
-          eq(notes.id, id),
-          eq(notes.is_deleted, false),
-          viewerId ? visibleNoteCondition(viewerId) : undefined,
-        ))
-        .limit(1);
-      return Boolean(row);
+      // Notes are documents now: the one it moved to (storedResource).
+      const documentId = await mappedTargetId(orgId, 'note', id);
+      return documentId ? documentInOrg(orgId, documentId, viewerId) : false;
     }
     case 'calendar_feed': {
       const [row] = await db
@@ -251,9 +267,7 @@ async function resourceBelongsToOrg(orgId: string, type: ResourceType, id: strin
       return Boolean(row);
     }
     case 'document':
-      // Linking a document needs the document access check, which this route
-      // doesn't run yet, so no document can be linked.
-      return false;
+      return documentInOrg(orgId, id, viewerId);
   }
 }
 
@@ -265,24 +279,31 @@ async function decorateResourcesForUser(
   const spaceIds = resources
     .filter((resource) => resource.resource_type === 'space')
     .map((resource) => resource.resource_id);
-  const noteIds = resources
+  // A linked document the reader can't open (lib/document-access.ts) keeps
+  // its row, like a restricted space, but not its label. An old note link
+  // (one the notes move hasn't rewritten) stands for its document, and a
+  // note that never moved is hidden. A deleted document can be opened by
+  // nobody, so it is hidden too.
+  const documentLinkIds = resources
+    .filter((resource) => (resource.resource_type as string) === 'document')
+    .map((resource) => resource.resource_id);
+  const noteLinkIds = resources
     .filter((resource) => resource.resource_type === 'note')
     .map((resource) => resource.resource_id);
-
-  // A linked note the reader may not see (lib/note-visibility.ts) keeps its
-  // row, like a restricted space, but not its label. A deleted note keeps
-  // its label, as before.
-  const hiddenNoteIds = new Set(noteIds.length === 0 ? [] : (await db
-    .select({ id: notes.id })
-    .from(notes)
-    .where(and(
-      eq(notes.org_id, orgId),
-      inArray(notes.id, Array.from(new Set(noteIds))),
-      sql`NOT ${visibleNoteCondition(userId)}`,
-    ))).map((note) => note.id));
-  const withNotes = (resource: typeof resources[number]) => (resource.resource_type === 'note' && hiddenNoteIds.has(resource.resource_id)
-    ? { ...resource, label: null, access: 'restricted' as const, restricted_reason: 'note_not_visible' }
-    : null);
+  const noteDocuments = await mappedTargetIds(orgId, 'note', noteLinkIds);
+  const linkedDocumentIds = [...new Set([...documentLinkIds, ...noteDocuments.values()])];
+  const openable = new Set(linkedDocumentIds.length === 0 ? [] : (await db
+    .select({ id: documents.id })
+    .from(documents)
+    .where(and(inArray(documents.id, linkedDocumentIds), visibleDocumentCondition(userId, orgId)))).map((row) => row.id));
+  const withNotes = (resource: typeof resources[number]) => {
+    const type = resource.resource_type as string;
+    const documentId = type === 'document' ? resource.resource_id : type === 'note' ? noteDocuments.get(resource.resource_id) : undefined;
+    if (type !== 'document' && type !== 'note') return null;
+    if (documentId && openable.has(documentId)) return null;
+    return { ...resource, label: null, access: 'restricted' as const,
+      restricted_reason: type === 'note' ? 'note_not_visible' : 'document_not_visible' };
+  };
 
   if (spaceIds.length === 0) {
     return resources.map((resource) => withNotes(resource) ?? { ...resource, access: 'visible' as const });
@@ -526,6 +547,7 @@ async function buildTeamDashboard(viewer: AuthUser, teamId: string) {
       linked_spaces: resources.filter((row) => row.resource_type === 'space').length,
       linked_wiki_pages: resources.filter((row) => row.resource_type === 'wiki_page').length,
       linked_notes: resources.filter((row) => row.resource_type === 'note').length,
+      linked_documents: resources.filter((row) => (row.resource_type as string) === 'document').length,
       linked_calendar_feeds: resources.filter((row) => row.resource_type === 'calendar_feed').length,
       linked_agents: resources.filter((row) => row.resource_type === 'agent_employee').length,
       human_members: members.filter((row) => row.kind === 'human' && !row.agent_employee_id).length,
@@ -892,7 +914,8 @@ teamRoutes.post('/:id/resources', async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'Invalid resource payload', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
   }
-  if (!(await resourceBelongsToOrg(user.org_id, parsed.data.resource_type, parsed.data.resource_id, user.id))) {
+  const resource = await storedResource(user.org_id, parsed.data.resource_type, parsed.data.resource_id);
+  if (!resource || !(await resourceBelongsToOrg(user.org_id, resource.type, resource.id, user.id))) {
     return c.json({ error: 'Resource must belong to this organization', code: 'INVALID_RESOURCE' }, 400);
   }
 
@@ -901,8 +924,8 @@ teamRoutes.post('/:id/resources', async (c) => {
     .values({
       org_id: user.org_id,
       team_id: manager.team.id,
-      resource_type: asStoredResourceType(parsed.data.resource_type),
-      resource_id: parsed.data.resource_id,
+      resource_type: asStoredResourceType(resource.type),
+      resource_id: resource.id,
       label: parsed.data.label ?? null,
       created_by: user.id,
     })
@@ -918,8 +941,8 @@ teamRoutes.post('/:id/resources', async (c) => {
       and(
         eq(teamResources.org_id, user.org_id),
         eq(teamResources.team_id, manager.team.id),
-        eq(teamResources.resource_type, asStoredResourceType(parsed.data.resource_type)),
-        eq(teamResources.resource_id, parsed.data.resource_id),
+        eq(teamResources.resource_type, asStoredResourceType(resource.type)),
+        eq(teamResources.resource_id, resource.id),
       ),
     )
     .limit(1);

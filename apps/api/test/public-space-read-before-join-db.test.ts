@@ -205,7 +205,8 @@ const READS: Row[] = [
   { surface: 'clips in the space', method: 'GET', path: `/api/clips/space/${S.pub}`, member: 200, guest: 403 },
   { surface: 'one clip', method: 'GET', path: `/api/clips/${CLIP.pub}`, member: 200, guest: 404 },
   { surface: 'read receipts', method: 'GET', path: `/api/messages/${S.pub}/read-receipts`, member: 200, guest: 403 },
-  { surface: 'canvas', method: 'GET', path: `/api/spaces/${S.pub}/canvas`, member: 200, guest: 403 },
+  // A canvas is its document since the notes move (F15), shared with the chat's members: not reached before joining.
+  { surface: 'canvas', method: 'GET', path: `/api/spaces/${S.pub}/canvas`, member: 404, guest: 403 },
   { surface: 'knowledge of the space', method: 'GET', path: `/api/spaces/${S.pub}/knowledge`, member: 200, guest: 403 },
   { surface: 'wiki graph of the space', method: 'GET', path: `/api/wiki/graph?mode=space&space_id=${S.pub}`, member: 200, guest: 403 },
 ];
@@ -415,7 +416,9 @@ test('an agent user and a system user follow the same shared rule: read a public
   for (const actor of [ids.agentViewer, ids.systemViewer]) {
     for (const row of READS) {
       const response = await call(actor, row.method, row.path, row.body);
-      assert.equal(response.status, 200, `${row.surface}: ${response.status} ${response.text}`);
+      // The canvas is a document shared with the chat's members (F15): a reader of the public space, member or not, gets
+      // the same answer as a member of the workspace who hasn't joined.
+      assert.equal(response.status, row.surface === 'canvas' ? row.member : 200, `${row.surface}: ${response.status} ${response.text}`);
     }
     for (const row of WRITES) {
       const response = await call(actor, row.method, row.path, row.body);
@@ -429,10 +432,11 @@ test('an agent user and a system user follow the same shared rule: read a public
   assert.equal((await call(ids.systemViewer, 'GET', `/api/messages/${S.agentConversation}`)).status, 403);
 });
 
-test('the canvas: a reader sees it but never creates it', async (t) => {
+test('the canvas: reading it never creates one, joined or not (F15)', async (t) => {
   if (unavailable) return t.skip(unavailable);
-  assert.equal((await call(ids.member, 'GET', `/api/spaces/${S.pub}/canvas`)).json.title, `${TOKEN} canvas`);
-  // A public space that has no canvas yet. Opening the canvas creates an empty one, which is a write.
+  // The canvas is its document since the notes move, shared with the chat's members: not reached before joining.
+  assert.equal((await call(ids.member, 'GET', `/api/spaces/${S.pub}/canvas`)).status, 404);
+  // A public space that has no canvas yet.
   const space = randomUUID();
   await client!.query(`INSERT INTO spaces(id,org_id,name,type,created_by) VALUES($1,$2,$3,'public',$4)`, [space, orgId, `no canvas ${space}`, ids.creator]);
   await client!.query('INSERT INTO space_members(id,space_id,user_id) VALUES($1,$2,$3)', [randomUUID(), space, ids.creator]);
@@ -442,9 +446,8 @@ test('the canvas: a reader sees it but never creates it', async (t) => {
   assert.equal(await canvases(), 0, 'reading created nothing');
   assert.equal((await call(ids.guest, 'GET', `/api/spaces/${space}/canvas`)).status, 403);
   const joined = await call(ids.creator, 'GET', `/api/spaces/${space}/canvas`);
-  assert.equal(joined.status, 201, joined.text);
-  assert.equal(await canvases(), 1);
-  assert.equal((await call(ids.member, 'GET', `/api/spaces/${space}/canvas`)).status, 200);
+  assert.equal(joined.status, 404, joined.text);
+  assert.equal(await canvases(), 0, 'a member reading created nothing either');
 });
 
 test('saved messages, task sources/references, wiki citations and native displays use public read authority', async (t) => {

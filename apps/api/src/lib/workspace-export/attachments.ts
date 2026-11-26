@@ -5,7 +5,6 @@ import { sql, type SQL } from 'drizzle-orm';
 import { fileInDocumentSql } from '../document-attachment-access.js';
 import { localStorageKeyPath } from '../file-store.js';
 import { readableSpaceSql } from '../space-visibility.js';
-import { visibleNoteCondition } from '../note-visibility.js';
 import { col } from './datasets.js';
 import { exportableTask } from './datasets-content.js';
 import { exportedDocumentFileSql } from './datasets-documents.js';
@@ -32,8 +31,8 @@ function attachableMessage(ctx: ExportContext, ref: SQL): SQL {
  * else (canReadAttachmentThroughDocument, lib/document-attachment-access.ts;
  * the export also keeps a guest to the files in the document, and the whole
  * workspace to files a live document links: exportedDocumentFileSql);
- * a file attached to nothing belongs to its uploader and to everyone who can
- * read a live note that shows it (note_files, canReadAttachmentThroughNote).
+ * a file attached to nothing belongs to its uploader (note images are
+ * document images since the notes move, F15).
  */
 export function visibleFilesSql(ctx: ExportContext): SQL {
   const userId = memberId(ctx);
@@ -49,10 +48,7 @@ export function visibleFilesSql(ctx: ExportContext): SQL {
         WHEN f.message_id IS NOT NULL THEN CASE WHEN ${attachableMessage(ctx, col('f.message_id'))} THEN 'message' END
         WHEN ${fileInDocumentSql(ctx.orgId, col('f.id'))}
           THEN CASE WHEN ${exportedDocumentFileSql(ctx, col('f.id'))} THEN 'unattached' END
-        WHEN ${userId ? sql`(f.uploaded_by = ${userId} OR EXISTS (SELECT 1 FROM note_files link
-          JOIN notes ON notes.id = link.note_id AND notes.org_id = link.org_id
-          WHERE link.org_id = ${ctx.orgId} AND link.file_id = f.id AND notes.is_deleted = false
-            AND ${visibleNoteCondition(userId)}))` : sql`true`} THEN 'unattached'
+        WHEN ${userId ? sql`f.uploaded_by = ${userId}` : sql`true`} THEN 'unattached'
       END AS attached_as,
       CASE WHEN typed.message_links + typed.task_links > 0 THEN typed.message_id ELSE f.message_id END AS link_message_id,
       CASE WHEN typed.message_links + typed.task_links > 0 THEN typed.task_id ELSE f.task_id END AS link_task_id

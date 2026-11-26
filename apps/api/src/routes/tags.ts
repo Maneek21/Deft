@@ -2,11 +2,13 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, ilike, sql, desc, inArray, getTableColumns } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tags, entityTags, tasks, messages, users, projects, notes, clips, orgMembers, spaces, spaceMembers } from '@deft/db/schema';
+import { tags, entityTags, tasks, messages, users, projects, clips, orgMembers, spaces, spaceMembers } from '@deft/db/schema';
+import { documents } from '@deft/db/documents';
 import type { AuthUser } from '../middleware/auth.js';
 import { readableSpaceSql } from '../lib/space-membership.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
-import { visibleNoteCondition } from '../lib/note-visibility.js';
+import { visibleDocumentCondition } from '../lib/document-access.js';
+import { mappedTargetId, mappedTargetIds } from '../lib/legacy-notes.js';
 import { accessibleClipSql } from './clips.js';
 
 export const tagRoutes = new Hono();
@@ -17,16 +19,35 @@ const createTagSchema = z.object({
 });
 
 const applyTagSchema = z.object({
-  entity_type: z.enum(['message', 'task', 'clip', 'daily_note', 'note']),
+  entity_type: z.enum(['message', 'task', 'clip', 'daily_note', 'note', 'document']),
   entity_id: z.string().min(1),
 });
 
 const removeTagSchema = z.object({
-  entity_type: z.enum(['message', 'task', 'clip', 'daily_note', 'note']),
+  entity_type: z.enum(['message', 'task', 'clip', 'daily_note', 'note', 'document']),
   entity_id: z.string().min(1),
 });
 
 type TagEntityType = z.infer<typeof applyTagSchema>['entity_type'];
+type StoredTagEntityType = (typeof entityTags.$inferSelect)['entity_type'];
+
+/** `entity_tag_type` gained `document` in upgrade SQL only (0.3.0-preview.155): schema.ts's enum is part of the fresh-install fingerprint, as with teams.ts's resource types. */
+function asStoredEntityType(type: TagEntityType): StoredTagEntityType {
+  return type as StoredTagEntityType;
+}
+
+const isNoteType = (type: string) => type === 'note' || type === 'daily_note';
+
+/**
+ * Notes are documents now (F15): a tag named by an old note id is the tag of
+ * the document it moved to (the move rewrote every note tag the same way).
+ * Null for a note that never moved.
+ */
+async function normalizeTagEntity(user: AuthUser, entityType: TagEntityType, entityId: string): Promise<{ type: TagEntityType; id: string } | null> {
+  if (!isNoteType(entityType)) return { type: entityType, id: entityId };
+  const documentId = await mappedTargetId(user.org_id, 'note', entityId);
+  return documentId ? { type: 'document', id: documentId } : null;
+}
 
 const ENTITY_NOT_FOUND = { error: 'Entity not found', code: 'NOT_FOUND' } as const;
 
@@ -46,10 +67,13 @@ async function resolveVisibleTagEntities(
   const messageIds = idsOf('message');
   const noteIds = idsOf('note', 'daily_note');
   const clipIds = idsOf('clip');
+  // An old note id stands for the document it moved to (normalizeTagEntity).
+  const noteDocuments = await mappedTargetIds(user.org_id, 'note', noteIds);
+  const documentIds = [...new Set([...idsOf('document'), ...noteDocuments.values()])];
 
   const taskMap = new Map<string, { title: string; number: number; prefix: string; status: string }>();
   const messageMap = new Map<string, { content: string; user_name: string; space_id: string }>();
-  const noteMap = new Map<string, { title: string }>();
+  const documentMap = new Map<string, { title: string }>();
   const clipSet = new Set<string>();
 
   if (taskIds.length > 0) {
@@ -78,17 +102,18 @@ async function resolveVisibleTagEntities(
     for (const m of msgRows) messageMap.set(m.id, { content: m.content.slice(0, 120), user_name: m.user_name, space_id: m.space_id });
   }
 
-  if (noteIds.length > 0) {
-    const noteRows = await db.select({
-      id: notes.id, title: notes.title,
-    }).from(notes)
-      .where(and(
-        inArray(notes.id, noteIds),
-        eq(notes.org_id, user.org_id),
-        eq(notes.is_deleted, false),
-        visibleNoteCondition(user.id),
-      ));
-    for (const n of noteRows) noteMap.set(n.id, { title: n.title });
+  if (documentIds.length > 0) {
+    const documentRows = await db.select({
+      id: documents.id, title: documents.title,
+    }).from(documents)
+      .where(and(inArray(documents.id, documentIds), visibleDocumentCondition(user.id, user.org_id)));
+    for (const d of documentRows) documentMap.set(d.id, { title: d.title });
+  }
+  // Each old note id resolves to its document's entry.
+  const noteMap = new Map<string, { title: string }>();
+  for (const [noteId, documentId] of noteDocuments) {
+    const document = documentMap.get(documentId);
+    if (document) noteMap.set(noteId, document);
   }
 
   if (clipIds.length > 0) {
@@ -101,11 +126,12 @@ async function resolveVisibleTagEntities(
     if (type === 'task') return taskMap.has(id);
     if (type === 'message') return messageMap.has(id);
     if (type === 'note' || type === 'daily_note') return noteMap.has(id);
+    if (type === 'document') return documentMap.has(id);
     if (type === 'clip') return clipSet.has(id);
     return false;
   };
 
-  return { taskMap, messageMap, noteMap, isVisible };
+  return { taskMap, messageMap, noteMap, documentMap, isVisible };
 }
 
 /**
@@ -113,10 +139,12 @@ async function resolveVisibleTagEntities(
  * per kind of item, each with the same condition `resolveVisibleTagEntities`
  * applies to that kind, so the work is four queries however many items,
  * spaces or clips the workspace has, and no item is loaded into memory.
+ * Documents are counted by their own tags: the notes move rewrote every
+ * note tag to its document, and nothing tags a note any more (F15).
  */
 async function visibleTagCounts(user: AuthUser): Promise<Array<{ tag_id: string; count: number }>> {
   const count = sql<number>`count(*)::int`;
-  const tagged = (...types: TagEntityType[]) => and(eq(entityTags.org_id, user.org_id), inArray(entityTags.entity_type, types));
+  const tagged = (...types: TagEntityType[]) => and(eq(entityTags.org_id, user.org_id), inArray(entityTags.entity_type, types.map(asStoredEntityType)));
   const grouped = await Promise.all([
     db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
       .innerJoin(tasks, and(eq(tasks.id, entityTags.entity_id), eq(tasks.org_id, user.org_id)))
@@ -132,8 +160,8 @@ async function visibleTagCounts(user: AuthUser): Promise<Array<{ tag_id: string;
         readableSpaceSql(user.id, messages.space_id, messages.org_id)))
       .groupBy(entityTags.tag_id),
     db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
-      .innerJoin(notes, and(eq(notes.id, entityTags.entity_id), eq(notes.org_id, user.org_id)))
-      .where(and(tagged('note', 'daily_note'), eq(notes.is_deleted, false), visibleNoteCondition(user.id)))
+      .innerJoin(documents, and(eq(documents.id, entityTags.entity_id), eq(documents.org_id, user.org_id)))
+      .where(and(tagged('document'), visibleDocumentCondition(user.id, user.org_id)))
       .groupBy(entityTags.tag_id),
     db.select({ tag_id: entityTags.tag_id, count }).from(entityTags)
       .innerJoin(clips, eq(clips.id, entityTags.entity_id))
@@ -256,7 +284,8 @@ tagRoutes.post('/:id/apply', async (c) => {
     return c.json({ error: 'Tag not found', code: 'NOT_FOUND' }, 404);
   }
 
-  if (!await canSeeTagEntity(parsed.data.entity_type, parsed.data.entity_id, user)) {
+  const entity = await normalizeTagEntity(user, parsed.data.entity_type, parsed.data.entity_id);
+  if (!entity || !await canSeeTagEntity(entity.type, entity.id, user)) {
     return c.json(ENTITY_NOT_FOUND, 404);
   }
 
@@ -265,11 +294,11 @@ tagRoutes.post('/:id/apply', async (c) => {
     const [et] = await db.insert(entityTags).values({
       org_id: user.org_id,
       tag_id: tagId,
-      entity_type: parsed.data.entity_type,
-      entity_id: parsed.data.entity_id,
+      entity_type: asStoredEntityType(entity.type),
+      entity_id: entity.id,
     }).onConflictDoNothing().returning();
 
-    return c.json(et || { tag_id: tagId, entity_type: parsed.data.entity_type, entity_id: parsed.data.entity_id });
+    return c.json(et || { tag_id: tagId, entity_type: entity.type, entity_id: entity.id });
   } catch {
     return c.json({ tag_id: tagId, applied: true });
   }
@@ -286,15 +315,16 @@ tagRoutes.delete('/:id/apply', async (c) => {
     return c.json({ error: 'Invalid request', code: 'VALIDATION_ERROR' }, 400);
   }
 
-  if (!await canSeeTagEntity(parsed.data.entity_type, parsed.data.entity_id, user)) {
+  const entity = await normalizeTagEntity(user, parsed.data.entity_type, parsed.data.entity_id);
+  if (!entity || !await canSeeTagEntity(entity.type, entity.id, user)) {
     return c.json(ENTITY_NOT_FOUND, 404);
   }
 
   await db.delete(entityTags)
     .where(and(
       eq(entityTags.tag_id, tagId),
-      eq(entityTags.entity_type, parsed.data.entity_type),
-      eq(entityTags.entity_id, parsed.data.entity_id),
+      eq(entityTags.entity_type, asStoredEntityType(entity.type)),
+      eq(entityTags.entity_id, entity.id),
       eq(entityTags.org_id, user.org_id),
     ));
 
@@ -318,6 +348,7 @@ tagRoutes.get('/:id/entities', async (c) => {
   const taskMap = new Map<string, { title: string; number: number; prefix: string; status: string }>();
   const messageMap = new Map<string, { content: string; user_name: string; space_id: string }>();
   const noteMap = new Map<string, { title: string }>();
+  const documentMap = new Map<string, { title: string }>();
   for (let scanned = 0; visibleRows.length < LIST_LIMIT && scanned < MAX_SCAN; scanned += PAGE_SIZE) {
     const after = cursor.current;
     const page = await db.select({ ...getTableColumns(entityTags), cursor_ts: sql<string>`${entityTags.created_at}::text` }).from(entityTags)
@@ -336,6 +367,7 @@ tagRoutes.get('/:id/entities', async (c) => {
     for (const [id, v] of resolved.taskMap) taskMap.set(id, v);
     for (const [id, v] of resolved.messageMap) messageMap.set(id, v);
     for (const [id, v] of resolved.noteMap) noteMap.set(id, v);
+    for (const [id, v] of resolved.documentMap) documentMap.set(id, v);
     visibleRows.push(...page.filter(row => resolved.isVisible(row.entity_type, row.entity_id)));
     if (page.length < PAGE_SIZE) break;
   }
@@ -355,6 +387,10 @@ tagRoutes.get('/:id/entities', async (c) => {
       const n = noteMap.get(row.entity_id);
       return { ...base, title: n?.title || 'Untitled note' };
     }
+    if ((row.entity_type as string) === 'document') {
+      const d = documentMap.get(row.entity_id);
+      return { ...base, title: d?.title || 'Untitled', url: `/d/${row.entity_id}` };
+    }
     return { ...base, title: `${row.entity_type}: ${row.entity_id.slice(0, 8)}` };
   });
 
@@ -368,7 +404,8 @@ tagRoutes.get('/entity/:type/:entityId', async (c) => {
   const entityId = c.req.param('entityId');
 
   const parsedType = applyTagSchema.shape.entity_type.safeParse(entityType);
-  if (!parsedType.success || !await canSeeTagEntity(parsedType.data, entityId, user, 'read')) {
+  const entity = parsedType.success ? await normalizeTagEntity(user, parsedType.data, entityId) : null;
+  if (!entity || !await canSeeTagEntity(entity.type, entity.id, user, 'read')) {
     return c.json([]);
   }
 
@@ -379,8 +416,8 @@ tagRoutes.get('/entity/:type/:entityId', async (c) => {
   }).from(entityTags)
     .innerJoin(tags, eq(entityTags.tag_id, tags.id))
     .where(and(
-      eq(entityTags.entity_type, entityType as any),
-      eq(entityTags.entity_id, entityId),
+      eq(entityTags.entity_type, asStoredEntityType(entity.type)),
+      eq(entityTags.entity_id, entity.id),
       eq(entityTags.org_id, user.org_id),
     ));
 

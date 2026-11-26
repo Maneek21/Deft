@@ -117,35 +117,25 @@ before(async () => {
     );
     seededIds.push({ table: 'wiki_pages', id: decisionPageId });
 
-    // Seed note for the test user containing SEARCH_TERM
-    noteId = `srkg-note-${Date.now()}`;
-    await c.query(
-      `INSERT INTO notes (id, org_id, user_id, title, content, is_deleted, is_pinned, is_template, version, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, false, false, false, 1, NOW(), NOW())`,
-      [
-        noteId,
-        ORG_ID,
-        USER_ID,
-        `${SEARCH_TERM} setup notes`,
-        `Personal notes on ${SEARCH_TERM} setup and configuration steps.`,
-      ],
-    );
-    seededIds.push({ table: 'notes', id: noteId });
-
-    // Seed note for OTHER user — must NOT appear in our user's privateNotes
-    otherUserNoteId = `srkg-other-note-${Date.now()}`;
-    await c.query(
-      `INSERT INTO notes (id, org_id, user_id, title, content, is_deleted, is_pinned, is_template, version, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, false, false, false, 1, NOW(), NOW())`,
-      [
-        otherUserNoteId,
-        ORG_ID,
-        OTHER_USER_ID,
-        `Other ${SEARCH_TERM} notes`,
-        `Other user secret notes about ${SEARCH_TERM}.`,
-      ],
-    );
-    seededIds.push({ table: 'notes', id: otherUserNoteId });
+    // Notes are documents (F15): the notes group reads the documents the caller can open. One in each user's My drive.
+    const myDocument = async (owner: string, title: string, text: string) => {
+      const drive = `srkg-drive-${owner}`;
+      await c.query(`INSERT INTO drives (id, org_id, name, kind, owner_user_id, created_by) VALUES ($1, $2, 'My drive', 'personal', $3, $3)`,
+        [drive, ORG_ID, owner]);
+      seededIds.push({ table: 'drives', id: drive });
+      const member = `srkg-drive-member-${owner}`;
+      await c.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'full')`,
+        [member, ORG_ID, drive, owner]);
+      seededIds.push({ table: 'drive_members', id: member });
+      const id = `srkg-document-${owner}`;
+      await c.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, content_text, created_by)
+        VALUES ($1, $2, $3, $4, '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb, $5, $6)`, [id, ORG_ID, drive, title, text, owner]);
+      seededIds.push({ table: 'documents', id });
+      return id;
+    };
+    noteId = await myDocument(USER_ID, `${SEARCH_TERM} setup notes`, `Personal notes on ${SEARCH_TERM} setup and configuration steps.`);
+    // The OTHER user's — must NOT appear in our user's privateNotes
+    otherUserNoteId = await myDocument(OTHER_USER_ID, `Other ${SEARCH_TERM} notes`, `Other user secret notes about ${SEARCH_TERM}.`);
   });
 });
 

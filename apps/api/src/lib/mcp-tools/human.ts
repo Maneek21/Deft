@@ -16,8 +16,6 @@ import {
   attentionItems,
   events,
   messages,
-  notes,
-  noteVersions,
   notifications,
   oauthAuditEvents,
   orgMembers,
@@ -45,8 +43,11 @@ import { getTeamContext, getTeamProfile, listTeamSummaries } from './team-contex
 import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
-import { visibleNoteCondition } from '../note-visibility.js';
-import { syncNoteFiles } from '../note-file-claims.js';
+import { docFavorites } from '@deft/db/documents';
+import {
+  createNoteDocument, documentIdForNoteRef, noteContentJson, noteToolError, readNoteDocument, replaceDocumentContent, searchNoteDocuments,
+} from '../legacy-notes.js';
+import { DocumentRefusal, softDeleteDocument, updateDocument } from '../documents.js';
 import { canReadSpace, readableSpaceSql } from '../space-membership.js';
 import { Context } from 'hono';
 import { currentActionReviewerSql } from '../agent-action-review-gate.js';
@@ -3317,31 +3318,38 @@ export async function humanWorkspaceCapabilities(_args: Record<string, never>, c
   });
 }
 
+// The note tools read and write documents since the notes move (F15,
+// lib/legacy-notes.ts), with the same names and arguments. A note id may be a
+// document id or an old note id (mapped to its document). Every read and
+// write is the connected person's own access to the document
+// (lib/document-access.ts); content is read as Markdown, and written from
+// HTML (what Notes stored) or Markdown. Links are `/d/<documentId>`.
+
+/** A favourite (what a pinned note became), set or cleared for the connected person. */
+async function setNoteFavorite(ctx: HumanToolContext, documentId: string, pinned: boolean): Promise<void> {
+  if (pinned) {
+    await db.insert(docFavorites).values({ org_id: ctx.org_id, user_id: ctx.user_id, target_type: 'document', target_id: documentId })
+      .onConflictDoNothing();
+  } else {
+    await db.delete(docFavorites).where(and(eq(docFavorites.org_id, ctx.org_id), eq(docFavorites.user_id, ctx.user_id),
+      eq(docFavorites.target_type, 'document'), eq(docFavorites.target_id, documentId)));
+  }
+}
+
 export async function humanNoteList(args: { query?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
   const limit = Math.min(Math.max(1, args.limit ?? 50), 100);
-  const query = args.query?.trim();
-  const rows = await db.select({
-    id: notes.id, title: notes.title, content: notes.content, icon: notes.icon,
-    is_pinned: notes.is_pinned, visibility: notes.visibility,
-    visibility_space_id: notes.visibility_space_id, user_id: notes.user_id,
-    version: notes.version, created_at: notes.created_at, updated_at: notes.updated_at,
-  }).from(notes).where(and(
-    eq(notes.org_id, ctx.org_id), eq(notes.is_deleted, false), eq(notes.is_template, false),
-    visibleNoteCondition(ctx.user_id), query ? sql`(${notes.title} ILIKE ${`%${query}%`} OR ${notes.content} ILIKE ${`%${query}%`})` : sql`true`,
-  )).orderBy(desc(notes.is_pinned), desc(notes.updated_at)).limit(limit);
-  return textResult(rows.map((row) => ({ ...row, url: `/notes?note=${row.id}` })));
+  const rows = await searchNoteDocuments({ orgId: ctx.org_id, userId: ctx.user_id, query: args.query, scope: 'all', limit, templates: false });
+  return textResult(rows.map((row) => ({ ...row, document_id: row.id })));
 }
 
 export async function humanNoteGet(args: { note_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
   if (!args.note_id) return errorResult('note_id is required');
-  const [row] = await db.select().from(notes).where(and(
-    eq(notes.id, args.note_id), eq(notes.org_id, ctx.org_id), eq(notes.is_deleted, false), visibleNoteCondition(ctx.user_id),
-  )).limit(1);
-  return row ? textResult({ ...row, url: `/notes?note=${row.id}` }) : errorResult('Note not found or not visible');
+  const row = await readNoteDocument(ctx.org_id, ctx.user_id, args.note_id);
+  return row ? textResult({ ...row, document_id: row.id }) : errorResult('Note not found or not visible');
 }
 
 function validNoteVisibility(value: unknown): value is 'private' | 'org' | 'space' {
@@ -3362,19 +3370,25 @@ export async function humanNoteCreate(args: Record<string, unknown>, ctx: HumanT
     const spaceId = typeof args.visibility_space_id === 'string' ? args.visibility_space_id : null;
     const spaceError = await validateNoteSpace(ctx, visibility, spaceId);
     if (spaceError) return spaceError;
-    const [created] = await db.transaction(async (tx) => {
-      const rows = await tx.insert(notes).values({
-      org_id: ctx.org_id, user_id: ctx.user_id,
-      title: typeof args.title === 'string' ? args.title.trim() : '',
-      content: typeof args.content === 'string' ? args.content : '',
-      icon: typeof args.icon === 'string' ? args.icon : null,
-      is_pinned: args.is_pinned === true,
-      visibility, visibility_space_id: visibility === 'space' ? spaceId : null,
-      }).returning();
-      await syncNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, rows[0]!);
-      return rows;
-    });
-    return textResult({ created: true, note: created, url: `/notes?note=${created!.id}` });
+    let documentId: string;
+    try {
+      const document = await createNoteDocument({
+        orgId: ctx.org_id, userId: ctx.user_id,
+        title: typeof args.title === 'string' ? args.title.trim() : '',
+        json: noteContentJson(typeof args.content === 'string' ? args.content : ''),
+        icon: typeof args.icon === 'string' ? args.icon : null,
+        visibility, spaceId,
+      });
+      documentId = document.id;
+    } catch (error) {
+      const refusal = noteToolError(error);
+      if (refusal) return errorResult(refusal);
+      throw error;
+    }
+    if (args.is_pinned === true) await setNoteFavorite(ctx, documentId, true);
+    const note = await readNoteDocument(ctx.org_id, ctx.user_id, documentId);
+    return textResult({ created: true, note: note ? { ...note, document_id: documentId } : { id: documentId, document_id: documentId },
+      document_id: documentId, url: `/d/${documentId}` });
   });
 }
 
@@ -3383,29 +3397,33 @@ export async function humanNoteUpdate(args: Record<string, unknown>, ctx: HumanT
   if (scopeError) return scopeError;
   if (typeof args.note_id !== 'string') return errorResult('note_id is required');
   return withIdempotency('note_update', args, ctx, async () => {
-    const [current] = await db.select().from(notes).where(and(
-      eq(notes.id, args.note_id as string), eq(notes.org_id, ctx.org_id), eq(notes.user_id, ctx.user_id), eq(notes.is_deleted, false),
-    )).limit(1);
-    if (!current) return errorResult('Note not found or not owned by the connected user');
-    const visibility = validNoteVisibility(args.visibility) ? args.visibility : current.visibility;
-    const spaceId = args.visibility_space_id === null ? null : typeof args.visibility_space_id === 'string' ? args.visibility_space_id : current.visibility_space_id;
-    const spaceError = await validateNoteSpace(ctx, visibility, spaceId);
-    if (spaceError) return spaceError;
-    const updates: Record<string, unknown> = {};
-    for (const field of ['title', 'content', 'icon', 'is_pinned'] as const) if (args[field] !== undefined) updates[field] = args[field];
-    if (args.visibility !== undefined) updates.visibility = visibility;
-    if (args.visibility !== undefined || args.visibility_space_id !== undefined) updates.visibility_space_id = visibility === 'space' ? spaceId : null;
-    if (args.content !== undefined && args.content !== current.content) {
-      await db.insert(noteVersions).values({ note_id: current.id, version: current.version, title: current.title, content: current.content, edited_by: ctx.user_id }).onConflictDoNothing();
-      updates.version = current.version + 1;
+    if (args.visibility !== undefined || args.visibility_space_id !== undefined) {
+      return errorResult('Notes are documents now: change who can open one by sharing it, not with visibility');
     }
-    if (Object.keys(updates).length === 0) return textResult({ updated: false, note: current, url: `/notes?note=${current.id}` });
-    const updated = await db.transaction(async (tx) => {
-      const [saved] = await tx.update(notes).set(updates).where(and(eq(notes.id, current.id), eq(notes.version, current.version))).returning();
-      if (saved && args.content !== undefined) await syncNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, saved);
-      return saved;
-    });
-    return updated ? textResult({ updated: true, note: updated, url: `/notes?note=${updated.id}` }) : errorResult('Note changed in another session; read it again before retrying');
+    const documentId = await documentIdForNoteRef(ctx.org_id, args.note_id as string);
+    const current = await readNoteDocument(ctx.org_id, ctx.user_id, documentId);
+    if (!current) return errorResult('Note not found or not visible');
+    const changes = ['title', 'content', 'icon', 'is_pinned'].filter((field) => args[field] !== undefined);
+    if (changes.length === 0) return textResult({ updated: false, note: { ...current, document_id: current.id }, url: current.url });
+    try {
+      if (typeof args.content === 'string') {
+        await replaceDocumentContent({ orgId: ctx.org_id, documentId, actor: { kind: 'user', userId: ctx.user_id }, json: noteContentJson(args.content) });
+      }
+      if (typeof args.title === 'string' || args.icon !== undefined) {
+        await updateDocument({ orgId: ctx.org_id, userId: ctx.user_id, documentId, patch: {
+          ...(typeof args.title === 'string' ? { title: args.title.trim() } : {}),
+          ...(args.icon === null || typeof args.icon === 'string' ? { icon: args.icon } : {}),
+        } });
+      }
+    } catch (error) {
+      const refusal = noteToolError(error);
+      if (refusal) return errorResult(refusal);
+      throw error;
+    }
+    if (typeof args.is_pinned === 'boolean') await setNoteFavorite(ctx, documentId, args.is_pinned);
+    const updated = await readNoteDocument(ctx.org_id, ctx.user_id, documentId);
+    return updated ? textResult({ updated: true, note: { ...updated, document_id: updated.id }, url: updated.url })
+      : errorResult('Note not found or not visible');
   });
 }
 
@@ -3414,10 +3432,16 @@ export async function humanNoteArchive(args: Record<string, unknown>, ctx: Human
   if (scopeError) return scopeError;
   if (typeof args.note_id !== 'string') return errorResult('note_id is required');
   return withIdempotency('note_archive', args, ctx, async () => {
-    const [updated] = await db.update(notes).set({ is_deleted: true }).where(and(
-      eq(notes.id, args.note_id as string), eq(notes.org_id, ctx.org_id), eq(notes.user_id, ctx.user_id), eq(notes.is_deleted, false),
-    )).returning({ id: notes.id, title: notes.title });
-    return updated ? textResult({ archived: true, note: updated }) : errorResult('Note not found or not owned by the connected user');
+    const documentId = await documentIdForNoteRef(ctx.org_id, args.note_id as string);
+    const current = await readNoteDocument(ctx.org_id, ctx.user_id, documentId);
+    if (!current) return errorResult('Note not found or not visible');
+    try {
+      await softDeleteDocument({ orgId: ctx.org_id, userId: ctx.user_id, documentId });
+    } catch (error) {
+      if (error instanceof DocumentRefusal) return errorResult(error.status === 404 ? 'Note not found or not visible' : error.message);
+      throw error;
+    }
+    return textResult({ archived: true, note: { id: documentId, document_id: documentId, title: current.title } });
   });
 }
 
@@ -4129,11 +4153,11 @@ function operationalHumanSchemas(): Array<Record<string, unknown>> {
         source: { type: 'object', properties: { kind: { type: 'string', enum: ['message', 'task', 'task_comment', 'wiki_page'] }, id: { type: 'string' } }, required: ['kind', 'id'], additionalProperties: false },
         content_hash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
       }, required: ['source', 'content_hash'], additionalProperties: false } },
-    read('note_list', 'List Deft Notes', 'List private notes owned by the connected user plus org/space notes they can see.', { query: { type: 'string' }, limit }),
-    read('note_get', 'Get Deft Note', 'Read one visible note including its full TipTap HTML content.', { note_id: id('Note id') }, ['note_id']),
+    read('note_list', 'List Deft Notes', 'List the notes (documents, since notes became documents) the connected user can open, with their /d/ links.', { query: { type: 'string' }, limit }),
+    read('note_get', 'Get Deft Note', 'Read one note (a document id, or an old note id) the connected user can open, its content as Markdown.', { note_id: id('Note id') }, ['note_id']),
     write('note_create', 'Create Deft Note', 'Create a private, org, or space-visible note as the connected user.', { title: { type: 'string' }, content: { type: 'string' }, icon: { type: 'string' }, is_pinned: { type: 'boolean' }, visibility: { type: 'string', enum: ['private', 'org', 'space'] }, visibility_space_id: id('Required for space visibility') }),
-    write('note_update', 'Update Deft Note', 'Update a note owned by the connected user with optimistic version protection.', { note_id: id('Note id'), title: { type: 'string' }, content: { type: 'string' }, icon: { type: ['string', 'null'] }, is_pinned: { type: 'boolean' }, visibility: { type: 'string', enum: ['private', 'org', 'space'] }, visibility_space_id: { type: ['string', 'null'] } }, ['note_id']),
-    write('note_archive', 'Archive Deft Note', 'Soft-delete a note owned by the connected user.', { note_id: id('Note id') }, ['note_id']),
+    write('note_update', 'Update Deft Note', 'Update the title, content (HTML or Markdown), icon or pin of a note the connected user can edit.', { note_id: id('Note id'), title: { type: 'string' }, content: { type: 'string' }, icon: { type: ['string', 'null'] }, is_pinned: { type: 'boolean' }, visibility: { type: 'string', enum: ['private', 'org', 'space'] }, visibility_space_id: { type: ['string', 'null'] } }, ['note_id']),
+    write('note_archive', 'Archive Deft Note', 'Move a note the connected user can edit to the trash of its drive.', { note_id: id('Note id') }, ['note_id']),
     read('calendar_list', 'List Deft Calendar Events', "List the connected user's native and imported calendar events in a time range.", { from: iso('ISO range start'), until: iso('ISO range end'), limit }),
     read('calendar_get', 'Get Deft Calendar Event', 'Read one visible native or imported calendar event.', { event_id: id('Event id') }, ['event_id']),
     read('calendar_availability', 'Check Deft Calendar Availability', 'Return busy windows from native and imported calendar context.', { from: iso('ISO range start'), until: iso('ISO range end') }),

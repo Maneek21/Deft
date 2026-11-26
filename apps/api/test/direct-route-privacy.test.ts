@@ -171,6 +171,25 @@ before(async () => {
       [privateSpaceNoteId, ORG_ID, OTHER_USER_ID, `${SECRET_TERM} private space note`, `${SECRET_TERM} private space note content`, privateSpaceId],
     );
     ids.push({ table: 'notes', id: privateSpaceNoteId });
+    // The notes move (F14): the space note is a document in its author's My drive (here keeping the note's id),
+    // shared with the space; readers read it (F15).
+    const noteDrive = `drp-note-drive-${stamp}`;
+    await c.query(`INSERT INTO drives (id, org_id, name, kind, owner_user_id, created_by) VALUES ($1, $2, 'My drive', 'personal', $3, $3)`,
+      [noteDrive, ORG_ID, OTHER_USER_ID]);
+    ids.push({ table: 'drives', id: noteDrive });
+    await c.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'full')`,
+      [`${noteDrive}-owner`, ORG_ID, noteDrive, OTHER_USER_ID]);
+    ids.push({ table: 'drive_members', id: `${noteDrive}-owner` });
+    await c.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, content_text, created_by)
+      VALUES ($1, $2, $3, $4, '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb, $5, $6)`,
+    [privateSpaceNoteId, ORG_ID, noteDrive, `${SECRET_TERM} private space note`, `${SECRET_TERM} private space note content`, OTHER_USER_ID]);
+    ids.push({ table: 'documents', id: privateSpaceNoteId });
+    await c.query(`INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'space', $4, 'view')`,
+      [`${noteDrive}-share`, ORG_ID, privateSpaceNoteId, privateSpaceId]);
+    ids.push({ table: 'document_shares', id: `${noteDrive}-share` });
+    await c.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+      VALUES ($1, $2, 'note', $3, 'document', $3)`, [`${noteDrive}-map`, ORG_ID, privateSpaceNoteId]);
+    ids.push({ table: 'note_document_map', id: `${noteDrive}-map` });
 
     privateFileId = `drp-file-${stamp}`;
     privateStorageKey = `drp-file-${stamp}.txt`;
@@ -242,7 +261,7 @@ before(async () => {
     await c.query(
       `INSERT INTO cross_references
          (id, org_id, source_type, source_id, target_type, target_id, context, created_by, created_at, updated_at)
-       VALUES ($1, $2, 'note', $3, 'task', $4, $5, $6, NOW(), NOW())`,
+       VALUES ($1, $2, 'document', $3, 'task', $4, $5, $6, NOW(), NOW())`,
       [privateNoteRefId, ORG_ID, privateSpaceNoteId, visibleTaskId, `${SECRET_TERM} stored note excerpt`, OTHER_USER_ID],
     );
     ids.push({ table: 'cross_references', id: privateNoteRefId });
@@ -510,7 +529,7 @@ test('space-visible notes require membership and agent plans are owner-scoped', 
       visibility_space_id: privateSpaceId,
     }),
   });
-  assert.equal(createSpaceNote.status, 403);
+  assert.equal(createSpaceNote.status, 410, 'notes are read only since F15');
 
   const plans = await routeResponse('agent-plans', `/api/agent-plans?status=draft`);
   assert.equal(plans.status, 200);

@@ -81,8 +81,16 @@ before(async () => {
     [tasks.open, orgId, projectId, ids.insider]);
   await q(`INSERT INTO tasks(id,org_id,project_id,number,title,status,created_by,metadata) VALUES($1,$2,$3,2,'CANARY-TASK','todo',$4,'{"visibility":"restricted"}')`,
     [tasks.restricted, orgId, projectId, ids.insider]);
-  await q(`INSERT INTO notes(id,org_id,user_id,title,visibility) VALUES($1,$2,$3,'Org note','org')`, [notes.org, orgId, ids.insider]);
-  await q(`INSERT INTO notes(id,org_id,user_id,title,visibility) VALUES($1,$2,$3,'CANARY-NOTE','private')`, [notes.private, orgId, ids.insider]);
+  // Notes are documents (F15): a workspace note in an open drive everyone may view, a private one in its author's My drive.
+  const [openDrive, myDrive] = [randomUUID(), randomUUID()];
+  await q(`INSERT INTO drives(id,org_id,name,kind,default_role,created_by) VALUES($1,$2,'Shared notes','open','view',$3)`, [openDrive, orgId, ids.insider]);
+  await q(`INSERT INTO drives(id,org_id,name,kind,owner_user_id,created_by) VALUES($1,$2,'My drive','personal',$3,$3)`, [myDrive, orgId, ids.insider]);
+  await q(`INSERT INTO drive_members(id,org_id,drive_id,principal_type,principal_id,role) VALUES($1,$2,$3,'user',$4,'full')`,
+    [randomUUID(), orgId, myDrive, ids.insider]);
+  for (const [id, drive, title] of [[notes.org, openDrive, 'Org note'], [notes.private, myDrive, 'CANARY-NOTE']] as const) {
+    await q(`INSERT INTO documents(id,org_id,drive_id,title,content_json,created_by) VALUES($1,$2,$3,$4,'{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb,$5)`,
+      [id, orgId, drive, title, ids.insider]);
+  }
 
   // Three clips filed under the shared space. Only the first can be opened by everyone in it.
   const clip = (id: string, messageId: string, contextType: 'space' | 'thread', contextId: string, transcript: string) => q(
@@ -99,8 +107,8 @@ before(async () => {
   const apply = (tag: string, type: string, entity: string) => q(
     'INSERT INTO entity_tags(id,org_id,tag_id,entity_type,entity_id) VALUES($1,$2,$3,$4,$5)', [randomUUID(), orgId, tag, type, entity]);
   for (const [type, entity] of [
-    ['message', M.shared], ['task', tasks.open], ['note', notes.org], ['clip', clips.ok], // visible to everyone in the shared space
-    ['message', M.secret], ['message', M.deleted], ['task', tasks.restricted], ['note', notes.private], // not visible to the outsider
+    ['message', M.shared], ['task', tasks.open], ['document', notes.org], ['clip', clips.ok], // visible to everyone in the shared space
+    ['message', M.secret], ['message', M.deleted], ['task', tasks.restricted], ['document', notes.private], // not visible to the outsider
     ['clip', clips.secretThread], ['clip', clips.deletedMessage],
   ] as const) await apply(tags.main, type, entity);
   await apply(tags.secretOnly, 'message', M.secret);
@@ -115,7 +123,7 @@ before(async () => {
 
 after(async () => {
   if (seeded && client) {
-    for (const table of ['entity_tags', 'tags', 'clips', 'notes', 'task_activity', 'tasks', 'projects']) {
+    for (const table of ['entity_tags', 'tags', 'clips', 'documents', 'drive_members', 'drives', 'task_activity', 'tasks', 'projects']) {
       await client.query(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
     }
     await client.query('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
@@ -149,8 +157,8 @@ test('tag counts count only the items the caller can see', async (t) => {
   assert.deepEqual(await countsFor(ids.outsider), { 'for-admin': 0, 'for-owner': 0, main: 4, 'secret-only': 0 });
   // Owners and admins get no wider view than their own access: the count matches the list they are shown.
   assert.deepEqual(await countsFor(ids.admin), { 'for-admin': 0, 'for-owner': 0, main: 2, 'secret-only': 0 });
-  // A guest in no space sees nothing tagged: the org note is not theirs, shared with them or in
-  // their spaces (lib/note-visibility.ts), and the open task is in a project the guest does not
+  // A guest in no space sees nothing tagged: the org note's document is in an open drive, which
+  // admits no guest (lib/document-access.ts), and the open task is in a project the guest does not
   // belong to (lib/task-visibility.ts).
   assert.deepEqual(await countsFor(ids.guest), { 'for-admin': 0, 'for-owner': 0, main: 0, 'secret-only': 0 });
 

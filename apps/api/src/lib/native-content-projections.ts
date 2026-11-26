@@ -1,8 +1,10 @@
 import { and, eq, isNull, or } from 'drizzle-orm';
-import { messages, notes, spaces, wikiPages } from '@deft/db/schema';
+import { messages, spaces, wikiPages } from '@deft/db/schema';
+import { documents } from '@deft/db/documents';
 import { readableSpaceSql } from './space-membership.js';
 import { db } from './db.js';
-import { visibleNoteCondition } from './note-visibility.js';
+import { visibleDocumentCondition } from './document-access.js';
+import { documentIdForNoteRef } from './legacy-notes.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
 import type { NativeResourceDisplay, NativeResourceSubject } from './native-resource-types.js';
 
@@ -58,26 +60,26 @@ export async function resolveNativeWikiDisplay(
   return { label: row.title, revision: String(row.version), updated_at: isoDate(row.updated_at) };
 }
 
-/** Preserves explicit note shares and requires any attached space to remain in this org. */
-export async function resolveNativeNoteDisplay(
-  subject: NativeResourceSubject,
-  id: string,
+/**
+ * A document's title, revision and time, for someone who can open it (the
+ * one access check, lib/document-access.ts: shares included). `documentId`
+ * may be an old note id (a `notes` reference): it is mapped to the document
+ * the note moved to first (F15). No content crosses this boundary.
+ */
+export async function resolveNativeDocumentDisplay(
+  orgId: string,
+  userId: string,
+  documentId: string,
 ): Promise<NativeResourceDisplay | null> {
+  const id = await documentIdForNoteRef(orgId, documentId);
   const [row] = await db.select({
-    title: notes.title,
-    updated_at: notes.updated_at,
-    version: notes.version,
+    title: documents.title,
+    updated_at: documents.updated_at,
+    revision: documents.revision,
   })
-    .from(notes)
-    .leftJoin(spaces, eq(spaces.id, notes.visibility_space_id))
-    .where(and(
-      eq(notes.id, id),
-      eq(notes.org_id, subject.org_id),
-      eq(notes.is_deleted, false),
-      or(isNull(notes.visibility_space_id), eq(spaces.org_id, subject.org_id)),
-      visibleNoteCondition(subject.user_id),
-    ))
+    .from(documents)
+    .where(and(eq(documents.id, id), visibleDocumentCondition(userId, orgId)))
     .limit(1);
   if (!row) return null;
-  return { label: row.title, revision: String(row.version), updated_at: isoDate(row.updated_at) };
+  return { label: row.title.trim() || 'Untitled', revision: String(row.revision), updated_at: isoDate(row.updated_at) };
 }

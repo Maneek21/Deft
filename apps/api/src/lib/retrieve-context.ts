@@ -11,11 +11,12 @@
 
 import { eq, and, or, sql, inArray, ilike } from 'drizzle-orm';
 import { db } from './db.js';
-import { wikiPages, agentMemory, notes, tasks, spaceMembers, spaces, projects, agentEmployees, orgMembers } from '@deft/db/schema';
+import { wikiPages, agentMemory, tasks, spaceMembers, spaces, projects, agentEmployees, orgMembers } from '@deft/db/schema';
+import { documents } from '@deft/db/documents';
 import { embedQuiet, EMBED_DIMS } from './embed.js';
 import { unrestrictedTaskCondition, visibleTaskCondition } from './task-visibility.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from './wiki-visibility.js';
-import { visibleNoteCondition } from './note-visibility.js';
+import { visibleDocumentCondition } from './document-access.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import {
   deftyModuleActor,
@@ -32,7 +33,8 @@ import { emailKnowledgeAudienceCondition, EMAIL_KNOWLEDGE_ORIGIN } from './email
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
-export type ContextSource = 'wiki_page' | 'agent_memory' | 'note' | 'decision' | 'task' | 'module_record';
+/** `note` is no longer produced: the notes branch reads documents (`document`) since the notes move (F15). */
+export type ContextSource = 'wiki_page' | 'agent_memory' | 'note' | 'document' | 'decision' | 'task' | 'module_record';
 
 export interface ContextResult {
   source_type: ContextSource;
@@ -829,6 +831,14 @@ async function fetchMemory(
   }
 }
 
+/**
+ * The notes branch (`types: ['notes']`), which reads documents since the
+ * notes move (F15): the documents `user_id` can open (the one access check,
+ * lib/document-access.ts: shares included, which the notes branch missed),
+ * matched by ILIKE on title and text and scored by ilikeScore until H2 gives
+ * documents hybrid ranking. Without a user (a system query) there is nobody
+ * to check access for, so it returns nothing.
+ */
 async function fetchNotes(
   org_id: string,
   user_id: string | undefined,
@@ -836,46 +846,38 @@ async function fetchNotes(
   words: string[],
   limit: number,
 ): Promise<ContextResult[]> {
+  if (!user_id) return [];
   try {
-    // NOTE: trigram index (pg_trgm) on notes.content is planned (Task 1.4)
-    // to avoid sequential scans on ILIKE. Until then this will scan.
-    //
-    // With a user: the one note rule (lib/note-visibility.ts), so a guest
-    // gets no note visible to the whole workspace. Without one (system
-    // queries) only notes visible to the whole workspace, so private and
-    // space notes are never leaked.
     const rows = await db
       .select({
-        id: notes.id,
-        title: notes.title,
-        content: notes.content,
+        id: documents.id,
+        title: documents.title,
+        text: documents.content_text,
       })
-      .from(notes)
+      .from(documents)
       .where(
         and(
-          eq(notes.org_id, org_id),
-          eq(notes.is_deleted, false),
-          user_id ? visibleNoteCondition(user_id) : eq(notes.visibility, 'org'),
+          eq(documents.org_id, org_id),
+          eq(documents.is_deleted, false),
+          visibleDocumentCondition(user_id, org_id),
           or(
-            sql`${notes.title} ILIKE ${`%${forIlike}%`}`,
-            sql`${notes.content} ILIKE ${`%${forIlike}%`}`,
+            sql`${documents.title} ILIKE ${`%${forIlike}%`}`,
+            sql`${documents.content_text} ILIKE ${`%${forIlike}%`}`,
           ),
         ),
       )
       .limit(limit);
 
-    return rows.map((row) => {
-      const text = row.content ?? '';
-      return {
-        source_type: 'note' as ContextSource,
-        source_id: row.id,
-        title: row.title,
-        content: text,
-        score: ilikeScore(text, words),
-      };
-    });
+    return rows.map((row) => ({
+      source_type: 'document' as ContextSource,
+      source_id: row.id,
+      title: row.title,
+      content: row.text,
+      score: ilikeScore(row.text, words),
+      metadata: { url: `/d/${row.id}` },
+    }));
   } catch (err) {
-    console.warn('[retrieveContext] notes branch failed:');
+    console.warn('[retrieveContext] documents branch failed:');
     return [];
   }
 }
@@ -1179,8 +1181,8 @@ export async function retrieveContextWithDiagnostics(
       ? fetchMemory(org_id, user_id, conversation_id, forIlike, words, limit)
       : Promise.resolve([]),
 
-    // 6. Notes branch respects visibility: with user_id, the notes that user
-    //    may see (lib/note-visibility.ts); without, only org-visible notes.
+    // 6. Notes branch, which reads documents (F15): with user_id, the
+    //    documents that user can open; without, none.
     types.includes('notes')
       ? fetchNotes(org_id, user_id, forIlike, words, limit)
       : Promise.resolve([]),

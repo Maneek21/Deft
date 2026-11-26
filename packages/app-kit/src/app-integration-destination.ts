@@ -1,8 +1,11 @@
 import {z} from 'zod';
 import {AppIntegrationSourceIdentitySchema} from './app-integration-source.js';
 const digest=z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+/** `document` is a document in the caller's My drive, shared with `space_id`'s chat (can view) when given. `note` is the
+ * same, kept for apps written before notes became documents: private and space as `document`, org in Shared notes. */
 export const AppIntegrationDestinationSchema=z.discriminatedUnion('kind',[
  z.strictObject({kind:z.literal('note'),visibility:z.enum(['private','org','space']),space_id:z.uuid().nullable()}).refine(v=>(v.visibility==='space')===(v.space_id!==null)),
+ z.strictObject({kind:z.literal('document'),space_id:z.uuid().nullable()}),
  z.strictObject({kind:z.literal('knowledge'),space_id:z.uuid(),type:z.enum(['concept','entity','decision','resource','procedure','preference','fact'])}),
  z.strictObject({kind:z.literal('chat'),space_id:z.uuid()}),
  z.strictObject({kind:z.literal('task'),project_id:z.uuid()}),

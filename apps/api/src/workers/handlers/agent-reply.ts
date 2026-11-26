@@ -4,7 +4,7 @@ import { projectAgentReadDiagnostics } from '../../lib/agent-read-diagnostics.js
 // Handler: process @agent/@deft mentions in chat and generate AI replies in-thread
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { messages, users, spaces, spaceMembers, orgMembers, projects, tasks, wikiPages, notes } from '@deft/db/schema';
+import { messages, users, spaces, spaceMembers, orgMembers, projects, tasks, wikiPages } from '@deft/db/schema';
 import { getApprovalTier } from '../../lib/agent-approval.js';
 import { eq, and, desc, sql, ne, lt, inArray } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
@@ -36,7 +36,7 @@ import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-impo
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
 import { loadPendingDeftyDraft, pendingDeftyDraftContext, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../../lib/agent-message-run-details.js';
-import { promotableNoteSql } from '../../lib/agent-action-visibility.js';
+import { promotableNoteDocument } from '../../lib/legacy-notes.js';
 import { visibleTaskCondition, visibleTaskSql } from '../../lib/task-visibility.js';
 import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, isDatabaseWaitTimeout, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
 
@@ -527,13 +527,9 @@ export async function resolvePendingActionTargets(
 
     if (action.action === 'note_to_wiki') {
       const noteId = typeof action.params.note_id === 'string' ? action.params.note_id : '';
-      // Same rule as the executor: a space note's space is in the note's org.
-      const [visibleNote] = noteId ? await db.select({ id: notes.id, title: notes.title }).from(notes).where(and(
-        eq(notes.id, noteId),
-        eq(notes.org_id, orgId),
-        eq(notes.is_deleted, false),
-        promotableNoteSql(userId),
-      )).limit(1) : [];
+      // Same rule as the executor: the note's document (F15), one the
+      // requester may publish (promotableDocumentSql, lib/legacy-notes.ts).
+      const visibleNote = noteId ? await promotableNoteDocument(orgId, userId, noteId) : null;
       if (!visibleNote) {
         warnings.push('I could not find that note or you do not have access to it.');
         continue;

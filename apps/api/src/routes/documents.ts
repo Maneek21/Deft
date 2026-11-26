@@ -62,6 +62,7 @@ import {
 import {
   changeShareRole, documentAudience, listDocumentShares, removeShare, shareDocument, shareShape,
 } from '../lib/document-shares.js';
+import { couldSeeLegacySource, mappedTargetId } from '../lib/legacy-notes.js';
 import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 import { documentCards, MAX_DOCUMENT_CARDS } from '../lib/chat-documents.js';
 import { DocumentWriteRefused, type DocumentWriteRefusalCode } from '../lib/document-writer.js';
@@ -186,6 +187,28 @@ documentRoutes.get('/recent', async (c) => {
     return c.json({ documents: await recentDocumentsQuery(user.id, user.org_id) });
   } catch (error) {
     return failed(c, error, 'list recent documents');
+  }
+});
+
+// GET /api/documents/by-legacy/:sourceType/:sourceId: where an old note or
+// chat canvas link goes now (F15; lib/legacy-notes.ts). `{ document_id }`
+// for someone who can open the document now, or who could see the note or
+// canvas before the move; 404 for everyone else, a source that never moved
+// and any other source type alike, so nothing says whether it exists.
+documentRoutes.get('/by-legacy/:sourceType/:sourceId', async (c) => {
+  try {
+    const user = c.get('user');
+    const sourceType = c.req.param('sourceType');
+    const sourceId = c.req.param('sourceId');
+    const documentId = sourceType === 'note' || sourceType === 'canvas'
+      ? await mappedTargetId(user.org_id, sourceType, sourceId) : null;
+    if (!documentId || !((await documentRoleFor(user.id, user.org_id, documentId))
+      || (await couldSeeLegacySource(user.org_id, user.id, sourceType, sourceId)))) {
+      return c.json({ error: 'Document not found', code: 'NOT_FOUND' }, 404);
+    }
+    return c.json({ document_id: documentId });
+  } catch (error) {
+    return failed(c, error, 'resolve an old link');
   }
 });
 

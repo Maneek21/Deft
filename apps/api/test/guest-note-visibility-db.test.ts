@@ -1,12 +1,19 @@
 // A guest sees only the notes they were added to: their own notes, notes
 // shared with them (note_shares) and space notes of spaces they belong to.
 // A note visible to the whole workspace (visibility 'org') is not shown to a
-// guest. Owners, admins, members and agents are unchanged: the equivalence
-// tests compare the rule before this change with the rule now over every note
-// shape, for every non-guest.
+// guest (#598).
+//
+// Since notes became documents (F15) every reader goes through the notes
+// move's documents (F14, run here with moveOrg) and their access check: a
+// workspace note is in the open Shared notes drive, which never admits a
+// guest. Owners, admins and members are unchanged: the equivalence tests
+// compare the rule notes had with what each can open now, over every note
+// shape that moves. An agent user with no membership row could read
+// workspace notes; a document admits no one who isn't an active member
+// (consult rule C7), and its notes don't move, so it is left out.
 //
 // Search used its own copy of the rule, without the shares branch: a member
-// now finds a note shared with them there too.
+// finds a note shared with them there now.
 //
 // The guest's session and MCP token both claim role 'member': only the
 // org_members row makes them a guest.
@@ -17,11 +24,13 @@ import pg from 'pg';
 import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
 import { notes } from '@deft/db/schema';
+import { documents, noteDocumentMap } from '@deft/db/documents';
 import { db } from '../src/lib/db.js';
-import { visibleNoteCondition } from '../src/lib/note-visibility.js';
-import { promotableNoteSql } from '../src/lib/agent-action-visibility.js';
+import { visibleDocumentIdSql } from '../src/lib/document-access.js';
+import { moveOrg } from '../src/lib/drives-move/move-org.js';
+import { promotableDocumentSql } from '../src/lib/legacy-notes.js';
 import { retrieveContext } from '../src/lib/retrieve-context.js';
-import { resolveNativeNoteDisplay } from '../src/lib/native-content-projections.js';
+import { resolveNativeDocumentDisplay } from '../src/lib/native-content-projections.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { executeActionDirect } from '../src/lib/agent-actions.js';
 import { getTeamContext } from '../src/lib/mcp-tools/team-context.js';
@@ -45,7 +54,6 @@ const people: Array<[string, string, string | null, 'human' | 'agent']> = [
   [guest, 'Gus Guest', 'guest', 'human'],
   [looseAgent, 'Lou Agent', null, 'agent'],
 ];
-const NON_GUESTS = [owner, admin, member, looseAgent];
 const guestRoom = randomUUID(), memberRoom = randomUUID();
 const project = randomUUID(), task = randomUUID(), tag = randomUUID(), team = randomUUID(), ledTeam = randomUUID();
 // An org note linked to no team, for the link check.
@@ -71,6 +79,10 @@ const GUEST_SEES: NoteKey[] = ['guestOwn', 'guestOwnOrg', 'sharedToGuest', 'spac
 const GUEST_HIDDEN: NoteKey[] = ['orgNote', 'privateOther', 'spaceOut', 'sharedToMember'];
 const NOT_TEMPLATES = (Object.keys(shapes) as NoteKey[]).filter((key) => key !== 'orgTemplate');
 const matrixIds: string[] = [];
+/** Each named note's document, after the move. */
+const docIds = {} as Record<NoteKey, string>;
+/** Every note of the workspace that moved. */
+const moved = new Set<string>();
 
 async function insertNote(id: string, key: string, shape: Shape) {
   // Matrix notes are older, so the named notes stay inside the notes list's 100 rows.
@@ -131,6 +143,16 @@ before(async () => {
     await c.query(`INSERT INTO team_resources (id, org_id, team_id, resource_type, resource_id, label) VALUES (gen_random_uuid()::text, $1, $2, 'note', $3, $4)`,
       [org, team, noteIds[key], titleOf(key)]);
   }
+  // The notes move (F14): documents, shares and map rows, and the tags, references and team links rewritten.
+  await moveOrg(org);
+  const { rows } = await c.query(`SELECT source_id, target_id FROM note_document_map WHERE org_id = $1 AND source_type = 'note'`, [org]);
+  const target = new Map(rows.map((row) => [row.source_id as string, row.target_id as string]));
+  for (const id of target.keys()) moved.add(id);
+  for (const key of Object.keys(shapes) as NoteKey[]) {
+    const documentId = target.get(noteIds[key]);
+    assert.ok(documentId, `${key} moved`);
+    docIds[key] = documentId;
+  }
 });
 
 after(async () => {
@@ -149,6 +171,10 @@ after(async () => {
   await c.query(`DELETE FROM tasks WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM project_spaces WHERE project_id = $1`, [project]);
   await c.query(`DELETE FROM projects WHERE org_id = $1`, [org]);
+  for (const table of ['attention_events', 'attention_items', 'notifications', 'doc_favorites', 'note_document_map', 'drives_move_runs',
+    'document_attachments', 'document_versions', 'document_shares', 'documents', 'doc_folders', 'drive_members', 'drives']) {
+    await c.query(`DELETE FROM ${table} WHERE org_id = $1`, [org]).catch(() => {});
+  }
   await c.query(`DELETE FROM note_shares WHERE note_id IN (SELECT id FROM notes WHERE org_id = $1)`, [org]);
   await c.query(`DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE org_id = $1)`, [org]);
   await c.query(`DELETE FROM notes WHERE org_id = $1`, [org]);
@@ -163,43 +189,49 @@ after(async () => {
 
 const sorted = (list: Iterable<string>) => [...list].sort();
 
-/** visibleNoteCondition exactly as it was before the guest rule (note-visibility.ts on master). */
+/** visibleNoteCondition exactly as it was before the guest rule (note-visibility.ts on master), over notes that moved. */
 async function visibleBefore(userId: string): Promise<string[]> {
   const { rows } = await c.query(`SELECT n.id FROM notes n WHERE n.org_id = $1 AND n.is_deleted = false AND (
       n.user_id = $2 OR n.visibility = 'org'
       OR EXISTS (SELECT 1 FROM note_shares s WHERE s.note_id = n.id AND s.shared_with_user_id = $2)
       OR EXISTS (SELECT 1 FROM space_members m WHERE m.space_id = n.visibility_space_id AND m.user_id = $2 AND n.visibility = 'space'))`,
   [org, userId]);
-  return sorted(rows.map((row) => row.id as string));
+  return sorted(rows.map((row) => row.id as string).filter((id) => moved.has(id)));
 }
 
-/** promotableNoteSql as it was before. */
+/** promotableNoteSql as it was before, over notes that moved. */
 async function promotableBefore(userId: string): Promise<string[]> {
   const { rows } = await c.query(`SELECT n.id FROM notes n WHERE n.org_id = $1 AND n.is_deleted = false AND (
       n.user_id = $2 OR n.visibility = 'org'
       OR (n.visibility = 'space' AND EXISTS (SELECT 1 FROM space_members sm JOIN spaces s ON s.id = sm.space_id
         WHERE sm.space_id = n.visibility_space_id AND s.org_id = n.org_id AND sm.user_id = $2)))`, [org, userId]);
-  return sorted(rows.map((row) => row.id as string));
+  return sorted(rows.map((row) => row.id as string).filter((id) => moved.has(id)));
 }
 
+const movedNotes = () => db.select({ id: notes.id }).from(notes)
+  .innerJoin(noteDocumentMap, and(eq(noteDocumentMap.org_id, notes.org_id), eq(noteDocumentMap.source_type, 'note'), eq(noteDocumentMap.source_id, notes.id)));
+
+/** The notes whose documents `userId` can open now. */
 async function visibleNow(userId: string): Promise<string[]> {
-  const rows = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.org_id, org), eq(notes.is_deleted, false), visibleNoteCondition(userId)));
+  const rows = await movedNotes().where(and(eq(notes.org_id, org), eq(notes.is_deleted, false),
+    visibleDocumentIdSql(userId, org, sql`${noteDocumentMap.target_id}`)));
   return sorted(rows.map((row) => row.id));
 }
 
+/** The notes whose documents `userId` may publish to the wiki now (note_to_wiki). */
 async function promotableNow(userId: string): Promise<string[]> {
-  const rows = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.org_id, org), eq(notes.is_deleted, false), promotableNoteSql(userId)));
+  const rows = await movedNotes().innerJoin(documents, eq(documents.id, noteDocumentMap.target_id))
+    .where(and(eq(notes.org_id, org), eq(notes.is_deleted, false), promotableDocumentSql(userId, org)));
   return sorted(rows.map((row) => row.id));
 }
 
-test('equivalence: for owners, admins, members and agents without a membership, the note rule is exactly the old one', async () => {
-  for (const viewer of NON_GUESTS) {
+test('equivalence: for owners, admins and members, what they can open is exactly what the note rule showed', async () => {
+  assert.ok(moved.size > matrixIds.length / 2, 'the matrix moved');
+  for (const viewer of [owner, admin, member]) {
     const before = await visibleBefore(viewer);
-    assert.ok(before.length > matrixIds.length / 3, 'the matrix exercises many notes');
-    assert.deepEqual(await visibleNow(viewer), before, `visibleNoteCondition, ${viewer}`);
-    assert.deepEqual(await promotableNow(viewer), await promotableBefore(viewer), `promotableNoteSql, ${viewer}`);
+    assert.ok(before.length > matrixIds.length / 4, 'the matrix exercises many notes');
+    assert.deepEqual(await visibleNow(viewer), before, `the documents' access, ${viewer}`);
+    assert.deepEqual(await promotableNow(viewer), await promotableBefore(viewer), `promotable, ${viewer}`);
   }
 });
 
@@ -214,7 +246,7 @@ test('the guest rule only narrows: a guest keeps own, shared and space notes and
       n.user_id = $2
       OR EXISTS (SELECT 1 FROM note_shares s WHERE s.note_id = n.id AND s.shared_with_user_id = $2)
       OR (n.visibility = 'space' AND n.visibility_space_id = $3))`, [org, guest, guestRoom]);
-  assert.deepEqual(now, sorted(rows.map((row) => row.id as string)), 'exactly own, shared and space notes');
+  assert.deepEqual(now, sorted(rows.map((row) => row.id as string).filter((id) => moved.has(id))), 'exactly own, shared and space notes');
   const promotable = new Set(await promotableNow(guest));
   assert.equal(promotable.has(noteIds.orgNote), false, 'an org note is not promotable by a guest');
   assert.equal(promotable.has(noteIds.spaceIn), true);
@@ -269,7 +301,9 @@ test('GET /api/daily-notes and /:id: a guest lists and reads own, shared and spa
     assert.equal(names(res.text, key), false, key);
   }
   const patch = await call(guest, `/api/daily-notes/${noteIds.orgNote}`, { method: 'PATCH', body: { title: 'x' } });
-  assert.equal(patch.status, 404, 'an edit of a hidden note answers like an unknown one');
+  const patchUnknown = await call(guest, `/api/daily-notes/${randomUUID()}`, { method: 'PATCH', body: { title: 'x' } });
+  assert.equal(patch.status, 410, 'notes are read only');
+  assert.deepEqual(patch.body, patchUnknown.body, 'an edit of a hidden note answers like an unknown one');
   const templates = await get(guest, '/api/daily-notes/templates');
   assert.equal(names(templates.text, 'orgTemplate'), false, 'an org template is hidden from a guest');
   assert.equal(names((await get(member, '/api/daily-notes/templates')).text, 'orgTemplate'), true, 'a member keeps it');
@@ -289,16 +323,16 @@ test('GET /api/search: a guest finds no org note; a member now finds a note shar
   const guestSearch = await get(guest, `/api/search?q=${word}`);
   assert.equal(guestSearch.status, 200);
   assert.deepEqual(namedIn(guestSearch.text, GUEST_HIDDEN), [], 'no hidden note in any group');
-  // The quick notes group returns five rows at most; the guest's own notes are among them.
-  assert.ok((guestSearch.body.notes as unknown[]).length > 0);
+  // The documents group returns five rows at most; the guest's own notes are among them.
+  assert.ok((guestSearch.body.documents as unknown[]).length > 0);
   const memberSearch = await get(member, `/api/search?q=${encodeURIComponent(titleOf('sharedToMember'))}`);
-  const found = (memberSearch.body.notes as Array<{ id: string }>).map((row) => row.id);
-  assert.ok(found.includes(noteIds.sharedToMember), 'the shared note is in the notes group');
+  const found = (memberSearch.body.documents as Array<{ id: string }>).map((row) => row.id);
+  assert.ok(found.includes(docIds.sharedToMember), 'the shared note is in the documents group');
   const admins = await get(admin, `/api/search?q=${encodeURIComponent(titleOf('sharedToMember'))}`);
-  assert.equal((admins.body.notes as Array<{ id: string }>).some((row) => row.id === noteIds.sharedToMember), false,
+  assert.equal((admins.body.documents as Array<{ id: string }>).some((row) => row.id === docIds.sharedToMember), false,
     'an admin it is not shared with still does not find it');
   const orgSearch = await get(admin, `/api/search?q=${encodeURIComponent(titleOf('orgNote'))}`);
-  assert.ok((orgSearch.body.notes as Array<{ id: string }>).some((row) => row.id === noteIds.orgNote), 'an admin finds an org note');
+  assert.ok((orgSearch.body.documents as Array<{ id: string }>).some((row) => row.id === docIds.orgNote), 'an admin finds an org note');
 });
 
 test('tags, backlinks and team links: a guest sees no hidden note there; members keep theirs', async () => {
@@ -306,12 +340,12 @@ test('tags, backlinks and team links: a guest sees no hidden note there; members
   assert.equal(entities.status, 200);
   assert.deepEqual(namedIn(entities.text, GUEST_HIDDEN), []);
   const ids = new Set((entities.body as Array<{ entity_id: string }>).map((row) => row.entity_id));
-  for (const key of GUEST_SEES) assert.ok(ids.has(noteIds[key]), `tagged: ${key}`);
+  for (const key of GUEST_SEES) assert.ok(ids.has(docIds[key]), `tagged: ${key}`);
   const tagList = await get(guest, '/api/tags');
   const counted = (tagList.body as Array<{ id: string; count: number }>).find((row) => row.id === tag);
   assert.equal(counted?.count, GUEST_SEES.length, 'the tag count leaves out hidden notes');
   const memberTags = (await get(member, '/api/tags')).body as Array<{ id: string; count: number }>;
-  const memberSees = new Set(await visibleBefore(member));
+  const memberSees = new Set(await visibleNow(member));
   assert.equal(memberTags.find((row) => row.id === tag)?.count,
     (Object.keys(shapes) as NoteKey[]).filter((key) => memberSees.has(noteIds[key])).length, 'a member count is unchanged');
 
@@ -326,10 +360,10 @@ test('tags, backlinks and team links: a guest sees no hidden note there; members
   const teamRes = await get(guest, `/api/teams/${team}`);
   assert.equal(teamRes.status, 200);
   assert.deepEqual(namedIn(JSON.stringify(teamRes.body.resources.map((row: any) => row.label)), GUEST_HIDDEN), [], 'no label of a hidden note');
-  const hiddenRow = teamRes.body.resources.find((row: any) => row.resource_id === noteIds.orgNote);
+  const hiddenRow = teamRes.body.resources.find((row: any) => row.resource_id === docIds.orgNote);
   assert.equal(hiddenRow.access, 'restricted');
   const memberTeam = await get(member, `/api/teams/${team}`);
-  assert.equal(memberTeam.body.resources.find((row: any) => row.resource_id === noteIds.orgNote).label, titleOf('orgNote'));
+  assert.equal(memberTeam.body.resources.find((row: any) => row.resource_id === docIds.orgNote).label, titleOf('orgNote'));
   const link = await call(guest, `/api/teams/${ledTeam}/resources`, { method: 'POST', body: { resource_type: 'note', resource_id: unlinkedOrgNote } });
   const linkUnknown = await call(guest, `/api/teams/${ledTeam}/resources`, { method: 'POST', body: { resource_type: 'note', resource_id: randomUUID() } });
   assert.equal(link.status, 400, 'a hidden note cannot be linked by a guest team lead');
@@ -338,7 +372,7 @@ test('tags, backlinks and team links: a guest sees no hidden note there; members
   assert.equal(ownLink.status, 201, 'a note the guest can see can be linked');
 
   const context = JSON.stringify(await getTeamContext({ org_id: org, user_id: guest, role: 'member' }, { team_id: team } as never));
-  assert.ok(context.includes(noteIds.spaceIn), 'the team context lists the links');
+  assert.ok(context.includes(docIds.spaceIn), 'the team context lists the links');
   assert.deepEqual(GUEST_HIDDEN.filter((key) => context.includes(titleOf(key))), [], 'no title or label of a hidden note');
 });
 
@@ -372,7 +406,7 @@ test('Defty search_notes and read_note, retrieval and mention display follow the
   const retrieved = await retrieveContext({ query: word, org_id: org, user_id: guest, types: ['notes'], limit: 50, hybrid: false });
   assert.deepEqual(namedIn(JSON.stringify(retrieved), GUEST_HIDDEN), []);
   const memberRetrieved = await retrieveContext({ query: titleOf('sharedToMember'), org_id: org, user_id: member, types: ['notes'], limit: 50, hybrid: false });
-  assert.ok(memberRetrieved.some((row) => row.source_id === noteIds.sharedToMember), 'retrieval finds a note shared with a member');
+  assert.ok(memberRetrieved.some((row) => row.source_id === docIds.sharedToMember), 'retrieval finds a note shared with a member');
 
   // The executor's own search_notes and read_note (agent-actions.ts).
   const direct = JSON.stringify(await executeActionDirect('search_notes', { query: word, limit: 50 }, org, guest, null, 'auto'));
@@ -382,15 +416,19 @@ test('Defty search_notes and read_note, retrieval and mention display follow the
   assert.equal(names(directRead, 'orgNote'), false);
   assert.ok(names(JSON.stringify(await executeActionDirect('read_note', { note_id: noteIds.orgNote }, org, member, null, 'auto')), 'orgNote'));
 
-  assert.equal(await resolveNativeNoteDisplay({ org_id: org, user_id: guest, role: 'member' } as never, noteIds.orgNote), null);
-  assert.notEqual(await resolveNativeNoteDisplay({ org_id: org, user_id: guest, role: 'member' } as never, noteIds.spaceIn), null);
-  assert.notEqual(await resolveNativeNoteDisplay({ org_id: org, user_id: member, role: 'member' } as never, noteIds.orgNote), null);
+  // A `notes` reference is shown as its document (an old note id is mapped first).
+  assert.equal(await resolveNativeDocumentDisplay(org, guest, noteIds.orgNote), null);
+  assert.notEqual(await resolveNativeDocumentDisplay(org, guest, noteIds.spaceIn), null);
+  assert.notEqual(await resolveNativeDocumentDisplay(org, member, noteIds.orgNote), null);
+  assert.equal((await resolveNativeDocumentDisplay(org, member, docIds.orgNote))?.label, titleOf('orgNote'));
 });
 
-test('the export reads the same rule: the condition holds inside a subquery on the bare table', async () => {
+test('the export reads the same rule: the document check holds inside a subquery on the bare table', async () => {
   const result = await db.execute(sql`SELECT export_note.id FROM notes export_note
     WHERE export_note.org_id = ${org} AND EXISTS (SELECT 1 FROM notes WHERE notes.id = export_note.id
-      AND notes.is_deleted = false AND ${visibleNoteCondition(guest)})`);
+      AND notes.is_deleted = false AND ${visibleDocumentIdSql(guest, org, sql`(SELECT exported_note_map.target_id
+        FROM note_document_map exported_note_map WHERE exported_note_map.org_id = notes.org_id
+          AND exported_note_map.source_type = 'note' AND exported_note_map.source_id = notes.id)`)})`);
   const ids = ((result as any).rows as Array<{ id: string }>).map((row) => row.id);
   assert.deepEqual(sorted(ids), await visibleNow(guest));
 });
