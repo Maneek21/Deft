@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test, { after, before } from 'node:test';
 import { jsonToText } from '@deft/doc-schema';
@@ -97,7 +97,7 @@ async function insertVersion(noteId: string, version: number, v: { title: string
 }
 
 /** A staged image upload with its bytes in the file store, as POST /api/upload leaves a note image. */
-async function upload(uploader: string, extra: { messageId?: string } = {}): Promise<string> {
+async function upload(uploader: string, extra: { messageId?: string; orgId?: string } = {}): Promise<string> {
   const id = randomUUID();
   const key = `drives-move-${run}-${id}`;
   storageKeys.push(key);
@@ -105,8 +105,40 @@ async function upload(uploader: string, extra: { messageId?: string } = {}): Pro
   await q(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, processing_status, attachment_kind,
       staged_expires_at, message_id)
     VALUES ($1, $2, $3, 'pasted.png', 'image/png', $4, $5, 'ready', 'image', now() + interval '24 hours', $6)`,
-  [id, fx.orgId, uploader, PNG.length, key, extra.messageId ?? null]);
+  [id, extra.orgId ?? fx.orgId, uploader, PNG.length, key, extra.messageId ?? null]);
   return id;
+}
+
+/** A workspace of its own for one test: `person` adds a user (a member unless role is null); `cleanup` removes everything. */
+async function scratchOrg(name: string): Promise<{
+  org: string; person: (p?: { role?: string | null; active?: boolean }) => Promise<string>; cleanup: () => Promise<void>;
+}> {
+  const org = randomUUID();
+  const users: string[] = [];
+  await q('INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)', [org, `${name} ${run}`, `${name}-${run}`]);
+  return {
+    org,
+    async person({ role = 'member', active = true } = {}) {
+      const id = randomUUID();
+      users.push(id);
+      await q(`INSERT INTO users (id, email, name, kind, is_agent) VALUES ($1, $2, $3, 'human', false)`,
+        [id, `${name}-${id.slice(0, 8)}@drives.test`, `${name} person`]);
+      if (role) await q('INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, $4, $5)', [randomUUID(), org, id, role, active]);
+      return id;
+    },
+    async cleanup() {
+      for (const table of ['drives_move_runs', 'document_attachments', 'note_document_map', 'doc_favorites', 'document_shares', 'document_versions',
+        'documents', 'doc_folders', 'drive_members', 'drives']) {
+        await q(`DELETE FROM ${table} WHERE org_id = $1`, [org]);
+      }
+      await q('DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE org_id = $1)', [org]);
+      for (const table of ['note_files', 'notes', 'canvases', 'files']) await q(`DELETE FROM ${table} WHERE org_id = $1`, [org]);
+      await q('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id = $1)', [org]);
+      for (const table of ['spaces', 'org_members']) await q(`DELETE FROM ${table} WHERE org_id = $1`, [org]);
+      await q('DELETE FROM orgs WHERE id = $1', [org]);
+      await q('DELETE FROM users WHERE id = ANY($1::text[])', [users]);
+    },
+  };
 }
 
 async function insertSpace(name: string, createdBy: string, members: string[]): Promise<string> {
@@ -648,13 +680,16 @@ test('with no active human owner, a canvas nobody in its chat can own lands in a
     assert.deepEqual(await sharesOf(doc.id), [{ principal_type: 'space', principal_id: quiet, role: 'edit' }], 'the chat keeps its share');
     assert.equal(await documentRoleFor(guestZ, org, doc.id), 'view', 'which a frozen drive caps at view');
     assert.equal(moved.canvasesInFrozenDrives, 1);
-    // The one canvas with nobody at all is dropped and counted, its content kept in the report.
+    // The one canvas with nobody at all is dropped and counted; the report names it by its ids only (C5).
     assert.equal(await mapOf('canvas', orphan), undefined);
-    assert.deepEqual(moved.unplaceableCanvases, [{ canvasId: orphan, spaceId: orphanChat, title: 'Orphan', content: orphanContent }]);
+    assert.deepEqual(moved.unplaceableCanvases, [{ canvasId: orphan, spaceId: orphanChat }]);
     assert.equal(moved.emptyCanvases, 1);
     // The check passes, the run is recorded ok, and the API listens.
     const run = await runsModule.runOrgMove(org);
     assert.equal(run.ok, true, (run.check?.mismatches ?? []).join('\n'));
+    const recorded = await one('SELECT report::text AS report FROM drives_move_runs WHERE org_id = $1', [org]);
+    assert.ok(recorded!.report.includes(orphan), 'the run report names the dropped canvas');
+    for (const words of ['Written by nobody', 'Orphan']) assert.equal(recorded!.report.includes(words), false, 'never its title or content');
     await q('DELETE FROM drives_move_runs WHERE org_id = $1', [org]);
     let listened = false;
     await moveNotesBeforeListen({ orgIds: [org] }).then(() => { listened = true; });
@@ -670,6 +705,34 @@ test('with no active human owner, a canvas nobody in its chat can own lands in a
     await q('DELETE FROM org_members WHERE org_id = $1', [org]);
     await q('DELETE FROM orgs WHERE id = $1', [org]);
     await q('DELETE FROM users WHERE id = ANY($1::text[])', [[gone, admin, guestZ, agentZ]]);
+  }
+});
+
+test('a public chat\'s canvas nobody can be credited with goes to Shared notes, Chat canvases, created by nobody (C1)', { skip: SKIP }, async () => {
+  const z = await scratchOrg('public-orphan');
+  try {
+    await z.person({ role: 'owner', active: false });
+    const admin = await z.person({ role: 'admin' });
+    const chat = randomUUID();
+    await q(`INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, 'open-orphan', 'public', NULL)`, [chat, z.org]);
+    const canvas = randomUUID();
+    await q(`INSERT INTO canvases (id, org_id, space_id, title, content, last_edited_by) VALUES ($1, $2, $3, 'Open board', $4::jsonb, NULL)`,
+      [canvas, z.org, chat, JSON.stringify(paragraphDoc('Everyone could read this.'))]);
+    const moved = await moveOrg(z.org);
+    assert.deepEqual(moved.errors, []);
+    assert.deepEqual(moved.unplaceableCanvases, [], 'not dropped');
+    assert.equal(moved.emptyCanvases, 0);
+    assert.equal(moved.canvases, 1);
+    const doc = await documentOf(canvas, 'canvas');
+    assert.equal(doc.created_by, null, 'credited to nobody');
+    assert.equal((await driveOf(doc.drive_id)).system_key, 'shared_notes');
+    assert.equal((await one('SELECT name FROM doc_folders WHERE id = $1', [doc.folder_id]))?.name, 'Chat canvases');
+    assert.deepEqual(await sharesOf(doc.id), [{ principal_type: 'space', principal_id: chat, role: 'edit' }], 'the chat keeps its share');
+    assert.notEqual(await documentRoleFor(admin, z.org, doc.id), null, 'the workspace still reads it');
+    const run = await runsModule.runOrgMove(z.org);
+    assert.equal(run.ok, true, (run.check?.mismatches ?? []).join('\n'));
+  } finally {
+    await z.cleanup();
   }
 });
 
@@ -773,6 +836,26 @@ test('a deleted workspace note goes to the root of Shared notes, in the trash, w
   assert.equal(doc.folder_id, null);
   assert.equal((await q(`SELECT 1 FROM doc_folders WHERE drive_id = $1 AND created_by = $2`, [doc.drive_id, fx.people.member2])).rowCount, 0,
     'no empty folder named after its author');
+});
+
+test('a deleted workspace note whose author has no membership row goes to the root of Shared notes, in the trash (C3)', { skip: SKIP }, async () => {
+  const z = await scratchOrg('stranger-note');
+  try {
+    await z.person({ role: 'owner' });
+    const stranger = await z.person({ role: null });
+    const note = await insertNote({ user: stranger, orgId: z.org, title: 'Left by a stranger', visibility: 'org', deleted: true });
+    const moved = await moveOrg(z.org);
+    assert.deepEqual(moved.errors, [], 'no owner_not_member');
+    const doc = await documentOf(note);
+    assert.equal(doc.is_deleted, true);
+    assert.equal((await driveOf(doc.drive_id)).system_key, 'shared_notes');
+    assert.equal(doc.folder_id, null, 'at the root, in the trash');
+    assert.deepEqual(await sharesOf(doc.id), [], 'a non-member holds no share');
+    const run = await runsModule.runOrgMove(z.org);
+    assert.equal(run.ok, true, (run.check?.mismatches ?? []).join('\n'));
+  } finally {
+    await z.cleanup();
+  }
 });
 
 test('an image whose bytes are gone shows the placeholder and is counted; the check still passes (O-F2)', { skip: SKIP }, async () => {
@@ -908,6 +991,20 @@ test('postMoveCheck finds an agent without its view on Shared notes (O-F3)', { s
   assert.ok(check.mismatches.includes(`agent ${fx.people.agentUser} has no view on Shared notes`), check.mismatches.join('\n'));
 });
 
+test('a rerun gives an agent who became eligible after the first run its view on Shared notes (C2)', { skip: SKIP }, async () => {
+  const agent = await fx.addPerson({ kind: 'agent', agentEmployeeId: randomUUID() });
+  const moved = await moveOrg(fx.orgId);
+  assert.deepEqual(moved.errors, []);
+  assert.equal(moved.notes + moved.canvases, 0, 'nothing new moved into Shared notes');
+  const [row] = (await q(`SELECT member.role FROM drive_members member JOIN drives shared ON shared.id = member.drive_id AND shared.system_key = 'shared_notes'
+    WHERE member.org_id = $1 AND member.principal_type = 'user' AND member.principal_id = $2`, [fx.orgId, agent])).rows;
+  assert.equal(row?.role, 'view');
+  assert.equal(moved.agentsKeptOnSharedNotes, 1);
+  const check = await postMoveCheck(fx.orgId, 0);
+  assert.equal(check.mismatches.includes(`agent ${agent} has no view on Shared notes`), false, check.mismatches.join('\n'));
+  assert.equal((await moveOrg(fx.orgId)).agentsKeptOnSharedNotes, 0, 'the insert is idempotent');
+});
+
 test('postMoveCheck finds an extra share', { skip: SKIP }, async () => {
   const doc = await documentOf(s.shared);
   const id = randomUUID();
@@ -1036,6 +1133,56 @@ test('an unreachable file store refuses the note without mapping it, and a run w
     [{ in_current: true }]);
 });
 
+test('with the uploads truly gone, the start names the switch, and drives:move --accept-missing-images moves every image as a placeholder (C6)', { skip: SKIP }, async () => {
+  const z = await scratchOrg('lost-uploads');
+  const emptyCwd = resolve(import.meta.dirname, `../.drives-move-cwd-${run}`);
+  try {
+    const boss = await z.person({ role: 'owner' });
+    const file = await upload(boss, { orgId: z.org });
+    const note = await insertNote({ user: boss, orgId: z.org, title: 'Picture of a lost upload', content: `<p>Look.</p><img data-file-id="${file}">` });
+    // The start, with the mount missing: it refuses, and its refusal names the switch.
+    const seam = placementModule as { _setMoveFileStoreForTest?: (store: unknown) => void };
+    seam._setMoveFileStoreForTest?.(new LocalFileStore(resolve(import.meta.dirname, `../.no-such-uploads-${run}`)));
+    let started: { lines: string[]; error: unknown };
+    try {
+      started = await collectErrors(() => moveNotesBeforeListen({ orgIds: [z.org] }));
+    } finally {
+      seam._setMoveFileStoreForTest?.(null);
+    }
+    assert.ok(started.error instanceof Error && /Refusing to listen/.test(started.error.message));
+    assert.ok(started.lines.includes('[startup] The file storage was unreachable or empty, so images could not be checked. Fix the uploads mount, '
+      + 'then run pnpm drives:move. If the uploaded files are truly gone, pnpm drives:move --accept-missing-images moves every image as '
+      + '"Image not available".'), started.lines.join('\n'));
+    assert.equal(await mapOf('note', note), undefined);
+    // The script's help names the switch.
+    const help = drivesMoveScriptIn(resolve(import.meta.dirname, '..'), '--help');
+    assert.equal(help.status, 0);
+    assert.match(help.stdout, /--accept-missing-images/);
+    // The script where the uploads folder is missing (its working directory has none): refused, then accepted with the switch.
+    mkdirSync(emptyCwd, { recursive: true });
+    const refused = drivesMoveScriptIn(emptyCwd, '--org', z.org);
+    assert.equal(refused.status, 1, 'without the switch the move still refuses');
+    const accepted = drivesMoveScriptIn(emptyCwd, '--org', z.org, '--accept-missing-images');
+    assert.equal(accepted.status, 0, accepted.stderr + JSON.stringify(accepted.report?.orgs?.[0]?.move?.errors));
+    assert.equal(accepted.report.acceptMissingImages, true);
+    assert.equal(accepted.report.orgs[0].move.missingImageBytes, 1);
+    const doc = await documentOf(note);
+    assert.deepEqual(imagesIn(doc.content_json), []);
+    assert.match(jsonToText(doc.content_json), /Image not available/);
+    assert.equal((await mapOf('note', note))!.details.image_refusals[file], 'bytes_missing');
+    assert.equal((await q('SELECT 1 FROM document_attachments WHERE file_id = $1', [file])).rowCount, 0);
+    const recorded = await one('SELECT check_ok, report FROM drives_move_runs WHERE org_id = $1 AND release_version = $2', [z.org, DRIVES_MOVE_RELEASE]);
+    assert.equal(recorded!.check_ok, true);
+    assert.equal(recorded!.report.accepted_missing_images, true, 'the run report records the acceptance');
+    let listened = false;
+    await moveNotesBeforeListen({ orgIds: [z.org] }).then(() => { listened = true; });
+    assert.equal(listened, true);
+  } finally {
+    rmSync(emptyCwd, { recursive: true, force: true });
+    await z.cleanup();
+  }
+});
+
 test('the API refuses to listen until the move completes, and skips the move while paused', { skip: SKIP }, async () => {
   // server.ts awaits the move before it calls serve().
   const server = readFileSync(resolve(import.meta.dirname, '../src/server.ts'), 'utf8');
@@ -1126,9 +1273,9 @@ test('a failed reconciliation refuses to listen, logs its counts and records the
     const { lines, error } = await collectErrors(() => moveNotesBeforeListen({ orgIds: [fx.orgId] }).then(() => { listened = true; }));
     assert.ok(error instanceof Error && /Refusing to listen/.test(error.message));
     assert.equal(listened, false);
-    // The log carries fixed text and counts only; the full report is the script's (pnpm drives:move --check-only).
+    // The log carries fixed text and counts only; the full report is the script's (pnpm drives:move).
     assert.deepEqual(lines, ['[startup] The notes move or its post-move check failed for a workspace: 0 source(s) failed to move, '
-      + '1 mismatch(es), 0 sample failure(s). Run pnpm drives:move --check-only for the full report.']);
+      + '1 mismatch(es), 0 sample failure(s). Run pnpm drives:move for the full report.']);
     assert.equal(lines.some((line) => line.includes(fx.orgId) || line.includes(fx.people.guest)), false, 'no ids in the log');
     const row = (await runRow())!;
     assert.notEqual(row.completed_at, null, 'the move completed');
@@ -1174,12 +1321,16 @@ test('a workspace whose run was ok is not moved or checked again', { skip: SKIP 
 
 /** `pnpm drives:move` as the upgrade container runs it: the script's own entry point, in a child process against the test database. */
 function drivesMoveScript(...args: string[]): { status: number | null; report: any } {
-  const run = spawnSync(process.execPath, ['--import', 'tsx', 'src/scripts/drives-move.ts', ...args], {
-    cwd: resolve(import.meta.dirname, '..'), env: { ...process.env, DATABASE_URL: url! }, encoding: 'utf8', timeout: 240_000,
-    maxBuffer: 64 * 1024 * 1024,
+  return drivesMoveScriptIn(resolve(import.meta.dirname, '..'), ...args);
+}
+
+/** The script run from `cwd` (its uploads folder is `<cwd>/uploads`). */
+function drivesMoveScriptIn(cwd: string, ...args: string[]): { status: number | null; report: any; stdout: string; stderr: string } {
+  const run = spawnSync(process.execPath, ['--import', 'tsx', resolve(import.meta.dirname, '../src/scripts/drives-move.ts'), ...args], {
+    cwd, env: { ...process.env, DATABASE_URL: url! }, encoding: 'utf8', timeout: 240_000, maxBuffer: 64 * 1024 * 1024,
   });
-  const json = run.stdout.slice(run.stdout.indexOf('{'));
-  return { status: run.status, report: json ? JSON.parse(json) : null };
+  const start = run.stdout.indexOf('{');
+  return { status: run.status, report: start >= 0 ? JSON.parse(run.stdout.slice(start)) : null, stdout: run.stdout, stderr: run.stderr };
 }
 
 test('a routine drives:move rerun skips a workspace whose run was ok, and --check-only reports without writing', { skip: SKIP }, async () => {
@@ -1196,6 +1347,9 @@ test('a routine drives:move rerun skips a workspace whose run was ok, and --chec
     const checked = drivesMoveScript('--org', fx.orgId, '--check-only');
     assert.equal(checked.status, 1, '--check-only reports the edit');
     assert.ok(checked.report.orgs[0].check.mismatches.some((m: string) => m.includes('has an extra share')));
+    assert.deepEqual(checked.report.orgs[0].move, before.report.move, '--check-only prints the recorded move report');
+    assert.equal(checked.report.orgs[0].recordedRun?.checkOk, true);
+    assert.notEqual(checked.report.orgs[0].recordedRun?.completedAt ?? null, null);
     const after = (await runRow())!;
     assert.equal(after.check_ok, true, 'still done');
     assert.equal(after.changed, before.changed, 'neither run wrote the run row');

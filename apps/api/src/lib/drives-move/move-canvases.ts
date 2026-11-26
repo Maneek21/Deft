@@ -19,13 +19,16 @@
 // design says, counted in canvasesPlacedWithWorkspaceOwner. With no active
 // human owner either, the canvas goes into the frozen personal drive of its
 // last editor, else of the chat's creator (whoever has a membership row),
-// made as for an inactive author, counted in canvasesInFrozenDrives: the
-// chat's edit share gives view until the workspace owner hands the drive on
-// (F6), accepted for this edge so one canvas never holds a workspace back.
-// Only a canvas with neither person at all is dropped and counted as an
-// empty canvas is, its content kept whole in the move's report
+// made as for an inactive author, counted in canvasesInFrozenDrives. There
+// the chat's edit share gives view only, indefinitely: handing a frozen
+// drive on is owner-only (F6) and the workspace has no active owner. That
+// is accepted for this edge, so one canvas never holds a workspace back.
+// Only a private canvas with neither person at all is dropped and counted
+// as an empty canvas is, named in the move's report by its ids only
 // (unplaceableCanvases; pending.ts canvasPlaceableSql is the same rule).
-// For a public chat's canvas the owner is only who it is credited to.
+// For a public chat's canvas the owner is only who it is credited to:
+// Shared notes needs no owner, so one nobody can be credited with goes
+// there all the same, created by nobody (consult C1).
 //
 // An empty canvas (no content, a document keeping no block, or only blank
 // paragraphs) is dropped: no document, no map row, counted on every run.
@@ -34,8 +37,9 @@
 // paragraphs of its text, counted. An image links only when the canvas's
 // last editor uploaded it (consult O-F6): nobody else wrote the content, and
 // any chat member could have written a file id into it. Every other image
-// becomes "Image not available", counted. Each canvas moves in its own
-// transaction with its map row, under the workspace's move lock.
+// becomes "Image not available", counted; one whose bytes are gone is also
+// counted in missingImageBytes. Each canvas moves in its own transaction
+// with its map row, under the workspace's move lock.
 import { sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import { canvasContentToJson, finishContent, imageFileIds, replaceUnlinkedImages, splitToFit } from './convert-note.js';
@@ -51,12 +55,12 @@ type CanvasRow = {
   created_at: TimestampText; updated_at: TimestampText; space_creator: string | null; space_org: string | null; space_type: string | null;
 };
 
-/** A canvas nobody can own at all, kept whole in the move's report. */
-export type DroppedCanvas = { canvasId: string; spaceId: string; title: string; content: unknown };
+/** A canvas nobody can own at all, named in the move's report by its ids only: never its title or content (consult C5). */
+export type DroppedCanvas = { canvasId: string; spaceId: string };
 
 type CanvasOutcome = 'already_moved' | 'empty' | { unplaceable: DroppedCanvas } | {
-  frozenCreated: boolean; shares: number; missingImages: number; subPages: number; splitBlocks: number; agentsAdded: number;
-  placedWithWorkspaceOwner: boolean; inFrozenDrive: boolean;
+  frozenCreated: boolean; shares: number; missingImages: number; missingImageBytes: number; subPages: number; splitBlocks: number;
+  agentsAdded: number; placedWithWorkspaceOwner: boolean; inFrozenDrive: boolean;
 };
 
 export async function moveCanvases(ctx: OrgContext, report: MoveReport): Promise<void> {
@@ -75,13 +79,14 @@ export async function moveCanvases(ctx: OrgContext, report: MoveReport): Promise
       if (outcome === 'already_moved') report.skippedAlreadyMoved += 1;
       else if (outcome === 'empty') report.emptyCanvases += 1;
       else if ('unplaceable' in outcome) {
-        // Nobody can own it: dropped and counted as an empty canvas is, its content kept in the report.
+        // Nobody can own it: dropped and counted as an empty canvas is, named in the report by its ids.
         report.emptyCanvases += 1;
         report.unplaceableCanvases.push(outcome.unplaceable);
       } else {
         report.canvases += 1;
         report.shares += outcome.shares;
         report.missingImages += outcome.missingImages;
+        report.missingImageBytes += outcome.missingImageBytes;
         report.agentsKeptOnSharedNotes += outcome.agentsAdded;
         if (outcome.frozenCreated) report.frozenDrives += 1;
         if (outcome.placedWithWorkspaceOwner) report.canvasesPlacedWithWorkspaceOwner += 1;
@@ -133,15 +138,12 @@ async function moveCanvasInTx(tx: Tx, ctx: OrgContext, canvasId: string): Promis
   else if (seats.length > 0) { owner = seats[0]!; ownerRule = 'earliest_member'; }
   else if (ctx.firstOwnerId) { owner = ctx.firstOwnerId; ownerRule = 'first_owner'; }
   // Nobody eligible: the frozen personal drive of the last editor, else of the chat's creator, if they have a
-  // membership row (its owner trigger needs one). The chat's edit share is capped at view until an owner hands the
-  // drive on (F6); accepted for this edge, so a workspace is never held back by one canvas.
+  // membership row (its owner trigger needs one). The chat's edit share gives view only, indefinitely: handing the
+  // drive on is owner-only (F6) and there is no active owner. Accepted for this edge, so one canvas never holds a
+  // workspace back.
   else if (canvas.last_edited_by && ctx.members.has(canvas.last_edited_by)) { owner = canvas.last_edited_by; ownerRule = 'frozen_last_editor'; }
   else if (chatCreator && ctx.members.has(chatCreator)) { owner = chatCreator; ownerRule = 'frozen_chat_creator'; }
-  else {
-    // Nobody at all: dropped and counted as an empty canvas is, its content kept in the move's report (canvasPlaceableSql).
-    return { unplaceable: { canvasId, spaceId: canvas.space_id, title: canvas.title, content: canvas.content } };
-  }
-  if (!owner) return { unplaceable: { canvasId, spaceId: canvas.space_id, title: canvas.title, content: canvas.content } };
+  else { owner = null; ownerRule = 'none'; }
   const isPublic = chatInWorkspace && canvas.space_type === 'public';
   const frozenFallback = ownerRule.startsWith('frozen_');
   const details: Record<string, unknown> = {
@@ -155,24 +157,29 @@ async function moveCanvasInTx(tx: Tx, ctx: OrgContext, canvasId: string): Promis
   let frozenCreated = false;
   let agentsAdded = 0;
   if (isPublic) {
+    // Shared notes needs no owner: with nobody to credit, the canvas is created by nobody (C1).
     const shared = await sharedNotesDriveInTx(tx, ctx, owner);
     driveId = shared.id;
     agentsAdded = shared.agentsAdded;
     folderId = await chatCanvasesFolderInTx(tx, orgId, driveId);
-  } else {
+  } else if (owner) {
     const drive = frozenFallback ? await frozenPersonalDriveInTx(tx, ctx, owner) : await personalDriveInTx(tx, ctx, owner);
     driveId = drive.id;
     frozenCreated = drive.frozenCreated;
+  } else {
+    // A private canvas nobody at all can own: dropped and counted as an empty canvas is, named by its ids (canvasPlaceableSql).
+    return { unplaceable: { canvasId, spaceId: canvas.space_id } };
   }
 
   // Images: only the last editor's uploads (O-F6).
-  const facts = await fileFactsInTx(tx, orgId, imageFileIds(converted.json), () => false);
+  const facts = await fileFactsInTx(tx, orgId, imageFileIds(converted.json), () => false, { acceptMissingImages: ctx.acceptMissingImages });
   const editorUploads = new Set(canvas.last_edited_by ? [canvas.last_edited_by] : []);
   const shows = new Set(imageFileIds(converted.json).filter((fileId) => imageAllowed(facts, fileId, editorUploads)));
   const shown = replaceUnlinkedImages(converted.json, shows);
   const refused = [...facts].filter(([fileId]) => !shows.has(fileId))
     .map(([fileId, fact]) => [fileId, fact.refusal ?? 'uploaded_by_someone_else'] as [string, FileRefusal]);
   if (refused.length > 0) details.image_refusals = Object.fromEntries(refused);
+  const missingImageBytes = refused.filter(([, refusal]) => refusal === 'bytes_missing').length;
   const title = canvas.title.trim() || 'Canvas';
   const { parts, splitBlocks } = splitToFit(finishContent(shown.json, canvasId), title, canvasId);
 
@@ -203,7 +210,7 @@ async function moveCanvasInTx(tx: Tx, ctx: OrgContext, canvasId: string): Promis
     orgId, legacyType: 'canvas', sourceId: canvasId, targetType: 'document', targetId: mainId, outcome: outcomeOf(0, shown.missing), details,
   });
   return {
-    frozenCreated, shares, missingImages: shown.missing, subPages: parts.length - 1, splitBlocks, agentsAdded,
+    frozenCreated, shares, missingImages: shown.missing, missingImageBytes, subPages: parts.length - 1, splitBlocks, agentsAdded,
     placedWithWorkspaceOwner: !isPublic && ownerRule === 'first_owner', inFrozenDrive: !isPublic && frozenFallback,
   };
 }

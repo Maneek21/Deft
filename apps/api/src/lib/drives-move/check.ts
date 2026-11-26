@@ -72,7 +72,7 @@ export async function postMoveCheck(orgId: string, sampleSize = 20): Promise<Pos
     for (const row of rows) tally(source.type, row);
   }
   // Canvases a page at a time: whether one has content is decided in code. One nobody can own (canvasPlaceableSql)
-  // is dropped with its content kept in the move's report, so it isn't expected here.
+  // is dropped and named by its ids in the move's report, so it isn't expected here.
   for (let after = ''; ;) {
     const page = rowsOf<{ id: string; mapped: boolean; target_ok: boolean; content: unknown; placeable: boolean }>(await db.execute(sql`
       SELECT page.*, (SELECT content FROM canvases WHERE id = page.id AND org_id = ${orgId}) AS content,

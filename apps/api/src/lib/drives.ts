@@ -236,7 +236,7 @@ export async function ensureWorkspaceDrive(orgId: string, executor: Executor = d
 }
 
 /** The workspace's Shared notes drive (the notes move): open, default role "can view". */
-export async function ensureSharedNotesDrive(orgId: string, createdBy: string, executor: Executor = db): Promise<DriveRow> {
+export async function ensureSharedNotesDrive(orgId: string, createdBy: string | null, executor: Executor = db): Promise<DriveRow> {
   return ensureSystemDrive(executor, orgId, 'shared_notes', 'Shared notes', 'view', createdBy);
 }
 

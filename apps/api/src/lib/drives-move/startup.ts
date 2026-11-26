@@ -8,9 +8,12 @@
 //   (pending.ts orgsWithoutFinishedMove) is moved and checked (runs.ts
 //   runOrgMove), which records its run (the report in drives_move_runs). If
 //   any move fails or any check isn't ok, a fixed line with its counts is
-//   logged (never the report's messages or mismatch lines; `pnpm drives:move
-//   --check-only` prints the full report) and this throws: the API does not
-//   listen.
+//   logged (never the report's messages or mismatch lines; `pnpm drives:move`
+//   prints the full report) and this throws: the API does not listen. When
+//   a source failed because the file storage was unreachable or empty, a
+//   second fixed line names `pnpm drives:move --accept-missing-images` for
+//   uploads that are truly gone. The start itself never accepts missing
+//   images: only the script's switch does (consult C6).
 // - A workspace with an ok run is never moved or checked again, so an edit
 //   made after the move (a share removed, a page deleted) can't fail a
 //   later start. Notes written after the move are F15's to stop.
@@ -19,6 +22,7 @@
 import { logNumber } from '../log-metadata.js';
 import { isPausedStart } from '../paused-start.js';
 import { orgsWithoutFinishedMove } from './pending.js';
+import { STORAGE_UNREACHABLE_MESSAGE } from './placement.js';
 import { runOrgMove } from './runs.js';
 
 export type StartupMove = { skipped: 'paused' | null; movedOrgs: number };
@@ -37,10 +41,15 @@ export async function moveNotesBeforeListen(options: { orgIds?: readonly string[
     const run = await runOrgMove(orgId);
     if (run.ok) continue;
     failed += 1;
-    // Counts only: the report carries error messages and mismatch lines. `pnpm drives:move --check-only` prints it whole.
+    // Counts only: the report carries error messages and mismatch lines. `pnpm drives:move` prints it whole.
     console.error(`[startup] The notes move or its post-move check failed for a workspace: ${logNumber(run.move?.errors.length ?? 0)} source(s) `
       + `failed to move, ${logNumber(run.check?.mismatches.length ?? 0)} mismatch(es), ${logNumber(run.check?.sampleFailed.length ?? 0)} `
-      + 'sample failure(s). Run pnpm drives:move --check-only for the full report.');
+      + 'sample failure(s). Run pnpm drives:move for the full report.');
+    if (run.move?.errors.some((failure) => failure.message === STORAGE_UNREACHABLE_MESSAGE)) {
+      console.error('[startup] The file storage was unreachable or empty, so images could not be checked. Fix the uploads mount, '
+        + 'then run pnpm drives:move. If the uploaded files are truly gone, pnpm drives:move --accept-missing-images moves every image as '
+        + '"Image not available".');
+    }
   }
   if (failed > 0) {
     throw new Error(`[startup] The notes move did not pass for ${logNumber(failed)} workspace(s). Refusing to listen: `

@@ -15,7 +15,11 @@
 // Notes (the brief's table):
 // - visibility 'org': the Shared notes drive, in a folder named after the
 //   author, with an `edit` share for the author. Open drives exclude guests
-//   (spec 5.2): the report counts the guests potentially affected;
+//   (spec 5.2): the report counts the guests potentially affected. A deleted
+//   one sits at the root of Shared notes, in the trash; when no live note
+//   makes Shared notes, it goes to its author's drive instead, unless the
+//   author has no membership row (no drive of their own: Shared notes all
+//   the same, consult C3);
 // - visibility 'space': the author's personal drive with a `view` share to
 //   the chat. With no chat, or a chat of another workspace, the note is
 //   private and reported (`made_private`);
@@ -258,13 +262,15 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   let driveId: string;
   let folderId: string | null = null;
   if (note.visibility === 'org') {
-    if (!note.is_deleted || ctx.sharedNotesWanted) {
+    // A deleted one whose author has no membership row (so no drive of their own) goes to Shared notes as well (C3).
+    if (!note.is_deleted || ctx.sharedNotesWanted || !authorIsMember) {
       const shared = await sharedNotesDriveInTx(tx, ctx, author);
       add('agentsKeptOnSharedNotes', shared.agentsAdded);
       driveId = shared.id;
       // A live note goes in its author's folder; a deleted one at the root, in the trash (O-F10).
       if (!note.is_deleted) folderId = await authorFolderInTx(tx, orgId, driveId, author);
       details.shared_notes = true;
+      if (note.is_deleted && !ctx.sharedNotesWanted) details.deleted_workspace_note = 'shared_notes_author_not_member';
     } else {
       // Only deleted workspace notes: no Shared notes drive is made for them; the author's drive holds them, in the trash.
       const drive = await personalDriveInTx(tx, ctx, author);
@@ -310,7 +316,7 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   const facts = await fileFactsInTx(tx, orgId, candidates, (fileId) => {
     const holder = ctx.currentHolders.get(fileId);
     return holder !== undefined && holder !== noteId;
-  });
+  }, { acceptMissingImages: ctx.acceptMissingImages });
   const authorUploads = new Set([author]);
   const currentShows = new Set(imageFileIds(current.json).filter((fileId) => imageAllowed(facts, fileId, authorUploads)));
   const linked = new Set([...currentShows, ...noteFiles.filter((fileId) => imageAllowed(facts, fileId, authorUploads))]);

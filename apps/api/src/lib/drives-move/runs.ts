@@ -15,8 +15,10 @@
 //   check_ok false: a process that stops during the check leaves that row,
 //   and the next run moves nothing new and checks again;
 // - the check's result is then recorded: check_ok and the report (the move's
-//   and the check's, ids and counts only).
-// `--check-only` only checks; it never writes a run row. A failure is
+//   and the check's, ids and counts only). A run with
+//   `--accept-missing-images` also records `accepted_missing_images: true`.
+// `--check-only` only checks; it never writes a run row, and prints the
+// recorded run (recordedRun, read only) with its check. A failure is
 // reported only after the run row is read again: if another mover recorded
 // this workspace as done meanwhile, it is done (consult S-F3).
 import { sql } from 'drizzle-orm';
@@ -24,10 +26,26 @@ import { db } from '../db.js';
 import { postMoveCheck, type PostMoveCheck } from './check.js';
 import { moveOrg, type MoveReport } from './move-org.js';
 import { DRIVES_MOVE_RELEASE, orgsWithoutFinishedMove } from './pending.js';
+import { rowsOf } from './placement.js';
 
 export type OrgMoveRun = {
   orgId: string; ok: boolean; skipped: 'already_done' | null; move: MoveReport | null; check: PostMoveCheck | null;
 };
+
+/** `pnpm drives:move --accept-missing-images` (C6); the API start never passes it. */
+export type OrgMoveOptions = { acceptMissingImages?: boolean };
+
+/** A workspace's recorded run for this release, as drives_move_runs holds it. */
+export type RecordedRun = { completedAt: string | null; checkOk: boolean; report: { move?: MoveReport; check?: PostMoveCheck;
+  accepted_missing_images?: boolean } };
+
+/** The recorded run, or null: read only, for `--check-only`. */
+export async function recordedRun(orgId: string): Promise<RecordedRun | null> {
+  const [row] = rowsOf<{ completed_at: string | null; check_ok: boolean; report: RecordedRun['report'] | null }>(await db.execute(sql`
+    SELECT completed_at::text AS completed_at, check_ok, report FROM drives_move_runs
+    WHERE org_id = ${orgId} AND release_version = ${DRIVES_MOVE_RELEASE}`));
+  return row ? { completedAt: row.completed_at, checkOk: row.check_ok, report: row.report ?? {} } : null;
+}
 
 async function recordRun(orgId: string, completed: boolean, checkOk: boolean, report: Record<string, unknown>): Promise<void> {
   await db.execute(sql`INSERT INTO drives_move_runs (id, org_id, release_version, completed_at, check_ok, report)
@@ -60,19 +78,20 @@ async function failedUnlessFinishedElsewhere(orgId: string, failed: OrgMoveRun):
   return (await finished(orgId)) ? { orgId, ok: true, skipped: 'already_done', move: failed.move, check: failed.check } : failed;
 }
 
-export async function runOrgMove(orgId: string): Promise<OrgMoveRun> {
+export async function runOrgMove(orgId: string, options: OrgMoveOptions = {}): Promise<OrgMoveRun> {
   if (await finished(orgId)) return { orgId, ok: true, skipped: 'already_done', move: null, check: null };
-  const move = await moveOrg(orgId);
+  const move = await moveOrg(orgId, options);
+  const accepted = options.acceptMissingImages ? { accepted_missing_images: true } : {};
   if (move.errors.length > 0) {
-    await recordRun(orgId, false, false, { move });
+    await recordRun(orgId, false, false, { ...accepted, move });
     return failedUnlessFinishedElsewhere(orgId, { orgId, ok: false, skipped: null, move, check: null });
   }
-  await recordRun(orgId, true, false, { move });
+  await recordRun(orgId, true, false, { ...accepted, move });
   const check = await postMoveCheck(orgId);
   if (!check.ok) {
     const run = await failedUnlessFinishedElsewhere(orgId, { orgId, ok: false, skipped: null, move, check });
     if (run.ok) return run;
   }
-  await recordRun(orgId, true, check.ok, { move, check });
+  await recordRun(orgId, true, check.ok, { ...accepted, move, check });
   return { orgId, ok: check.ok, skipped: null, move, check };
 }

@@ -10,8 +10,13 @@
 // moveOrg makes sure the Workspace drive exists, then moves folders (parents
 // first), notes and canvases, each source in its own transaction under the
 // workspace's advisory lock, pg_advisory_xact_lock(hashtext('drives-move:' ||
-// orgId)), with its note_document_map row (move-notes.ts, move-canvases.ts),
-// and last rewrites the references to moved notes (rewrite-references.ts).
+// orgId)), with its note_document_map row (move-notes.ts, move-canvases.ts).
+// Then, whenever Shared notes exists, it gives every eligible agent its view
+// row there (idempotent, consult C2: a rerun after an agent became eligible
+// passes the check even when nothing more moves into Shared notes), and last
+// rewrites the references to moved notes (rewrite-references.ts).
+// `acceptMissingImages` is `pnpm drives:move --accept-missing-images` only
+// (placement.ts fileFactsInTx); the API start never passes it.
 // A source already mapped is skipped, so running it again changes nothing and
 // a run that stopped part way resumes. A source that fails is rolled back and
 // listed in `errors`; the rest go on. The notes and canvas tables are only
@@ -30,7 +35,7 @@ import { db } from '../db.js';
 import { ensureWorkspaceDrive } from '../drives.js';
 import { moveCanvases, type DroppedCanvas } from './move-canvases.js';
 import { moveNoteFolders, moveNotes } from './move-notes.js';
-import { failureMessage, loadOrgContext, lockOrgInTx, rowsOf } from './placement.js';
+import { agentsOnExistingSharedNotesInTx, failureMessage, loadOrgContext, lockOrgInTx, rowsOf } from './placement.js';
 import { emptyReferenceRewrite, rewriteReferences, type ReferenceRewrite } from './rewrite-references.js';
 
 export type MoveReport = {
@@ -48,15 +53,24 @@ export type MoveReport = {
   spaceNotesMadePrivate: number;
   /** Personal drives made frozen, for deactivated, agent and system authors. */
   frozenDrives: number;
-  /** Linked-looking images whose bytes were gone while the storage answered: shown as "Image not available" (O-F2). */
+  /**
+   * Images in notes and canvases whose bytes were gone while the storage answered, or, with --accept-missing-images,
+   * while it was empty or unreachable: shown as "Image not available" (O-F2, C6).
+   */
   missingImageBytes: number;
-  /** Agents given a `view` member row on Shared notes, so they keep reading workspace notes (O-F3). */
+  /** Agents given a `view` member row on Shared notes, so they keep reading workspace notes (O-F3, C2). */
   agentsKeptOnSharedNotes: number;
   /** Private chats' canvases that no eligible chat member could own, placed with the workspace's first owner (O-F5). */
   canvasesPlacedWithWorkspaceOwner: number;
-  /** Private chats' canvases with no eligible member and no active human owner: in the last editor's (or the chat creator's) frozen drive. */
+  /**
+   * Private chats' canvases with no eligible member and no active human owner: in the last editor's (or the chat
+   * creator's) frozen drive, where the chat's share gives view only, indefinitely (handing on is owner-only).
+   */
   canvasesInFrozenDrives: number;
-  /** Canvases with content nobody at all can own (no last editor or creator with a membership row): dropped, counted in emptyCanvases, kept whole here. */
+  /**
+   * Private chats' canvases with content nobody at all can own (no last editor or creator with a membership row):
+   * dropped, counted in emptyCanvases, named here by their ids only (C5).
+   */
   unplaceableCanvases: DroppedCanvas[];
   guestsPotentiallyAffected: { guests: number; workspaceNotes: number };
   references: ReferenceRewrite;
@@ -73,16 +87,24 @@ export function emptyMoveReport(orgId: string): MoveReport {
   };
 }
 
-export async function moveOrg(orgId: string): Promise<MoveReport> {
+export async function moveOrg(orgId: string, options: { acceptMissingImages?: boolean } = {}): Promise<MoveReport> {
   const report = emptyMoveReport(orgId);
   await db.transaction(async (tx) => {
     await lockOrgInTx(tx, orgId);
     await ensureWorkspaceDrive(orgId, tx);
   });
-  const ctx = await loadOrgContext(orgId);
+  const ctx = await loadOrgContext(orgId, options);
   await moveNoteFolders(ctx, report);
   await moveNotes(ctx, report);
   await moveCanvases(ctx, report);
+  try {
+    report.agentsKeptOnSharedNotes += await db.transaction(async (tx) => {
+      await lockOrgInTx(tx, orgId);
+      return agentsOnExistingSharedNotesInTx(tx, orgId);
+    });
+  } catch (error) {
+    report.errors.push({ sourceId: orgId, message: `Agents could not be given their view on Shared notes: ${failureMessage(error)}` });
+  }
   try {
     report.references = await rewriteReferences(orgId);
     for (const conflict of report.references.conflicts) {

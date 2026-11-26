@@ -49,16 +49,20 @@ const unfinished = sql`(
 )`;
 
 /**
- * True for the canvas row `alias` when the move can place it: someone can own
- * it, as move-canvases.ts chooses (an eligible member of its chat, the
- * workspace's active human owner, or, for the frozen fallback, its last
- * editor or its chat's creator with any membership row). A canvas with
- * content that nobody can own at all is dropped and counted, with its
- * content kept in the move's report, so it never holds a workspace back.
+ * True for the canvas row `alias` when the move can place it, as
+ * move-canvases.ts decides: a public chat's canvas always (Shared notes
+ * needs no owner, consult C1); any other when someone can own it (an
+ * eligible member of its chat, the workspace's active human owner, or, for
+ * the frozen fallback, its last editor or its chat's creator with any
+ * membership row). A canvas with content that nobody can own at all is
+ * dropped and counted, named in the move's report by its ids, so it never
+ * holds a workspace back.
  */
 export const canvasPlaceableSql = (alias: string): SQL => {
   const c = sql.raw(alias);
-  return sql`(EXISTS (SELECT 1 FROM org_members placeable_owner JOIN users placeable_person ON placeable_person.id = placeable_owner.user_id
+  return sql`(EXISTS (SELECT 1 FROM spaces placeable_public WHERE placeable_public.id = ${c}.space_id AND placeable_public.org_id = ${c}.org_id
+      AND placeable_public.type = 'public')
+    OR EXISTS (SELECT 1 FROM org_members placeable_owner JOIN users placeable_person ON placeable_person.id = placeable_owner.user_id
       WHERE placeable_owner.org_id = ${c}.org_id AND placeable_owner.role = 'owner' AND placeable_owner.is_active = true
         AND placeable_person.kind = 'human')
     OR EXISTS (SELECT 1 FROM org_members placeable_editor WHERE placeable_editor.org_id = ${c}.org_id AND placeable_editor.user_id = ${c}.last_edited_by)

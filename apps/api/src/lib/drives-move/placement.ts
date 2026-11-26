@@ -124,9 +124,15 @@ export type OrgContext = {
   sharedNotesWanted: boolean;
   /** Which note holds each file several notes name (move-notes.ts currentContentHolders, O-F7); filled before notes move. */
   currentHolders: Map<string, string>;
+  /**
+   * `pnpm drives:move --accept-missing-images` (never the API start, C6): an
+   * empty or unreachable storage root counts every image's bytes as missing
+   * (fileFactsInTx) instead of refusing the source.
+   */
+  acceptMissingImages: boolean;
 };
 
-export async function loadOrgContext(orgId: string): Promise<OrgContext> {
+export async function loadOrgContext(orgId: string, options: { acceptMissingImages?: boolean } = {}): Promise<OrgContext> {
   const rows = rowsOf<{ user_id: string; role: string; is_active: boolean; kind: string; name: string }>(await db.execute(sql`
     SELECT member.user_id, member.role::text AS role, member.is_active, person.kind::text AS kind, person.name
     FROM org_members member JOIN users person ON person.id = member.user_id
@@ -138,7 +144,10 @@ export async function loadOrgContext(orgId: string): Promise<OrgContext> {
     members.set(row.user_id, { userId: row.user_id, role: row.role, active: row.is_active, kind: row.kind, name: row.name });
   }
   const first = rows.find((row) => row.role === 'owner' && row.is_active && row.kind === 'human');
-  return { orgId, members, firstOwnerId: first?.user_id ?? null, sharedNotesWanted: await sharedNotesWanted(orgId), currentHolders: new Map() };
+  return {
+    orgId, members, firstOwnerId: first?.user_id ?? null, sharedNotesWanted: await sharedNotesWanted(orgId), currentHolders: new Map(),
+    acceptMissingImages: options.acceptMissingImages === true,
+  };
 }
 
 /** OrgContext.sharedNotesWanted: a live workspace note, or a public chat's canvas with content (read a page at a time). */
@@ -223,7 +232,9 @@ export async function personalDriveInTx(tx: Tx, ctx: OrgContext, userId: string)
  * owner trigger needs it): what personalDriveInTx gives someone who can't
  * hold access, and the last fallback for a private chat's canvas nobody can
  * own (move-canvases.ts). Nobody opens it until the workspace owner hands it
- * on (F6), and shares out of it give view at most.
+ * on (F6), and shares out of it give view at most. Handing on is owner-only,
+ * so the canvas fallback, reached only when the workspace has no active
+ * human owner, stays view-only indefinitely.
  */
 export async function frozenPersonalDriveInTx(tx: Tx, ctx: OrgContext, userId: string): Promise<{ id: string; frozen: true; frozenCreated: boolean }> {
   if (!ctx.members.has(userId)) throw new MoveError('owner_not_member', 'The owner is not a member of this workspace, so they have no drive to move into');
@@ -257,17 +268,41 @@ export const ELIGIBLE_AGENTS_SQL = (orgId: string) => sql`SELECT member.user_id 
 
 /**
  * The Shared notes drive, made on first use (F4's ensureSharedNotesDrive),
- * created by the first owner, with every eligible agent as a `view` member
- * (ELIGIBLE_AGENTS_SQL; agents who join later follow the open-drive rule).
- * `agentsAdded` counts the member rows this call wrote.
+ * created by the first owner (else by the author, else by nobody: a public
+ * chat's canvas nobody can be credited with, C1), with every eligible agent
+ * as a `view` member (agentsOnSharedNotesInTx). `agentsAdded` counts the
+ * member rows this call wrote.
  */
-export async function sharedNotesDriveInTx(tx: Tx, ctx: OrgContext, authorId: string): Promise<{ id: string; agentsAdded: number }> {
+export async function sharedNotesDriveInTx(tx: Tx, ctx: OrgContext, authorId: string | null): Promise<{ id: string; agentsAdded: number }> {
   const { id } = await ensureSharedNotesDrive(ctx.orgId, ctx.firstOwnerId ?? authorId, tx);
+  return { id, agentsAdded: await agentsOnSharedNotesInTx(tx, ctx.orgId, id) };
+}
+
+/**
+ * Every eligible agent (ELIGIBLE_AGENTS_SQL) as a `view` member of the Shared
+ * notes drive `driveId`, idempotently: a row already there is kept as it is.
+ * The row covers anything later added to Shared notes; agents who join later
+ * follow the open-drive rule. Returns the rows written.
+ */
+async function agentsOnSharedNotesInTx(tx: Tx, orgId: string, driveId: string): Promise<number> {
   const added = rowsOf<{ id: string }>(await tx.execute(sql`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role)
-    SELECT gen_random_uuid()::text, ${ctx.orgId}, ${id}, 'user', eligible.user_id, 'view' FROM (${ELIGIBLE_AGENTS_SQL(ctx.orgId)}) eligible
+    SELECT gen_random_uuid()::text, ${orgId}, ${driveId}, 'user', eligible.user_id, 'view' FROM (${ELIGIBLE_AGENTS_SQL(orgId)}) eligible
     ON CONFLICT (drive_id, principal_type, principal_id) DO NOTHING
     RETURNING id`));
-  return { id, agentsAdded: added.length };
+  return added.length;
+}
+
+/**
+ * When the workspace has a live Shared notes drive, its eligible agents' view
+ * rows (moveOrg, every run, C2): an agent who became eligible after a run
+ * that left nothing more to move into Shared notes still gets its row, so
+ * the check never refuses that workspace forever. Returns the rows written.
+ */
+export async function agentsOnExistingSharedNotesInTx(tx: Tx, orgId: string): Promise<number> {
+  const [shared] = rowsOf<{ id: string }>(await tx.execute(sql`SELECT id FROM drives
+    WHERE org_id = ${orgId} AND system_key = 'shared_notes' AND is_deleted = false
+    ORDER BY created_at, id LIMIT 1`));
+  return shared ? agentsOnSharedNotesInTx(tx, orgId, shared.id) : 0;
 }
 
 /** The "Chat canvases" folder at the root of Shared notes, where public chats' canvases go (O-F4): made by the move (no author). */
@@ -319,7 +354,7 @@ export async function nextRootPosition(tx: Tx, orgId: string, driveId: string, f
 
 export type MovedDocument = {
   orgId: string; driveId: string; folderId: string | null; parentDocumentId: string | null; title: string; icon: string | null;
-  position: number; json: JSONContent; isTemplate: boolean; createdBy: string; lastEditedBy: string | null;
+  position: number; json: JSONContent; isTemplate: boolean; createdBy: string | null; lastEditedBy: string | null;
   lastEditedAt: TimestampText | null; createdAt: TimestampText; updatedAt: TimestampText; deletedAt: TimestampText | null; deletedBy: string | null;
 };
 
@@ -405,6 +440,9 @@ export async function insertSharesInTx(tx: Tx, orgId: string, documentIds: strin
 export type FileRefusal = 'not_found' | 'uploaded_by_someone_else' | 'on_message_or_task' | 'in_another_document'
   | 'held_by_another_note' | 'bytes_missing';
 
+/** A source refused because the file storage didn't answer (fileFactsInTx): the API start names --accept-missing-images for it. */
+export const STORAGE_UNREACHABLE_MESSAGE = 'The file storage is unreachable or empty: fix the uploads mount, then run the move again';
+
 /** What the move knows about one file a source's images name: who uploaded it, and why no document may take it, if so. */
 export type FileFacts = { uploadedBy: string | null; refusal: FileRefusal | null };
 
@@ -424,10 +462,13 @@ export type FileFacts = { uploadedBy: string | null; refusal: FileRefusal | null
  * (`bytes_missing`) and becomes a placeholder. When the root doesn't answer,
  * or is empty (a missing or misconfigured mount), this throws: the source is
  * refused without being mapped, so a run after the mount is fixed decides
- * again.
+ * again. With `acceptMissingImages` (`pnpm drives:move
+ * --accept-missing-images`, for uploads that are truly gone, C6) an empty or
+ * unreachable root is accepted instead: every file whose bytes aren't found
+ * is `bytes_missing`.
  */
-export async function fileFactsInTx(tx: Tx, orgId: string, fileIds: Iterable<string>, heldElsewhere: (fileId: string) => boolean):
-  Promise<Map<string, FileFacts>> {
+export async function fileFactsInTx(tx: Tx, orgId: string, fileIds: Iterable<string>, heldElsewhere: (fileId: string) => boolean,
+  options: { acceptMissingImages?: boolean } = {}): Promise<Map<string, FileFacts>> {
   const ids = [...new Set(fileIds)].sort();
   const facts = new Map<string, FileFacts>(ids.map((id) => [id, { uploadedBy: null, refusal: 'not_found' as FileRefusal }]));
   if (ids.length === 0) return facts;
@@ -440,15 +481,14 @@ export async function fileFactsInTx(tx: Tx, orgId: string, fileIds: Iterable<str
       EXISTS (SELECT 1 FROM document_attachments link WHERE link.org_id = moved_file.org_id AND link.file_id = moved_file.id) AS in_document
     FROM files moved_file
     WHERE moved_file.org_id = ${orgId} AND moved_file.id = ANY(${sql.param(ids)}::text[])`));
-  let rootReachable: boolean | null = null;
+  // True when the storage root answers, or when its loss is accepted (C6): then a file whose bytes are gone is only that file lost.
+  let lossIsThisFile: boolean | null = null;
   for (const row of rows) {
     let refusal: FileRefusal | null = row.attached ? 'on_message_or_task' : row.in_document ? 'in_another_document'
       : heldElsewhere(row.id) ? 'held_by_another_note' : null;
     if (refusal === null && !(await bytesExist(row.storage_key))) {
-      rootReachable ??= await storageRootReachable(tx, orgId);
-      if (!rootReachable) {
-        throw new MoveError('storage_unreachable', 'The file storage is unreachable or empty: fix the uploads mount, then run the move again');
-      }
+      lossIsThisFile ??= options.acceptMissingImages === true || await storageRootReachable(tx, orgId);
+      if (!lossIsThisFile) throw new MoveError('storage_unreachable', STORAGE_UNREACHABLE_MESSAGE);
       refusal = 'bytes_missing';
     }
     facts.set(row.id, { uploadedBy: row.uploaded_by, refusal });
