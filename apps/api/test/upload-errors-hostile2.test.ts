@@ -96,7 +96,7 @@ test('hostile input: an App file line carries no invisible character from a host
   bad.collections[0].views[0].fields = ['f_0'];
   const error = await refusal(JSON.stringify(bad));
   assertBounded(error, 'invisible');
-  assert.match(error.message, new RegExp(`App file ${PATH.replace(/[./]/g, '\\$&')} → `), error.message);
+  assert.ok(error.message.includes(`App file ${PATH} → `), error.message);
   const leaked = visibleText(error).flatMap(ignorableIn);
   assert.deepEqual([...new Set(leaked)], [], `invisible characters reached the person: ${JSON.stringify(error.message)}`);
 });
