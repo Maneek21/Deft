@@ -39,7 +39,7 @@ test('disabled modules and every module for guests are absent from navigation', 
 });
 
 test('module navigation uses exact route boundaries and settings owns administration', () => {
-  assert.equal(MODULE_SETTINGS_HREF, '/settings/modules');
+  assert.equal(MODULE_SETTINGS_HREF, '/settings/apps');
   assert.equal(moduleAppHref('crm/core'), '/modules/crm%2Fcore');
   assert.equal(isPrimaryNavigationItemActive('/modules/contacts/people/123', '/modules/contacts'), true);
   assert.equal(isPrimaryNavigationItemActive('/modules/contacts-plus', '/modules/contacts'), false);

@@ -1,8 +1,8 @@
 'use client';
 
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useMemo, useRef, useState, type ChangeEvent } from 'react';
 import Link from 'next/link';
-import { AppWindow, Check, Copy, FileUp, KeyRound, Loader2, Power, ShieldCheck, X } from 'lucide-react';
+import { AppWindow, Check, Copy, FileUp, Loader2, Power, ShieldCheck, X } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { EmptyState } from '@/components/empty-state';
 import { AttachmentAppUpgrade } from '@/components/apps/attachment-app-upgrade';
@@ -14,17 +14,47 @@ import { AttachmentAppReview } from '@/components/apps/attachment-app-review';
 import { RuntimeAppSetup } from '@/components/apps/runtime-app-setup';
 import { AppInstallationStatus } from '@/components/apps/app-management-summary';
 import { PublicCancellationOwnerPanel } from '@/components/apps/public-cancellation-owner-panel';
+import { AppsHomeLists, AppsSearch, BuildYourOwnPanel } from '@/components/apps/home/apps-home';
+import { ModuleUploadReview } from '@/components/apps/home/module-upload-review';
+import type { AgentAccess } from '@/components/apps/home/app-tiles';
 import { useSetPageContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
-import { APP_RESOURCE_SYNC_ENABLED, APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
+import { APPS_ENABLED, APP_RESOURCE_SYNC_ENABLED, APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
 import { useAuth } from '@/lib/auth-context';
-import { APP_PACKAGE_MAX_BYTES, appApiError, canEnableAppWithoutReview, canStageConnectedUpgrade, isConnectedAppManifest, normalizeAppInspection, type AppInspection, type AppInstallation } from '@/lib/apps';
+import { appApiError, canEnableAppWithoutReview, canStageConnectedUpgrade, isConnectedAppManifest, normalizeAppInspection, type AppInspection, type AppInstallation } from '@/lib/apps';
+import {
+  moduleApiError,
+  previewModuleManifestJson,
+  type BundledModule,
+  type ModuleInstallation,
+  type ModuleManifestPreview,
+  type ModuleManifestUploadDecision,
+} from '@/lib/modules';
+import {
+  APP_PACKAGE_INSPECT_REQUEST,
+  buildAppsHome,
+  checkAppUploadFile,
+  classifyAppUpload,
+  developerPairingAvailable,
+  moduleUploadRequest,
+  planModuleUpload,
+} from '@/lib/app-upload-routing';
 import { refreshApps, useAppRealtime, useApps } from '@/hooks/use-apps';
+import { refreshModuleCaches, useBundledModules, useInstalledModules, useModuleRealtime } from '@/hooks/use-modules';
+
+type UploadTarget = { kind: 'module'; module: ModuleInstallation } | { kind: 'package'; app: AppInstallation } | null;
+type PendingModule = { source: string; preview: ModuleManifestPreview; decision: ModuleManifestUploadDecision };
+type Message = { tone: 'error' | 'success'; text: string; href?: string; hrefLabel?: string };
+
+const errorText = (reason: unknown, fallback: string) => reason instanceof Error && reason.message ? reason.message : fallback;
 
 export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   const { user } = useAuth();
-  const { apps, isLoading, error, mutate } = useApps();
+  const { apps, isLoading, error, mutate, data: appsResponse } = useApps();
+  const installedModules = useInstalledModules();
+  const bundledModules = useBundledModules();
   useAppRealtime();
+  useModuleRealtime();
   useSetPageContext(<span className="text-[0.875rem] font-semibold">Settings · Apps</span>, []);
   const inputRef = useRef<HTMLInputElement>(null);
   const [pending, setPending] = useState<{
@@ -32,44 +62,127 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
     inspection: AppInspection;
     upgradeTarget: AppInstallation | null;
   } | null>(null);
-  const uploadTargetRef = useRef<AppInstallation | null>(null);
+  const [pendingModule, setPendingModule] = useState<PendingModule | null>(null);
+  const uploadTargetRef = useRef<UploadTarget>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ tone: 'error' | 'success'; text: string } | null>(null);
+  const [message, setMessage] = useState<Message | null>(null);
   const [attachmentUpgrade,setAttachmentUpgrade]=useState<{installation_id:string;target:AttachmentUpgradeTarget}|null>(null);
   const [pairing, setPairing] = useState<{ code: string; expires_at: string } | null>(null);
   const [query, setQuery] = useState('');
   const selectedApp = apps.find((app) => app.id === selectedId);
-  const visibleApps = apps.filter((app) => `${app.name} ${app.app_id}`.toLowerCase().includes(query.trim().toLowerCase()));
   const canManage = user?.role === 'owner' || user?.role === 'admin';
+  const pairingAvailable = APPS_ENABLED && developerPairingAvailable(appsResponse);
+  const home = useMemo(() => buildAppsHome({
+    modules: installedModules.modules,
+    bundled: bundledModules.modules,
+    apps,
+    query,
+  }), [installedModules.modules, bundledModules.modules, apps, query]);
 
-  const choosePackage = (upgradeTarget: AppInstallation | null = null) => {
-    uploadTargetRef.current = upgradeTarget;
+  const choosePackage = (target: UploadTarget = null) => {
+    uploadTargetRef.current = target;
     setMessage(null);
     inputRef.current?.click();
   };
-  const inspect = async (event: ChangeEvent<HTMLInputElement>) => {
+
+  const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
-    let upgradeTarget = uploadTargetRef.current;
+    const target = uploadTargetRef.current;
     uploadTargetRef.current = null;
     event.currentTarget.value = '';
     if (!file) return;
-    setPending(null); setMessage(null);
+    setPending(null); setPendingModule(null); setMessage(null);
     try {
-      if (!file.name.endsWith('.json')) throw new Error('Choose the JSON package produced by `deft app build`.');
-      if (file.size > APP_PACKAGE_MAX_BYTES) throw new Error('App packages must be 1 MB or smaller.');
+      checkAppUploadFile(file);
       const source = await file.text();
-      const response = await api.fetch('/api/apps/inspect', { method: 'POST', headers: { 'Content-Type': 'application/vnd.deft.app.package+json' }, body: source });
-      if (!response.ok) throw new Error(await appApiError(response, 'Unable to inspect this App package.'));
-      const inspection = normalizeAppInspection(await response.json());
-      upgradeTarget = attachmentUpgradeInspectionTarget(inspection,apps,upgradeTarget);
-      if (upgradeTarget && inspection.manifest.id !== upgradeTarget.app_id) {
-        throw new Error(`This package is ${inspection.manifest.id}; choose an upgrade for ${upgradeTarget.app_id}.`);
+      const upload = classifyAppUpload(source, { appPackagesEnabled: APPS_ENABLED });
+      if (upload.kind === 'module') {
+        if (target?.kind === 'package') throw new Error(`This is an app file, not an App Kit package. Choose a new package for ${target.app.name}.`);
+        const preview = await previewModuleManifestJson(source);
+        const decision = planModuleUpload(preview, installedModules.modules, target?.kind === 'module' ? target.module.id : null);
+        setPendingModule({ source, preview, decision });
+        return;
       }
-      if (upgradeTarget && inspection.manifest.compatibility.app_protocol === '0') {
-        throw new Error('Connected App upgrades require an App Protocol v1 package.');
+      if (target?.kind === 'module') throw new Error(`This is an App Kit package. To update ${target.module.manifest.name || target.module.slug}, choose its app file.`);
+      await inspectPackage(source, target?.kind === 'package' ? target.app : null);
+    } catch (reason) {
+      setMessage({ tone: 'error', text: errorText(reason, 'Deft could not read this file.') });
+    }
+  };
+
+  const inspectPackage = async (source: string, requestedTarget: AppInstallation | null) => {
+    let upgradeTarget = requestedTarget;
+    const response = await api.fetch(APP_PACKAGE_INSPECT_REQUEST.path, { method: 'POST', headers: { ...APP_PACKAGE_INSPECT_REQUEST.headers }, body: source });
+    if (!response.ok) throw new Error(await appApiError(response, 'Unable to inspect this App package.'));
+    const inspection = normalizeAppInspection(await response.json());
+    upgradeTarget = attachmentUpgradeInspectionTarget(inspection,apps,upgradeTarget);
+    if (upgradeTarget && inspection.manifest.id !== upgradeTarget.app_id) {
+      throw new Error(`This package is ${inspection.manifest.id}; choose an upgrade for ${upgradeTarget.app_id}.`);
+    }
+    if (upgradeTarget && inspection.manifest.compatibility.app_protocol === '0') {
+      throw new Error('Connected App upgrades require an App Protocol v1 package.');
+    }
+    setPending({ source, inspection, upgradeTarget });
+  };
+
+  const confirmModule = async () => {
+    if (!pendingModule) return;
+    const { decision, preview, source } = pendingModule;
+    setBusy(preview.slug); setMessage(null);
+    try {
+      const request = moduleUploadRequest(decision);
+      const response = await api.fetch(request.path, { method: 'POST', headers: request.headers, body: source });
+      if (!response.ok) {
+        throw new Error(await moduleApiError(response, decision.mode === 'upgrade' ? `Unable to update ${preview.name}.` : `Unable to install ${preview.name}.`));
       }
-      setPending({ source, inspection, upgradeTarget });
-    } catch (reason) { setMessage({ tone: 'error', text: reason instanceof Error ? reason.message : 'Unable to inspect App.' }); }
+      await refreshModuleCaches(preview.slug);
+      setPendingModule(null);
+      setMessage(decision.mode === 'upgrade'
+        ? { tone: 'success', text: `${preview.name} is updated to v${preview.version}. Every record was kept.` }
+        : { tone: 'success', text: `${preview.name} is installed.`, href: `/modules/${encodeURIComponent(preview.slug)}`, hrefLabel: `Open ${preview.name}` });
+    } catch (reason) {
+      setMessage({ tone: 'error', text: errorText(reason, 'Unable to apply this app file.') });
+    } finally { setBusy(null); }
+  };
+
+  const installBundled = async (module: BundledModule) => {
+    setBusy(module.slug); setMessage(null);
+    try {
+      const response = await api.post(`/api/modules/bundled/${encodeURIComponent(module.slug)}/install`);
+      if (!response.ok) throw new Error(await moduleApiError(response, `Unable to install ${module.name}.`));
+      await refreshModuleCaches(module.slug);
+      setMessage({ tone: 'success', text: `${module.name} is installed.`, href: `/modules/${encodeURIComponent(module.slug)}`, hrefLabel: `Open ${module.name}` });
+    } catch (reason) {
+      setMessage({ tone: 'error', text: errorText(reason, `Unable to install ${module.name}.`) });
+    } finally { setBusy(null); }
+  };
+
+  const updateModule = async (module: ModuleInstallation, patch: { enabled?: boolean; agent_access?: AgentAccess }) => {
+    const name = module.manifest.name || module.slug;
+    setBusy(module.slug); setMessage(null);
+    try {
+      const response = await api.patch(`/api/modules/${encodeURIComponent(module.slug)}`, patch);
+      if (!response.ok) throw new Error(await moduleApiError(response, `Unable to update ${name}.`));
+      await refreshModuleCaches(module.slug);
+      setMessage({ tone: 'success', text: patch.enabled === undefined
+        ? patch.agent_access === 'none' ? `Defty and agents can no longer use ${name}.` : `Defty and agents can now ${patch.agent_access === 'write' ? 'read and change' : 'read'} ${name} records. Their changes still wait for approval.`
+        : patch.enabled ? `${name} is on again.` : `${name} is off. Its records are kept, and you can turn it back on at any time.` });
+    } catch (reason) {
+      setMessage({ tone: 'error', text: errorText(reason, `Unable to update ${name}.`) });
+    } finally { setBusy(null); }
+  };
+
+  const updateBundledVersion = async (module: ModuleInstallation) => {
+    const name = module.manifest.name || module.slug;
+    setBusy(module.slug); setMessage(null);
+    try {
+      const response = await api.post(`/api/modules/bundled/${encodeURIComponent(module.slug)}/update`);
+      if (!response.ok) throw new Error(await moduleApiError(response, `Unable to update ${name}.`));
+      await refreshModuleCaches(module.slug);
+      setMessage({ tone: 'success', text: `${name} is updated. Every record was kept.` });
+    } catch (reason) {
+      setMessage({ tone: 'error', text: errorText(reason, `Unable to update ${name}.`) });
+    } finally { setBusy(null); }
   };
 
   const stage = async () => {
@@ -138,46 +251,56 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
     finally { setBusy(null); }
   };
 
+  const listLoading = (installedModules.isLoading && !installedModules.data) || (isLoading && !appsResponse);
+  const listFailed = Boolean(installedModules.error) && (!APPS_ENABLED || Boolean(error));
+  const retry = () => { void installedModules.mutate(); void bundledModules.mutate(); void mutate(); };
+
   return <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-    <PageHeader title="Apps" description="Manage installed Apps, their access, and activity." compact secondary={canManage ? <details className="px-1">
-      <summary className="cursor-pointer py-2 text-sm font-medium">Add or build an App</summary>
-      <div className="flex flex-wrap gap-2 py-2">
-      <button type="button" onClick={() => void createPairing()} disabled={busy !== null} className="deft-pill min-h-11"><KeyRound size={14} /> Pair Codex</button>
-      <button type="button" onClick={() => choosePackage()} disabled={busy !== null} className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }}><FileUp size={14} /> Inspect package</button>
-      </div>
-    </details> : undefined} />
-    <input ref={inputRef} type="file" accept="application/json,.json" onChange={(event) => void inspect(event)} className="sr-only" aria-label="Choose a Deft App package" />
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-3 md:px-6">
-      <div className="mx-auto max-w-5xl space-y-4">
-        {canManage && APP_RESOURCE_SYNC_ENABLED && <Link className="deft-pill min-h-11" href="/settings/apps/private-resources">Your private App resources</Link>}
-        {message && <div role={message.tone === 'error' ? 'alert' : 'status'} className="rounded-lg px-3 py-2 text-[13px]" style={{ background: message.tone === 'error' ? 'var(--danger-subtle)' : 'rgba(48,164,108,.12)', color: message.tone === 'error' ? 'var(--error)' : 'var(--status-green)' }}>{message.text}</div>}
+    <PageHeader title="Apps" description="Add apps that come with Deft, or build your own." compact />
+    <input ref={inputRef} type="file" accept="application/json,.json" onChange={(event) => void handleFile(event)} className="sr-only" aria-label="Choose an app file" tabIndex={-1} />
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(2rem,env(safe-area-inset-bottom))] pt-3 md:px-6">
+      <div className="mx-auto max-w-5xl space-y-5">
+        {message && <div role={message.tone === 'error' ? 'alert' : 'status'} className="flex items-start gap-3 rounded-lg px-3 py-2.5 text-[0.8125rem]" style={{ background: message.tone === 'error' ? 'var(--danger-subtle)' : 'rgba(48,164,108,.12)', color: message.tone === 'error' ? 'var(--error)' : 'var(--status-green)' }}>
+          <p className="min-w-0 flex-1 whitespace-pre-line break-words leading-relaxed">{message.text}{message.href && <> <Link href={message.href} className="font-semibold underline underline-offset-2">{message.hrefLabel}</Link></>}</p>
+          <button type="button" onClick={() => setMessage(null)} aria-label="Dismiss message" className="-my-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md"><X size={14} aria-hidden /></button>
+        </div>}
         {pairing && <section className="rounded-xl p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--ghost-border)' }} aria-label="One-time developer pairing">
           <div className="flex items-start justify-between gap-3"><div><h2 className="text-sm font-semibold">One-time Codex pairing</h2><p className="mt-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>Enter this only in the CLI prompt. It expires at {new Date(pairing.expires_at).toLocaleTimeString()} and cannot be replayed.</p></div><button type="button" onClick={() => setPairing(null)} aria-label="Dismiss pairing"><X size={16} /></button></div>
           <div className="mt-3 flex items-center gap-2"><code className="rounded-lg px-3 py-2 text-base font-semibold tracking-widest" style={{ background: 'var(--surface-container-high)' }}>{pairing.code}</code><button type="button" className="deft-pill" onClick={() => void navigator.clipboard.writeText(pairing.code)}><Copy size={13} /> Copy</button></div>
         </section>}
+        {pendingModule && <ModuleUploadReview preview={pendingModule.preview} decision={pendingModule.decision} busy={busy === pendingModule.preview.slug} onCancel={() => setPendingModule(null)} onConfirm={() => void confirmModule()} />}
         {pending && <InspectionCard pending={pending.inspection} upgradeTarget={pending.upgradeTarget} busy={busy === 'stage'} onCancel={() => setPending(null)} onStage={() => void stage()} />}
-        {isLoading ? <div className="flex min-h-48 items-center justify-center"><Loader2 className="animate-spin" aria-label="Loading Apps" /></div>
+        {selectedId ? (
+          isLoading ? <div className="flex min-h-48 items-center justify-center"><Loader2 className="animate-spin" aria-label="Loading Apps" /></div>
           : error ? <EmptyState icon={<AppWindow size={20} />} title="Apps did not load" description={error instanceof Error ? error.message : 'Try again.'} action={{ label: 'Try again', onClick: () => void mutate() }} />
-          : selectedId && !selectedApp ? <div className="space-y-3"><p>This App is unavailable in this workspace.</p><Link href="/settings/apps" className="deft-pill">All Apps</Link></div>
-          : apps.length === 0 ? <EmptyState icon={<AppWindow size={20} />} title="No Apps installed" description="Inspect a Deft App package to review what it adds to your workspace." action={canManage ? { label: 'Inspect a package', onClick: () => choosePackage() } : undefined} />
-          : selectedApp ? <>
+          : !selectedApp ? <div className="space-y-3"><p>This App is unavailable in this workspace.</p><Link href="/settings/apps" className="deft-pill">All Apps</Link></div>
+          : <>
             <Link href="/settings/apps" className="deft-pill min-h-11">← All Apps</Link>
-            <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy === selectedApp.id} onActivate={() => void activate(selectedApp)} onEnable={() => void enable(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage(selectedApp)} attachmentUpgrade={attachmentUpgrade?.installation_id===selectedApp.id?attachmentUpgrade.target:undefined} />
+            <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy === selectedApp.id} onActivate={() => void activate(selectedApp)} onEnable={() => void enable(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage({ kind: 'package', app: selectedApp })} attachmentUpgrade={attachmentUpgrade?.installation_id===selectedApp.id?attachmentUpgrade.target:undefined} />
             {canManage && ['3', '4', '5', '6', '7'].includes(selectedApp.manifest.schema_version) && <InstallationUpgradeTrust key={selectedApp.id} installationId={selectedApp.id} />}
             {selectedApp.manifest.schema_version === '6' && <PublicCancellationOwnerPanel installationId={selectedApp.id} />}
-          </> : <section aria-label="Installed Apps" className="space-y-3">
-            <label className="block text-xs font-medium">
-              Find an App
-              <input value={query} onChange={(event) => setQuery(event.target.value)} type="search" placeholder="Search installed Apps" className="mt-2 w-full rounded-lg border px-3 py-2 text-sm" style={{ background: 'var(--surface-container-low)', borderColor: 'var(--border)' }} />
-            </label>
-            {visibleApps.length === 0 && <p className="py-5 text-sm">No installed Apps match your search.</p>}
-            {visibleApps.map((app) => <Link key={app.id} href={`/settings/apps/${encodeURIComponent(app.id)}`} className="flex w-full items-center gap-3 rounded-xl border p-4 text-left" style={{ background: 'var(--surface-container-low)', borderColor: 'var(--ghost-border)' }}>
-              <AppWindow size={20} className="shrink-0" style={{ color: 'var(--primary)' }} />
-              <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{app.name}</span><span className="mt-1 block text-xs" style={{ color: 'var(--on-surface-variant)' }}>v{app.version} · {app.manifest.modules.length} Module{app.manifest.modules.length === 1 ? '' : 's'}</span></span>
-              <span className="rounded-full px-2 py-1 text-xs capitalize" style={{ background: 'var(--surface-container-high)' }}>{app.state}</span>
-              <span aria-hidden="true">→</span>
-            </Link>)}
-          </section>}
+          </>
+        ) : <>
+          <BuildYourOwnPanel canManage={canManage} busy={busy !== null} pairingAvailable={pairingAvailable} onUpload={() => choosePackage()} onPair={() => void createPairing()} />
+          {canManage && APP_RESOURCE_SYNC_ENABLED && <Link className="deft-pill min-h-11" href="/settings/apps/private-resources">Your private App resources</Link>}
+          {listLoading ? <div className="flex min-h-48 items-center justify-center"><Loader2 className="animate-spin" aria-label="Loading apps" style={{ color: 'var(--primary)' }} /></div>
+            : listFailed ? <EmptyState icon={<AppWindow size={20} />} title="Apps did not load" description={errorText(installedModules.error, 'Try again.')} action={{ label: 'Try again', onClick: retry }} />
+            : <>
+              {(installedModules.error || (APPS_ENABLED && error) || bundledModules.error) && <p role="alert" className="flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-[0.75rem]" style={{ background: 'var(--warning-subtle)', color: 'var(--on-surface)' }}>
+                Some apps did not load, so this list may be incomplete.
+                <button type="button" onClick={retry} className="font-semibold underline underline-offset-2">Try again</button>
+              </p>}
+              {home.total > 4 && <AppsSearch value={query} onChange={setQuery} />}
+              <AppsHomeLists home={home} query={query} canManage={canManage} busyKey={busy} handlers={{
+                onUpload: () => choosePackage(),
+                onInstallBundled: (module) => void installBundled(module),
+                onToggleModule: (module) => void updateModule(module, { enabled: !module.enabled }),
+                onAgentAccess: (module, value) => void updateModule(module, { agent_access: value }),
+                onUploadVersion: (module) => choosePackage({ kind: 'module', module }),
+                onBundledUpdate: (module) => void updateBundledVersion(module),
+              }} />
+            </>}
+        </>}
       </div>
     </div>
   </div>;

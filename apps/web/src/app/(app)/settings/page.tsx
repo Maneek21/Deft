@@ -24,7 +24,6 @@ const overviewLinks = [
   { href: '/settings/members', icon: Users },
   { href: '/settings/teams', icon: Users },
   { href: '/settings/apps', icon: Boxes },
-  { href: '/settings/modules', icon: Boxes },
   { href: '/settings/calendar', icon: CalendarDays },
   { href: '/settings/mcp-access', icon: Workflow },
   { href: '/settings/agent-employees', icon: Bot },

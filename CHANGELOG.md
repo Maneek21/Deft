@@ -10,6 +10,21 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### One Apps page, with one Upload an app button
+
+- **Changed.** Settings → Apps now lists every app in one place: the ones that come with
+  Deft (such as Contacts, which installs in one click), the ones built in your workspace,
+  and App Kit packages. Settings → Modules now opens the Apps page.
+- **One button for any app file.** **Upload an app** takes any `.json` file, whatever it
+  is called, and works out what it is. An app file installs after a check step, or
+  updates the installed app when it already exists, keeping every record. An App Kit
+  package goes to inspect and review, as before. A wrong file, such as a text file or
+  broken JSON, gets a plain message, and nothing is sent.
+- **Turn off, not delete.** The page says plainly that an installed app can be turned off,
+  not deleted, and that turning it off keeps its records.
+- **Pair Codex is shown only when developer pairing is available.** It stays hidden on
+  hosted workspaces, where pairing is off.
+
 ### Note backlinks find tasks whose project key holds a digit
 
 - **Fixed.** A note or message that names a task by its key now links to that task when
