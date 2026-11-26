@@ -10,173 +10,167 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-### The six website guides are re-checked for 155
+## [0.3.0-preview.155] — 2026-11-26 (prerelease)
 
-- **Changed.** The six guides the website copies from `docs/` (first workspace,
-  first agent action, first MCP connection, the MCP task example, building your
-  first app, and apps and App packages) now say "For Deft v0.3.0-preview.155."
-  and were checked against this release. "Build your first app" now starts in
-  the browser (Settings → Apps, a starter app, editing, uploading a file), with
-  the self-hosted command line second. "Apps and App packages" explains that a
-  customer's app is an app file, and that App packages are for Deft's own Email
-  at launch; a basic App package a customer builds can't be upgraded yet.
+Changes since `v0.3.0-preview.154`: #610, #613, #609, #614, #615, #616, #617 and #618, plus
+#612 (154's release branch merged back into master, which adds nothing new). Release scope
+`core` (no Hermes compatibility claim). Cut from master at `2529a7b2`.
 
-### The app file schema no longer flags valid files
+### Build your own app in the browser
 
-- **Fixed.** The published JSON Schema for app files
-  (`docs/schemas/deft.module.v1.schema.json`) marked `required`, `multiple` and
-  `subtitle_fields` as required, though Deft fills them in. Editors therefore
-  flagged valid files, and all four starter apps failed it. The schema now
-  describes what you write, so those properties are optional, while a file
-  missing something truly required (such as `id`, or a field's `label`) still
-  fails.
+A workspace owner or admin can now build an app and change it without leaving Deft. It all
+happens in **Settings → Apps**, which lists every app in one place: the ones that come with
+Deft (Contacts installs in one click), the ones built in the workspace, and App Kit packages.
+Settings → Modules now opens this page.
 
-### Start from a template, check before installing, and edit apps in the browser
+- **Start from a starter app.** Four are offered: Hiring pipeline, Vendor tracker, Light CRM
+  and Content calendar. Name one, choose whether to add a few sample records, and install.
+  No file is needed. The samples come with their links (a candidate linked to its role, a
+  deal to its company). The app is an ordinary uploaded app, yours to edit and update, and
+  it opens on a board. If the name is taken, or belongs to an app that ships with Deft, it installs as "<name> 2"
+  (web address ending in `-2`). If adding samples stops part-way, the app stays installed
+  and the message says how many were added.
+- **A plain-words check before install.** Before an app file installs, the check step
+  describes it: each record type and its fields ("Stage: pick one of Applied, Phone
+  screen…, starts as Applied, required"), how record types link ("Each Candidate links to
+  one Role"), its views ("Pipeline: a board grouped by Stage") and who can see the records.
+  It asks "Let Defty read these records?". The answer defaults to no; yes turns on read
+  access for Defty after install.
+- **Edit, Check and Save.** **Edit** on an app built in the workspace opens its app file.
+  **Check** reads it the way the server will: it must be valid, keep its id and slug, and
+  raise its version. **Save** updates the app, and raises the version by one patch step if
+  you didn't. Every record is kept. A change that would break existing records is refused;
+  when it is their values that no longer fit, the message names them (see "Updates" below).
+  Save applies only if nobody updated the app since you opened it (`If-Match`); if someone
+  did, you're told to load the newest version. An app that ships with Deft shows **View
+  file** instead of **Edit**: its file opens read-only and says why. An app that belongs to
+  an App Kit package has no Edit or View file button; it changes only with a new version
+  of its package.
+- **Download** saves an app's file. It starts with a `$schema` line, so an editor checks the
+  file as you type.
+- **Upload an app** takes any `.json` file, whatever it is called, and works out what it is.
+  An app file installs after the check step, or updates the installed app with the same id
+  and slug, keeping every record. An App Kit package goes to inspect and review, as before.
+  A wrong file, such as a text file or broken JSON, gets a plain message, and nothing is
+  sent.
+- The four starter files are plain app files (`apps/web/src/lib/app-templates/*.json`), ready
+  for the website to offer as downloads.
 
-- **Start from a template.** Settings → Apps offers four starters: Hiring pipeline, Vendor
-  tracker, Light CRM and Content calendar. Name one, choose whether to add a few sample
-  records, and install. No file is needed, and the app is your own to change later.
-- **See what you are installing.** Before an app file installs, the check step describes
-  it in plain words: its record types, fields, links and views, and who can see it. It
-  also asks "Let Defty read these records?", and the answer defaults to no.
-- **Edit in the browser.** **Edit** on an app you built opens its file. **Check** reads it
-  for mistakes. **Save** updates the app and raises the version for you if you didn't.
-  Every record is kept. A change that would break existing records is refused and names
-  them. If someone else updated the app first, you're told to reload. Apps that come with
-  Deft, or belong to an App Kit package, open read-only and say why.
-- **Download** saves an app's file. It includes a `$schema` line, so editors check the file
-  as you type.
+### Upgrade notes
 
-### Updating an app: the records that don't fit are named; edits save safely; editors can check app files
+- **No migration.** Schema head stays `0.3.0-preview.154`, so an upgrade from `.154`
+  changes no schema and the `upgrade` service has nothing to apply. Back up first, as for
+  every upgrade. To roll back, run `.154`'s image digest: there is nothing to undo in the
+  database.
+- **Settings → Apps needs no switch any more.** On `.154` it appeared only in a web build
+  with `NEXT_PUBLIC_FEATURE_APPS`, and app files were managed on Settings → Modules. Now it
+  is always there for owners and admins, with everything above. App Kit packages still
+  appear on it only with the Apps switches on (`NEXT_PUBLIC_FEATURE_APPS` in the web build,
+  `DEFT_APPS_ENABLED` on the server).
+- No setting is added, changed or removed. Author Kit stays `0.1.0-alpha.43`.
 
-- **Records that block an update are named.** When an update is refused because
-  some records would not fit the new version, the message now names up to five
-  of them by title, with the field and the problem, such as
-  `Candidates → Email: now required, but empty in "Dana Example" and "Sam Sample"`.
-  Removing a field that still holds data reads
-  `… → Notes: removed, but still has a value in …`. Up to 20 of the records, each
-  with its problems, are in `details.records`, and the total in
-  `details.record_count`. The code is still `MODULE_VALIDATION_ERROR`.
-- **Helpers for editing an app in the browser,** for the Apps page's editor: check
-  an edited app file the way the server will (the id and slug cannot change, and
-  the version must go up), raise the version by one patch step when you didn't,
-  and save it as an update that only applies if the app hasn't changed since you
-  opened it (`If-Match`).
+### Behaviour changes an operator should know
+
+- **Developer pairing answers 404 when it is off.** With developer pairing off
+  (`DEFT_APP_DEVELOPER_PAIRING_ENABLED` not `true`, as on hosted), `POST /api/apps/pairings`
+  and its revoke route answer 404 `NOT_FOUND` instead of 503. `GET /api/apps` now also
+  returns `developer_pairing: { available }`, and the Apps page shows **Pair Codex** only
+  when it is `true`. With `DEFT_APPS_ENABLED` off, `/api/apps` is not mounted at all, as
+  before.
+- **Reserved app names are refused (409).** An upload can no longer take the slug or id of
+  an app that ships with Deft (such as `contacts` or `com.deft.contacts`), or any id that
+  starts with `com.deft.` or `io.deft.`. Installing such an app file
+  (`POST /api/modules/sideload`) or staging such an App package answers 409
+  `MODULE_IDENTITY_RESERVED`, with a message that says what to change. Before, an upload
+  could block bundled Contacts, or Email, in that workspace for good, because an installed
+  app cannot be uninstalled. Bundled Contacts still installs in one click. Apps installed
+  before this release are not touched.
+- **An App package can't carry an app that ships with Deft, even unchanged.** Staging one is
+  refused with 409 `MODULE_IDENTITY_RESERVED`, and an App update may not add one. So the
+  Contacts CRM App's upload through Settings → Apps is now refused; installs made before
+  155 keep working (see `docs/crm-operator-demo-guide.md`). Email still stages through its
+  own reviewed entry point, which now trusts only a Protocol 7 package with the id
+  `io.deft.email`. No upload route can mark a package first-party.
+- **"Module" is "app" in every word a person reads:** the web app (app and record pages,
+  task links, approval cards, search, Settings → Personal AI connections, the sign-in
+  consent screen), error messages, and the descriptions of the app record tools for MCP
+  clients and Defty. A collection is a "record type", and a manifest is the "app file".
+  **No route, API field, error code, OAuth scope (`read:modules`, `write:modules`) or MCP
+  tool name (`module_list` and the rest) changed.** A client that matched on the old message
+  text should match on `code` instead. The API only gains fields: `developer_pairing`
+  above, and the `details` below.
+- **Upload errors are readable.** A refused app file or App package gets at most three plain
+  lines that name where the problem is, such as
+  `Candidates → fields: at most 64 fields (you have 500)`, instead of the validator's raw
+  JSON. A JSON syntax error names its line and column when they can be found. This covers installing and updating
+  an app, inspecting and staging an App package, and the check the browser runs before
+  upload. The same lines are in `details.lines`.
+- **Updates name the records that block them.** When an update is refused because some
+  records' values would not fit the new version, the message names up to five of them by
+  title, with the field and the problem, such as
+  `Candidates → Email: now required, but empty in "Dana Example" and "Sam Sample"`, or
+  `… → Notes: removed, but still has a value in …`. Up to 20 of the records, each with its
+  problems, are in `details.records`, and the total in `details.record_count`. The code is
+  still `MODULE_VALIDATION_ERROR`. Other refusals are unchanged and name no records: links
+  that no longer fit (for example, a link field made single while some records link to
+  more than one) name the field and give the record's id in `details.source_record_id`, and
+  a member field that points to someone who is not an active member gives
+  `details.invalid_member_ids`.
 - **`"$schema"` is allowed in an app file.** Add
-  `"$schema": "https://deft.ing/schemas/deft.module.v1.schema.json"` and an
-  editor checks the file as you type. The link is dropped on upload, so it never
-  changes the app's digest. The schema file is in `docs/schemas/` for the website
-  to serve at that address. App Kit, which builds App packages and ships on its
-  own, does not accept the line yet.
+  `"$schema": "https://deft.ing/schemas/deft.module.v1.schema.json"` and an editor checks
+  the file as you type. The line is dropped on upload, so it never changes the app's digest.
+  The schema file is `docs/schemas/deft.module.v1.schema.json`, for the website to serve at
+  that address. It describes what you write: `required`, `multiple` and `subtitle_fields`
+  are optional, because Deft fills them in. (A first draft marked them required, so editors
+  flagged valid files and all four starter apps failed it.) A file missing something truly required
+  (such as `id`, or a field's `label`) still fails. App Kit, which builds App packages and
+  ships on its own, does not accept the line yet.
 
-### Starter apps and a plain-words app preview, ready for the Apps page
+### Limits
 
-Groundwork only: nothing on a page uses these yet. The Apps page's starter
-gallery and install step will.
+- **Apps hold data and views only.** An app adds record types, fields, links and views
+  (boards, tables, timelines, forms and record pages). It can't run code of its own, add
+  custom screens or buttons, send email, run on a schedule, or connect to outside services.
+- **Apps are turned off, never deleted.** Turning an app off hides it and keeps its records.
+  Its id and slug stay taken.
+- **A customer-built App package (App Protocol 0, records and views only) can't be
+  upgraded.** Deft refuses another version of it (409), and it can't be uninstalled.
+  Changing it means a new App with a new id. Connected packages keep their separate,
+  reviewed upgrade flow.
+- **Guests can't see apps or their records** (403 `MODULE_ACCESS_DENIED`). Owners, admins
+  and members see and change every record in an app; there are no private records, record
+  types or fields. Only owners and admins install, update and turn off apps.
+- **At most 64 fields per record type.** An app also holds at most 8 record types, each with
+  at most 8 views, in an app file of at most 128 KB.
 
-- **Four starter apps.** Hiring pipeline, Vendor tracker, Light CRM and Content
-  calendar. Each installs under the name you give it, as an ordinary uploaded app,
-  so it can be edited and updated like one, and opens on a board. Sample records
-  can be added with their links (a candidate linked to its role, a deal to its
-  company). If adding samples stops part-way, the app stays installed and the
-  message says how many were added. If the name is taken, or belongs to an app
-  that ships with Deft, the app is installed as "<name> 2" (web address ending in
-  `-2`).
-- **A preview in plain words.** Before an app is installed, it can be described:
-  each record type, its fields ("Stage: pick one of Applied, Phone screen…,
-  starts as Applied, required"), how record types link ("Each Candidate links to
-  one Role"), its views ("Pipeline: a board grouped by Stage") and who can see the
-  records, with the question "Let Defty read these records?" (default no; yes
-  turns on read access for Defty after install).
-- The starter files are plain app files (`apps/web/src/lib/app-templates/*.json`),
-  ready for the website to offer as downloads.
+### Docs
 
-### Everything you install or build is called an app
+- The six guides the website copies from `docs/` (first workspace, first agent action, first
+  MCP connection, the MCP task example, building your first app, and apps and App packages)
+  say "For Deft v0.3.0-preview.155." and were checked against this release. "Build your
+  first app" starts in the browser (Settings → Apps, a starter app, editing, uploading a
+  file), with the self-hosted command line second. "Apps and App packages" explains that a
+  customer's app is an app file, and that App packages are for Deft's own Email at launch.
 
-- **Changed.** The web app no longer says "module" anywhere a person reads. What you
-  install, build, and turn on or off is an "app". A collection is a "record type", and a
-  manifest is the "app file". This covers the app and record pages, task links, approval
-  cards, search, Settings → Personal AI connections, and the sign-in consent screen.
-- **Unchanged underneath.** Routes, API fields, OAuth scopes such as `read:modules` and
-  MCP tool names such as `module_list` keep their names. An app is still a module file
-  under the hood.
+### Notices carried forward (unchanged since `.142`)
 
-### One Apps page, with one Upload an app button
-
-- **Changed.** Settings → Apps now lists every app in one place: the ones that come with
-  Deft (such as Contacts, which installs in one click), the ones built in your workspace,
-  and App Kit packages. Settings → Modules now opens the Apps page.
-- **One button for any app file.** **Upload an app** takes any `.json` file, whatever it
-  is called, and works out what it is. An app file installs after a check step, or
-  updates the installed app when it already exists, keeping every record. An App Kit
-  package goes to inspect and review, as before. A wrong file, such as a text file or
-  broken JSON, gets a plain message, and nothing is sent.
-- **Turn off, not delete.** The page says plainly that an installed app can be turned off,
-  not deleted, and that turning it off keeps its records.
-- **Pair Codex is shown only when developer pairing is available.** It stays hidden on
-  hosted workspaces, where pairing is off.
-
-### Uploading an app: plain error messages, reserved names, pairing answers 404 when off
-
-- **Readable upload errors.** When an uploaded app file (a module manifest, or an
-  App package) is refused, the message is now at most three plain lines that name
-  where the problem is, such as `Candidates → fields: at most 64 fields (you have 500)`,
-  instead of the validator's raw JSON. A JSON syntax error names its line and
-  column. This applies to installing and upgrading a module, to inspecting and
-  staging an App, and to the check the browser runs before upload. The same lines
-  are in `details.lines`.
-- **Names kept for apps that ship with Deft.** An upload can no longer take a
-  bundled module's slug or id (such as `contacts` or `com.deft.contacts`), or any
-  id that starts with `com.deft.` or `io.deft.`. It is refused with 409
-  `MODULE_IDENTITY_RESERVED` and a message that says what to change. An installed
-  app cannot be uninstalled, and uninstalling an App package does not free its id,
-  so before this an upload could block bundled Contacts, or Email, in that
-  workspace for good. Bundled Contacts still installs in one click. Email still
-  stages through its own reviewed entry point, which now trusts only a Protocol 7
-  package with the id `io.deft.email`. Apps installed before this release are not
-  touched.
-- **Messages say "app", not "module".** Error messages a person can read now say
-  "app" for a module, "record type" for a collection and "app file" for a
-  manifest. So do the descriptions of the app record tools for MCP clients and
-  Defty. Error codes, routes, API fields, scopes (`read:modules`) and tool names
-  (`module_list` and the rest) are unchanged. A client that matched on the old
-  message text should match on the `code` instead.
-- **An App that carries a built-in app is refused.** This includes the Contacts CRM
-  App, whose upload through Settings → Apps is now refused; installs made before
-  155 keep working (see `docs/crm-operator-demo-guide.md`).
-- **A customer App cannot carry bundled Contacts, even unchanged.** Activating such
-  an App would install Contacts as owned by that App (blocking the one-click
-  install and every later Contacts update) or take over an installed Contacts
-  (moving its on/off switch to the App). Staging it is refused with 409
-  `MODULE_IDENTITY_RESERVED`, and an App update may not add it either. Only a
-  first-party package that Deft itself stages may carry it, the way Email stages
-  through its own reviewed entry point; no upload route can mark a package
-  first-party.
-- **Developer pairing answers 404 when it is off.** With developer pairing turned
-  off (as on hosted), `POST /api/apps/pairings` and its revoke route now answer
-  404 instead of 503. `GET /api/apps` now also returns
-  `developer_pairing: { available }`, which the Apps page can use to hide
-  **Pair Codex**.
-
-### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
-
-Not before 2026-11-25, and never fewer than 14 days after this notice merged.
-No code changes here and alpha.43 is unchanged. Alpha.44 is the "next breaking Kit
-alpha" the existing `@deprecated` notices name. It removes the 26 deprecated
-compose, address-list and raster names from the root and `/experience` entry
+Kit `0.1.0-alpha.44` removes deprecated Email compatibility. Not before 2026-11-25, and never
+fewer than 14 days after this notice merged. No code changes here and alpha.43 is unchanged.
+Alpha.44 is the "next breaking Kit alpha" the existing `@deprecated` notices name. It removes
+the 26 deprecated compose, address-list and raster names from the root and `/experience` entry
 points, the 9 sandbox names re-exported from the root, the root override of
 `checkDeftAppDeveloperContract`, and the `safe-compose-html`, `mailbox-list` and
-`native-compose-raster` modules under `@deft/app-kit/examples/email`. Importing only
-the root will no longer register the sandbox profile; the `sandbox`, `templates`,
-`register` and `cli` modules and the three `examples/email` subpath exports stay,
-opt-in. Use `@deft/app-kit/core` and the `deft-email` `runtime/domain` modules, or
-keep pinning alpha.43. Names and plan are listed in the Kit README and
+`native-compose-raster` modules under `@deft/app-kit/examples/email`. Importing only the root
+will no longer register the sandbox profile; the `sandbox`, `templates`, `register` and `cli`
+modules and the three `examples/email` subpath exports stay, opt-in. Use `@deft/app-kit/core`
+and the `deft-email` `runtime/domain` modules, or keep pinning alpha.43. Names and plan are
+listed in the Kit README and
 `docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
 
-- App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
-  at 1,277 (it may only be lowered), each exception's `milestone` now starts with
-  its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
-  the counts per milestone. No finding changed.
+- App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count at
+  1,277 (it may only be lowered), each exception's `milestone` starts with its burn-down
+  bucket, and `node scripts/check-app-boundary.mjs --summary` prints the counts per
+  milestone. No finding changed.
 
 ## [0.3.0-preview.154] — 2026-11-26 (prerelease)
 
