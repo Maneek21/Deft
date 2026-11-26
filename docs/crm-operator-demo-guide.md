@@ -63,7 +63,15 @@ The exporter records the supplied tarball's package identity and SHA-256 and
 rejects a wrong Kit before creating output. Keep the generated project and
 vendor archive outside the repository when sharing a review bundle.
 
-Use the supported package-upload route for the current exported CRM artifact:
+> **From release 155, this upload is refused.** The Contacts CRM App carries the
+> built-in Contacts app (`com.deft.contacts`). Deft now refuses any uploaded App
+> that carries a built-in app, so an upload cannot take Contacts over or block it.
+> Workspaces that installed the CRM App before 155 keep working.
+> For a CRM demo on 155, install **Contacts** in one click from Settings → Apps
+> and add a starter app (such as Light CRM) beside it.
+> Letting Deft itself stage first-party Apps is planned after launch.
+
+Before 155, the supported package-upload route for the exported CRM artifact was:
 open **Settings → Apps**, choose **Add or build an App**, select **Inspect
 package**, and upload the generated `contacts-crm.deftapp.json` (base or
 connected). Review the identity, dependencies, resource reads, connector

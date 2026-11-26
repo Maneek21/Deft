@@ -5,6 +5,7 @@ import {
   parseSupportedDeftModuleManifestJson as parseDeftModuleManifestJson,
   type DeftModuleManifest as DeftModuleManifestV1,
 } from '@deft/shared/modules';
+import { formatManifestError } from '@deft/shared/module-issues';
 import { ModuleError } from './module-errors.js';
 
 export const MODULE_MANIFEST_REQUEST_MAX_BYTES = MODULE_LIMITS.manifest_bytes;
@@ -21,7 +22,7 @@ function invalidManifest(message: string, details?: Record<string, unknown>): Mo
 
 function requestTooLarge(): ModuleError {
   return new ModuleError(
-    `Module manifest request exceeds ${MODULE_MANIFEST_REQUEST_MAX_BYTES} bytes`,
+    `The app file is larger than ${MODULE_MANIFEST_REQUEST_MAX_BYTES} bytes`,
     'MODULE_MANIFEST_TOO_LARGE',
     413,
     { max_bytes: MODULE_MANIFEST_REQUEST_MAX_BYTES },
@@ -38,7 +39,7 @@ async function readBoundedBody(request: Request): Promise<Uint8Array> {
     if (parsed > MODULE_MANIFEST_REQUEST_MAX_BYTES) throw requestTooLarge();
   }
 
-  if (!request.body) throw invalidManifest('A module manifest file is required');
+  if (!request.body) throw invalidManifest('An app file is required');
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let byteLength = 0;
@@ -57,7 +58,7 @@ async function readBoundedBody(request: Request): Promise<Uint8Array> {
     reader.releaseLock();
   }
 
-  if (byteLength === 0) throw invalidManifest('A module manifest file is required');
+  if (byteLength === 0) throw invalidManifest('An app file is required');
   const body = new Uint8Array(byteLength);
   let offset = 0;
   for (const chunk of chunks) {
@@ -78,7 +79,7 @@ function parseExpectedDigest(value: FormDataEntryValue | string | null): string 
     : trimmed;
   const parsed = ModuleManifestDigestSchema.safeParse(unquoted);
   if (!parsed.success) {
-    throw invalidManifest('expected_active_digest must be a sha256 module manifest digest');
+    throw invalidManifest('expected_active_digest must be a sha256 app file digest');
   }
   return parsed.data;
 }
@@ -88,20 +89,12 @@ function parseManifestJson(source: string): DeftModuleManifestV1 {
     return parseDeftModuleManifestJson(source);
   } catch (error) {
     if (error instanceof ModuleError) throw error;
-    const details = error && typeof error === 'object' && 'issues' in error
-      ? {
-          issues: Array.isArray((error as { issues: unknown }).issues)
-            ? (error as { issues: Array<{ path?: unknown; message?: unknown }> }).issues.map((issue) => ({
-                path: Array.isArray(issue.path) ? issue.path : [],
-                message: typeof issue.message === 'string' ? issue.message : 'Invalid manifest value',
-              }))
-            : [],
-        }
-      : undefined;
-    throw invalidManifest(
-      error instanceof Error ? error.message : 'Module manifest is invalid',
-      details,
-    );
+    // Validator output is turned into at most three plain lines that name
+    // where the problem is. Raw validator JSON never reaches the response.
+    let input: unknown;
+    try { input = JSON.parse(source) as unknown; } catch { input = undefined; }
+    const readable = formatManifestError(error, { input, source, subject: 'App file' });
+    throw invalidManifest(readable.message, { issues: readable.issues, lines: readable.lines });
   }
 }
 
@@ -109,7 +102,7 @@ function decodeManifestJson(body: Uint8Array): string {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(body);
   } catch {
-    throw invalidManifest('Module manifest must be valid UTF-8 JSON');
+    throw invalidManifest('The app file must be UTF-8 JSON text');
   }
 }
 
@@ -122,22 +115,22 @@ async function parseMultipart(
     const copiedBody = body.slice().buffer as ArrayBuffer;
     form = await new Response(copiedBody, { headers: { 'content-type': contentType } }).formData();
   } catch {
-    throw invalidManifest('Malformed multipart module manifest request');
+    throw invalidManifest('The upload could not be read. Send the app file again.');
   }
 
   const allowed = new Set(['file', 'expected_active_digest']);
   for (const key of form.keys()) {
-    if (!allowed.has(key)) throw invalidManifest(`Unexpected multipart field: ${key}`);
+    if (!allowed.has(key)) throw invalidManifest('The upload has an unexpected form field. Send only the app file.');
   }
   if (form.getAll('file').length !== 1 || form.getAll('expected_active_digest').length > 1) {
-    throw invalidManifest('Provide exactly one module manifest file');
+    throw invalidManifest('Send exactly one app file');
   }
 
   const file = form.get('file');
   if (!(file instanceof Blob)) throw invalidManifest('The file field must contain a local JSON file');
   const namedFile = file as Blob & { name?: string };
   if (namedFile.name && namedFile.name !== 'deft.module.json') {
-    throw invalidManifest('The module manifest filename must be deft.module.json');
+    throw invalidManifest('The app file must be named deft.module.json');
   }
   if (file.size > MODULE_LIMITS.manifest_bytes) throw requestTooLarge();
 
@@ -174,14 +167,14 @@ export async function parseModuleManifestUpload(
     parsed = await parseMultipart(body, request.headers.get('content-type') ?? contentType);
   } else {
     throw new ModuleError(
-      'Module manifests must be sent as application/json or multipart/form-data',
+      'App files must be sent as application/json or multipart/form-data',
       'MODULE_MEDIA_TYPE_UNSUPPORTED',
       415,
     );
   }
 
   if (options.requireExpectedActiveDigest && !parsed.expected_active_digest) {
-    throw invalidManifest('expected_active_digest is required for module upgrades');
+    throw invalidManifest('expected_active_digest is required to update an app');
   }
   return {
     ...parsed,

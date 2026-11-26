@@ -229,7 +229,7 @@ test(`App actions resolve and prepare one reviewed relation across four surfaces
     module_id: preexistingModule.module_id, collection_key: 'contacts', data: { name: 'Keep this canonical contact', email: 'preserved@example.test' },
     relations: {}, expected_manifest_digest: preexistingModule.manifest_digest, idempotency_key: `adoption-preserve-${suffix}`,
   }) : null;
-  const connectedStaged = await stageAppPackage(owner, connectedPackage.json);
+  const connectedStaged = await stageAppPackage(owner, connectedPackage.json, { firstPartyPackage: true });
   const [connectedVersion] = await db.select().from(appVersions).where(and(
     eq(appVersions.org_id, orgId),
     eq(appVersions.id, connectedStaged.version_id),
@@ -800,7 +800,7 @@ test(`App actions resolve and prepare one reviewed relation across four surfaces
   if (!withoutRecipient.record) throw new Error('Recipient field was not revoked');
   beforeProtect = protectedInputs.length;
   try {
-    await assert.rejects(prepare(callers[0]!.caller), /Module scalar field is absent: email/);
+    await assert.rejects(prepare(callers[0]!.caller), /Field is empty: email/);
     assert.equal(protectedInputs.length, beforeProtect, 'an absent selected field must never reach input protection');
   } finally {
     await updateModuleRecord(owner, {

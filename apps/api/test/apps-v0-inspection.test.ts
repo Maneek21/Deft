@@ -128,3 +128,45 @@ test('API inspection accepts Protocol v2 automation requests without granting au
     }],
   );
 });
+
+async function inspectionError(packageJson: string): Promise<AppError> {
+  try {
+    await inspectAppPackageJson(packageJson);
+  } catch (error) {
+    assert.ok(error instanceof AppError, String(error));
+    return error;
+  }
+  assert.fail('expected the package to be refused');
+}
+
+function assertReadable(error: AppError) {
+  assert.equal(error.status, 400);
+  assert.equal(error.code, 'APP_INVALID_PACKAGE');
+  const lines = error.details?.lines as string[] | undefined;
+  assert.ok(Array.isArray(lines) && lines.length >= 1 && lines.length <= 3, error.message);
+  assert.equal(error.message, lines.join('\n'));
+  for (const line of lines) {
+    assert.doesNotMatch(line, /\[\s*\{|\{\s*"|\/\^/, line);
+    assert.doesNotMatch(line, /[<>]/, line);
+  }
+}
+
+test('a refused App package names the path in plain words, never raw validator JSON', async () => {
+  const built = await helloPackage();
+  const value = JSON.parse(built.json) as { manifest: Record<string, unknown> } & Record<string, unknown>;
+  value.manifest.name = '<img src=x onerror=alert(1)>';
+  value.script = 'alert(1)';
+  const error = await inspectionError(JSON.stringify(value));
+  assertReadable(error);
+  assert.match(error.message, /App package: unknown key "script": remove it/);
+});
+
+test('a top-level array and malformed JSON read as plain sentences', async () => {
+  const array = await inspectionError('[1, 2]');
+  assertReadable(array);
+  assert.match(array.message, /^App package: must be an object \(found a list\)$/);
+
+  const syntax = await inspectionError('{\n  "manifest": {},\n}');
+  assertReadable(syntax);
+  assert.equal(syntax.message, "The file isn't valid JSON near line 3, column 1. Look for a missing or extra comma, quote or bracket.");
+});

@@ -15,7 +15,7 @@ export function isAdmin(actor: ModuleActor): boolean {
 
 export function assertBaseReadAccess(actor: ModuleActor): void {
   if ((actor.kind === 'human' || actor.kind === 'defty') && actor.role === 'guest') {
-    throw new ModuleError('Guests cannot access workspace modules', 'MODULE_ACCESS_DENIED', 403);
+    throw new ModuleError('Guests cannot access workspace apps', 'MODULE_ACCESS_DENIED', 403);
   }
   if (
     actor.kind === 'human'
@@ -28,7 +28,7 @@ export function assertBaseReadAccess(actor: ModuleActor): void {
 
 export function assertBaseWriteAccess(actor: ModuleActor): void {
   if ((actor.kind === 'human' || actor.kind === 'defty') && actor.role === 'guest') {
-    throw new ModuleError('Guests cannot access workspace modules', 'MODULE_ACCESS_DENIED', 403);
+    throw new ModuleError('Guests cannot access workspace apps', 'MODULE_ACCESS_DENIED', 403);
   }
   if (
     actor.kind === 'human'
@@ -50,16 +50,16 @@ export function assertInstallationAccess(
 
   if (!installation.is_enabled) {
     if (!(options?.allowDisabledForAdmin && isAdmin(actor))) {
-      throw new ModuleError('Module is disabled', 'MODULE_DISABLED', 409);
+      throw new ModuleError('This app is turned off', 'MODULE_DISABLED', 409);
     }
   }
 
   if (actor.kind === 'defty' || actor.kind === 'agent_employee') {
     if (installation.agent_access === 'none') {
-      throw new ModuleError('Agent access is not enabled for this module', 'MODULE_ACCESS_DENIED', 403);
+      throw new ModuleError('Agent access is not turned on for this app', 'MODULE_ACCESS_DENIED', 403);
     }
     if (mode === 'write' && installation.agent_access !== 'write') {
-      throw new ModuleError('Agent write access is not enabled for this module', 'MODULE_ACCESS_DENIED', 403);
+      throw new ModuleError('Agent write access is not turned on for this app', 'MODULE_ACCESS_DENIED', 403);
     }
   }
 }

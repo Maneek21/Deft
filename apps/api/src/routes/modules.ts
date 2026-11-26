@@ -47,6 +47,7 @@ import {
   getModuleRecord,
   humanModuleActor,
   installBundledModule,
+  assertModuleIdentityNotReserved,
   installModuleFromManifest,
   listBundledModuleViews,
   listModuleInstallations,
@@ -80,7 +81,7 @@ const lifecycleSchema = z.strictObject({
   agent_access: z.enum(['none', 'read', 'write']).optional(),
 }).refine(
   (value) => value.enabled !== undefined || value.agent_access !== undefined,
-  'At least one module setting is required',
+  'At least one app setting is required',
 );
 
 const createBodySchema = z.strictObject({
@@ -156,7 +157,7 @@ function moduleManagerFromContext(c: Context) {
   const actor = actorFromContext(c);
   if (actor.kind !== 'human' || (actor.role !== 'owner' && actor.role !== 'admin')) {
     throw new ModuleError(
-      'Only workspace owners and admins can manage modules',
+      'Only workspace owners and admins can manage apps',
       'MODULE_ACCESS_DENIED',
       403,
     );
@@ -177,13 +178,13 @@ function moduleFailure(c: Context, error: unknown) {
   }
   if (error instanceof z.ZodError) {
     return c.json({
-      error: 'Invalid module request',
+      error: 'Invalid app request',
       code: 'VALIDATION_ERROR',
       details: { issues: error.issues.map((issue) => ({ path: issue.path, message: issue.message })) },
     }, 400);
   }
   console.error('[modules] request failed:');
-  return c.json({ error: 'Module request failed', code: 'INTERNAL_ERROR' }, 500);
+  return c.json({ error: 'App request failed', code: 'INTERNAL_ERROR' }, 500);
 }
 
 function moduleResourceRef(
@@ -229,6 +230,9 @@ moduleRoutes.post('/sideload', async (c) => {
   try {
     const actor = moduleManagerFromContext(c);
     const upload = await parseModuleManifestUpload(c.req.raw);
+    // An upload never takes a bundled or first-party name, not even as an
+    // exact copy: that is what the bundled catalog is for.
+    assertModuleIdentityNotReserved(upload.manifest);
     const module = await installModuleFromManifest(actor, upload.manifest, { source: 'sideloaded' });
     return c.json({ module }, 201);
   } catch (error) {
@@ -500,7 +504,7 @@ moduleRoutes.get('/:slug/records/:recordId/resource-relations/:fieldKey', async 
     const installation = await getModuleInstallation(actor, { slug });
     const record = await getModuleRecord(actor, c.req.param('recordId'));
     if (record.installation_id !== installation.id) {
-      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+      throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
     }
     return c.json({
       relation: await listResourceRelation(actor, {
@@ -523,7 +527,7 @@ moduleRoutes.get('/:slug/records/:recordId/resource-relations/:fieldKey/options'
     const installation = await getModuleInstallation(actor, { slug });
     const record = await getModuleRecord(actor, c.req.param('recordId'));
     if (record.installation_id !== installation.id || installation.manifest.schema_version !== '2') {
-      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+      throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
     }
     const collection = installation.manifest.collections.find((item) => item.key === record.collection_key);
     const field = collection?.fields.find((item) => item.key === fieldKey);
@@ -559,7 +563,7 @@ moduleRoutes.put('/:slug/records/:recordId/resource-relations/:fieldKey', async 
     const installation = await getModuleInstallation(actor, { slug });
     const record = await getModuleRecord(actor, c.req.param('recordId'));
     if (record.installation_id !== installation.id) {
-      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+      throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
     }
     return c.json({
       relation: await replaceResourceRelation(actor, {
@@ -583,7 +587,7 @@ moduleRoutes.get('/:slug/records/:recordId', async (c) => {
     const installation = await getModuleInstallation(actor, { slug });
     const record = await getModuleRecord(actor, c.req.param('recordId'));
     if (record.installation_id !== installation.id) {
-      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+      throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
     }
     return c.json({ record });
   } catch (error) {

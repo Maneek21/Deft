@@ -89,6 +89,7 @@
     "apps-connected-grants-db.test.ts",
     "email-calendar-invitation-index-db.test.ts",
     "grace-renewal-db.test.ts",
+    "module-identity-blob-hostile-db.test.ts",
     "restore-access-db.test.ts",
     "restore-access-round2-db.test.ts"
   ],
@@ -262,6 +263,7 @@
     "apps-connected-grants-db.test.ts",
     "email-calendar-invitation-index-db.test.ts",
     "grace-renewal-db.test.ts",
+    "module-identity-blob-hostile-db.test.ts",
     "restore-access-db.test.ts",
     "restore-access-round2-db.test.ts"
   ]

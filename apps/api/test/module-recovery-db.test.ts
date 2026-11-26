@@ -63,7 +63,7 @@ test('archive recovery retains canonical data and live links without resurrectin
   const foreignActor = humanModuleActor({ orgId: randomUUID(), userId, role: 'owner', source: 'rest' });
   await assert.rejects(restoreModuleRecord(foreignActor, installation.id, request), /not found|access|denied/i);
   await db.update(moduleInstallations).set({ is_enabled: false, disabled_at: new Date() }).where(eq(moduleInstallations.id, installation.id));
-  await assert.rejects(restoreModuleRecord(actor, installation.id, request), /disabled/i);
+  await assert.rejects(restoreModuleRecord(actor, installation.id, request), /turned off/i);
   await db.update(moduleInstallations).set({ is_enabled: true, disabled_at: null }).where(eq(moduleInstallations.id, installation.id));
   const archivedAgain = await archiveModuleRecord(actor, { record_id: contact.id, expected_revision: current.revision, expected_manifest_digest: installation.manifest_digest, idempotency_key: randomUUID() });
   await db.update(moduleRecords).set({ data: { email: 'recover@example.test' } }).where(eq(moduleRecords.id, contact.id));

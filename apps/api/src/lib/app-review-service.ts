@@ -311,7 +311,7 @@ async function includedModuleDescriptors(packageValue: ConnectedDeftAppPackage):
       || manifest.version !== reference.version
       || artifact.digest !== reference.manifest_digest
     ) {
-      throw new AppError('Included Module identity changed after staging', 'APP_INVALID_PACKAGE', 409);
+      throw new AppError('An app file in this App changed after staging', 'APP_INVALID_PACKAGE', 409);
     }
     descriptors.set(reference.module_id, {
       module_id: reference.module_id,
@@ -378,7 +378,7 @@ async function loadDependencyContext(
     const manifest = parseSupportedDeftModuleManifest(binding.version.manifest);
     const manifestDigest = await digestModuleManifest(manifest);
     if (manifestDigest !== binding.version.manifest_digest) {
-      throw appError('A dependency Module manifest failed integrity validation', 'APP_DEPENDENCY_UNHEALTHY');
+      throw appError('An app file this App depends on failed its integrity check', 'APP_DEPENDENCY_UNHEALTHY');
     }
     modules.set(binding.binding.module_id, {
       module_id: binding.binding.module_id,
@@ -496,9 +496,9 @@ async function loadReviewContext(
         eq(appModuleBindings.org_id, actor.org_id),
         eq(appModuleBindings.module_installation_id, existing.installation.id),
       )).limit(1);
-      if (owner) throw new AppError('An included Module already belongs to an App', 'APP_STATE_CONFLICT', 409);
+      if (owner) throw new AppError('An app file in this App already belongs to another App', 'APP_STATE_CONFLICT', 409);
       if (existing.version.version !== descriptor.module_version || existing.version.manifest_digest !== descriptor.manifest_digest) {
-        throw new AppError('Update the existing Module to the exact included version before adopting it', 'APP_STATE_CONFLICT', 409);
+        throw new AppError('Update the installed app to the exact version this App includes before adopting it', 'APP_STATE_CONFLICT', 409);
       }
       includedModules.set(moduleId, { ...descriptor,
         module_installation_id: existing.installation.id, module_version_id: existing.version.id,
@@ -524,7 +524,7 @@ async function loadReviewContext(
       .filter((moduleId) => !includedModules.has(moduleId));
     if (removed.length > 0) {
       throw new AppError(
-        `Connected App upgrades cannot remove App-owned Modules: ${removed.sort().join(', ')}`,
+        `Connected App upgrades cannot remove the apps they installed: ${removed.sort().join(', ')}`,
         'APP_INVALID_PACKAGE',
         409,
       );
@@ -653,7 +653,7 @@ function moduleForRequirement(
   if (requirement.source.kind === 'included_module') {
     const module = context.included_modules.get(requirement.source.module_id);
     if (!module || module.module_version !== requirement.source.version) {
-      throw appError('An included resource Module is unavailable', 'APP_DEPENDENCY_UNHEALTHY');
+      throw appError('An app this App includes is unavailable', 'APP_DEPENDENCY_UNHEALTHY');
     }
     return module;
   }
@@ -663,7 +663,7 @@ function moduleForRequirement(
   );
   const module = dependency?.modules.get(requirement.source.module_id);
   if (!module || module.module_version !== requirement.source.version) {
-    throw appError('A dependency resource Module is unavailable', 'APP_DEPENDENCY_UNHEALTHY');
+    throw appError('An app this App depends on is unavailable', 'APP_DEPENDENCY_UNHEALTHY');
   }
   return module;
 }
@@ -1140,7 +1140,7 @@ async function installOrCarryIncludedModules(
         eq(appModuleBindings.module_id, descriptor.module_id),
       ));
       if (bindings.length !== 1) {
-        throw new AppError('Connected App Module ownership is incomplete', 'APP_STATE_CONFLICT', 409);
+        throw new AppError('This App does not fully own the apps it installed', 'APP_STATE_CONFLICT', 409);
       }
       await executor.update(moduleInstallations).set({
         is_enabled: true,
@@ -1201,7 +1201,7 @@ async function installOrCarryIncludedModules(
         eq(appModuleBindings.module_id, descriptor.module_id),
       ))
       .limit(1);
-    if (!prior) throw new AppError('App-owned Module binding is missing', 'APP_STATE_CONFLICT', 409);
+    if (!prior) throw new AppError('The link between this App and the app it installed is missing', 'APP_STATE_CONFLICT', 409);
     if (
       prior.version.version !== descriptor.module_version
       || prior.version.manifest_digest !== descriptor.manifest_digest
@@ -1290,7 +1290,7 @@ export async function activateConnectedAppInstallation(
     );
     await testHooks?.assertUpgradeReview?.(tx, context, review);
     if (review.module_adoptions.length && request.accept_module_adoptions !== true) {
-      throw new AppError('Existing Module adoption must be explicitly accepted', 'APP_REVIEW_REQUIRED', 409);
+      throw new AppError('Taking over an installed app must be explicitly accepted', 'APP_REVIEW_REQUIRED', 409);
     }
     if (review.review_digest !== request.expected_review_digest) {
       throw appError('Reviewed App authority changed before activation', 'APP_STALE');

@@ -218,7 +218,7 @@ test('Contacts completes the actor-aware module kernel journey', { skip: !canRun
         expected_manifest_digest: `sha256:${'0'.repeat(64)}`,
         idempotency_key: `digest-${suffix}`,
       }),
-      /schema changed/,
+      /app changed/,
     );
 
     const snapshotBeforeDisable = await client.query(
@@ -227,14 +227,14 @@ test('Contacts completes the actor-aware module kernel journey', { skip: !canRun
     );
     await updateModuleInstallation(owner, 'contacts', { enabled: false });
     assert.equal((await searchModuleRecords(owner, { query: 'Ada', limit: 25 })).items.length, 0);
-    await assert.rejects(() => getModuleRecord(owner, created.id), /disabled/);
+    await assert.rejects(() => getModuleRecord(owner, created.id), /turned off/);
     await assert.rejects(
       () => preflightModuleMutation(employee, 'module_record_update', {
         ...updateInput,
         expected_revision: 2,
         idempotency_key: `disabled-${suffix}`,
       }),
-      /disabled/,
+      /turned off/,
     );
     const snapshotWhileDisabled = await client.query(
       `SELECT id, data, revision FROM module_records WHERE org_id = $1 AND id = $2`,

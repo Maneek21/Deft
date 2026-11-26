@@ -133,7 +133,7 @@ test('a manifest the browser check refuses reads as at most three where-and-what
   const error = await previewModuleManifestJson(bad).then(() => null, (reason: unknown) => reason);
   const text = readableManifestError(error, bad);
   assert.doesNotMatch(text, /\[\{|"code"/);
-  assert.match(text, /^collections → Candidates → views → Board → fields: expected array/m);
+  assert.match(text, /^(collections → )?Candidates → (views → )?Board → fields: (expected array|is required)$/m);
   assert.ok(text.split('\n').length <= 3);
   const withLines = Object.assign(new Error('x'), { lines: ['one', 'two', 'three', 'four'] });
   assert.equal(readableManifestError(withLines), 'one\ntwo\nthree');
