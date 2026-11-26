@@ -221,6 +221,7 @@ jobs:
           src/lib/collab-status.test.ts
           src/lib/legacy-notes-redirect.test.ts
           src/components/documents/document-header.test.tsx
+          src/lib/meeting-notes.test.ts
       - name: Install locked browser for mounted App contracts
         run: pnpm exec playwright install --with-deps chromium
       - name: Test public space preview reads
