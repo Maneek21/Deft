@@ -55,7 +55,7 @@ export const drives = pgTable('drives', {
   updated_at: updatedAt(),
 }, (t) => [
   unique('drives_org_id_id_key').on(t.org_id, t.id),
-  uniqueIndex('drives_personal_owner_uidx').on(t.org_id, t.owner_user_id).where(sql`kind = 'personal' AND NOT is_deleted`),
+  uniqueIndex('drives_personal_owner_uidx').on(t.org_id, t.owner_user_id).where(sql`kind = 'personal' AND NOT is_deleted AND frozen_at IS NULL`),
   uniqueIndex('drives_system_key_uidx').on(t.org_id, t.system_key).where(sql`system_key IS NOT NULL AND NOT is_deleted`),
 ]);
 

@@ -47,9 +47,10 @@ import {
   personalDriveToHandOverInTx, PrincipalCannotHoldAccessError, type DriveHandover,
 } from '../lib/drives.js';
 import { documents, drives } from '@deft/db/documents';
+import { canHoldDocumentAccessSql } from '../lib/document-access.js';
 import { visibleTaskSql } from '../lib/task-visibility.js';
 import {
-  authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege, type MembershipActor,
+  authorizeMembershipOperation, checkMembershipOperation, isProtectedMembership, lockMembership, MembershipGuardError, recordMembershipChange, recordPrivilege,
 } from '../lib/membership-guard.js';
 
 const INVITE_TTL = '7d';
@@ -244,21 +245,50 @@ async function endWorkspaceAccess(
   return sessions.map(session => session.id);
 }
 
-/** After commit: live effects of a removal, only if the person is still removed. */
+/** Runs one step after commit: false when it failed, which never stops the next. The caller logs fixed text. */
+async function afterCommitStep(step: () => unknown): Promise<boolean> {
+  try {
+    await step();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * After commit: the live effects of a removal. Each step runs on its own, so
+ * one that fails (a lookup, a huddle eviction) never skips another. Drive and
+ * document access finish first (rule C3: the access generation moves and live
+ * document connections re-check; a frozen or handed-on drive's documents are
+ * refetched by their viewers, C4), then the handed-on drives (the new
+ * holder's notice), then sessions, the closed room actions, and the huddle
+ * eviction, which only applies if the person is still removed.
+ */
 async function afterWorkspaceAccessEnded(
   orgId: string, memberId: string, sessionIds: string[], closedActions: string[], documentLosses: PendingAccessLoss[] = [],
+  handovers: DriveHandover[] = [],
 ) {
-  emitWebSessionRevocations(sessionIds);
-  const [still] = await db.select({ is_active: orgMembers.is_active }).from(orgMembers)
-    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, memberId))).limit(1);
-  if (still && !still.is_active) {
-    await evictActiveHuddleParticipants({ orgId, userId: memberId, reason: 'org_membership_revoked' });
+  if (!(await afterCommitStep(() => finishDriveLosses(documentLosses)))) {
+    console.error('[members] finishing document access after a removal failed');
+  }
+  for (const handover of handovers) {
+    if (!(await afterCommitStep(() => finishDriveHandover(handover)))) console.error('[members] finishing a personal drive handover failed');
+  }
+  if (!(await afterCommitStep(() => emitWebSessionRevocations(sessionIds)))) {
+    console.error('[members] revoking web sessions after a removal failed');
   }
   // DFX2: receipts and attention items of the actions closed in the removal.
-  await finishLostRoomCancellations(orgId, closedActions);
-  // Rule C3: the access generation moves, live document connections re-check;
-  // a frozen or handed-on drive's documents are refetched by their viewers (C4).
-  await finishDriveLosses(documentLosses);
+  if (!(await afterCommitStep(() => finishLostRoomCancellations(orgId, closedActions)))) {
+    console.error('[members] finishing closed room actions after a removal failed');
+  }
+  const huddlesEnded = await afterCommitStep(async () => {
+    const [still] = await db.select({ is_active: orgMembers.is_active }).from(orgMembers)
+      .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, memberId))).limit(1);
+    if (still && !still.is_active) {
+      await evictActiveHuddleParticipants({ orgId, userId: memberId, reason: 'org_membership_revoked' });
+    }
+  });
+  if (!huddlesEnded) console.error('[members] ending huddles after a removal failed');
 }
 
 type Reassigned = { replacement_user_id: string | null; primary_open_tasks: number; led_projects: number; led_teams: number };
@@ -295,7 +325,7 @@ function isDeadlock(error: unknown): boolean {
  * afresh, so the steps after commit run once, for the attempt that committed.
  */
 async function revokeMemberWorkspaceAccess(
-  orgId: string, memberId: string, actor: MembershipActor, replacementUserId: string | null = null, handOverPersonalDrive = true,
+  orgId: string, memberId: string, actor: { userId: string }, replacementUserId: string | null = null, handOverPersonalDrive = true,
 ): Promise<Reassigned> {
   for (let attempt = 1; ; attempt += 1) {
     const revokedAt = new Date();
@@ -314,7 +344,7 @@ async function revokeMemberWorkspaceAccess(
         if (refusal) throw new MembershipGuardError(refusal);
         if (replacementUserId) {
           reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId, {
-            actorId: actor === 'operator' ? 'operator' : actor.userId, handOver: handOverPersonalDrive, handovers,
+            actorId: actor.userId, handOver: handOverPersonalDrive, handovers,
           });
         }
         await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
@@ -326,10 +356,8 @@ async function revokeMemberWorkspaceAccess(
       await new Promise((resolve) => setTimeout(resolve, 20 * attempt + Math.floor(Math.random() * 40)));
       continue;
     }
-    // Committed: these run once, outside the retry.
-    await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds, closedActions, documentLosses);
-    // The handed-on drive: its access change, then the new holder's notice.
-    for (const handover of handovers) await finishDriveHandover(handover);
+    // Committed: these run once, outside the retry, each step on its own.
+    await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds, closedActions, documentLosses, handovers);
     return reassigned;
   }
 }
@@ -351,6 +379,13 @@ type PersonalDriveHandOff = { actorId: string; handOver: boolean; handovers: Dri
  * until commit (canHoldDocumentAccessLocked): a replacement who can't hold
  * access, inactive or from another workspace included, fails the removal
  * with PrincipalCannotHoldAccessError.
+ *
+ * Lock order, after the caller's room-access lock and the member's users and
+ * org_members rows (FOR UPDATE): the member's unfrozen personal drive FOR
+ * UPDATE, then the replacement's org_members and employee rows FOR SHARE.
+ * The owner's handover route takes the holder's rows FOR SHARE before a
+ * frozen drive FOR UPDATE; the two never lock the same drive (see
+ * routes/drives.ts, POST /:id/handover).
  */
 async function reassignMemberOwnership(tx: Tx, orgId: string, memberId: string, replacementUserId: string, drive: PersonalDriveHandOff) {
   if (memberId === replacementUserId) {
@@ -457,6 +492,7 @@ async function buildOffboardingPreview(orgId: string, memberId: string) {
     ledProjectCountRows,
     ledTeamCountRows,
     personalDriveDocumentRows,
+    cannotHoldDriveRows,
   ] = await Promise.all([
     db.select({
       id: spaces.id,
@@ -579,10 +615,17 @@ async function buildOffboardingPreview(orgId: string, memberId: string) {
         sql`${drives.frozen_at} IS NULL`, eq(documents.is_deleted, false),
       ))
       .limit(1),
+    // Active members who can't be given that drive (an agent whose own
+    // employee is paused, for one): the dialog doesn't offer them for it.
+    db.execute(sql`SELECT preview_member.user_id FROM ${orgMembers} preview_member
+      WHERE preview_member.org_id = ${orgId} AND preview_member.is_active = true AND preview_member.user_id <> ${memberId}
+        AND NOT ${canHoldDocumentAccessSql(sql.raw('preview_member.user_id'), orgId)}
+      ORDER BY preview_member.user_id`),
   ]);
 
   return {
     personal_drive_with_documents: personalDriveDocumentRows.length > 0,
+    cannot_hold_drive_ids: (cannotHoldDriveRows.rows as Array<{ user_id: string }>).map((row) => row.user_id),
     revoke_now: {
       spaces: spaceRows,
       teams: teamRows,

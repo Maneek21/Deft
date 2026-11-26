@@ -404,6 +404,15 @@ export async function spaceMembersWhoCannotOpen(
 }
 
 /**
+ * canHoldDocumentAccess as a condition, for a statement over many people
+ * (the remove dialog's replacement picker, F6): `userId` is a column of the
+ * statement under an alias that isn't `access_*`.
+ */
+export function canHoldDocumentAccessSql(userId: SQL, orgId: string): SQL {
+  return activeActorSql(userId, orgId);
+}
+
+/**
  * True when `userId` could ever hold access in `orgId` (F4's grant check): an
  * active human member of any role, guests included, or an agent user whose
  * own employee is active (activeActorSql). Defty's own user, a system user

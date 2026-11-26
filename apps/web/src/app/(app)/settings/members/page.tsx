@@ -124,6 +124,8 @@ type ShareLink = {
 type OffboardingPreview = {
   /** A live, unfrozen personal drive with a document in it: the remover chooses to hand it on or freeze it. */
   personal_drive_with_documents?: boolean;
+  /** Active members who can't be given a drive (a paused agent, for one): never offered to receive it. */
+  cannot_hold_drive_ids?: string[];
   revoke_now: {
     spaces: Array<{ id: string; name: string; type: string }>;
     teams: Array<{ id: string; name: string; handle: string; role: string }>;
@@ -415,9 +417,16 @@ export default function MembersPage() {
   // owner hands it on. The replacement picker shows for open work or for that
   // drive, and a replacement is sent only for one of them.
   const offboardingHasDrive = offboardingPreview?.personal_drive_with_documents === true;
-  const offboardingSelected = offboardingReplacementId
-    ? offboardingReplacementOptions.find((member) => member.id === offboardingReplacementId) ?? null
-    : null;
+  // With a drive to hand on, the picker offers only people who can hold it
+  // (the preview names the rest), and a choice that isn't offered falls back
+  // to the first who is.
+  const offboardingPickerOptions = useMemo(() => {
+    if (!offboardingHasDrive) return offboardingReplacementOptions;
+    const cannotHold = new Set(offboardingPreview?.cannot_hold_drive_ids ?? []);
+    return offboardingReplacementOptions.filter((member) => !cannotHold.has(member.id));
+  }, [offboardingHasDrive, offboardingPreview, offboardingReplacementOptions]);
+  const offboardingSelected = offboardingPickerOptions.find((member) => member.id === offboardingReplacementId)
+    ?? offboardingPickerOptions[0] ?? null;
   const offboardingSendsReplacement = offboardingHandoffCount > 0 || (offboardingHasDrive && offboardingDriveChoice === 'hand_over');
 
   const handleInvite = async (e: React.FormEvent) => {
@@ -972,7 +981,10 @@ export default function MembersPage() {
 
                             {offboardingLoading ? (
                               <p className="mt-3 text-[12px]" style={{ color: 'var(--muted)' }}>Loading offboarding preview...</p>
-                            ) : offboardingError ? (
+                            ) : (
+                              <>
+                              {/* A refused removal keeps the loaded choices, so another can be picked. */}
+                              {offboardingError && (
                               <div className="mt-3 grid gap-2">
                                 <p className="rounded px-2 py-1.5 text-[12px]" style={{ color: 'var(--error)', background: 'rgba(147,0,10,0.16)' }}>{offboardingError}</p>
                                 {!offboardingPreview && (
@@ -987,7 +999,8 @@ export default function MembersPage() {
                                   </button>
                                 )}
                               </div>
-                            ) : offboardingPreview && (
+                              )}
+                              {offboardingPreview && (
                               <div className="mt-3 grid gap-2">
                                 <div className="grid grid-cols-3 gap-2">
                                   <StatCard icon={Users} label="Spaces" value={offboardingPreview.counts.spaces} />
@@ -1006,15 +1019,15 @@ export default function MembersPage() {
                                     )}
                                     <select
                                       data-testid="offboarding-replacement-select"
-                                      value={offboardingReplacementId}
+                                      value={offboardingSelected?.id ?? ''}
                                       onChange={(e) => setOffboardingReplacementId(e.target.value)}
                                       className="h-8 rounded-md px-2 text-[12px] outline-none"
                                       style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
-                                      disabled={offboardingReplacementOptions.length === 0}
+                                      disabled={offboardingPickerOptions.length === 0}
                                     >
-                                      {offboardingReplacementOptions.length === 0 ? (
+                                      {offboardingPickerOptions.length === 0 ? (
                                         <option value="">No active replacement available</option>
-                                      ) : offboardingReplacementOptions.map((member) => (
+                                      ) : offboardingPickerOptions.map((member) => (
                                         <option key={member.id} value={member.id}>
                                           {member.name}{member.title ? ` - ${member.title}` : ''}
                                         </option>
@@ -1051,6 +1064,8 @@ export default function MembersPage() {
                                   <PersonalDriveNote replacementName={offboardingDriveChoice === 'hand_over' ? offboardingSelected?.name ?? null : null} />
                                 )}
                               </div>
+                              )}
+                              </>
                             )}
 
                             <div className="mt-3 grid grid-cols-2 gap-2">
@@ -1066,7 +1081,7 @@ export default function MembersPage() {
                                 onClick={() => handleRemove(detail.member.id)}
                                 disabled={
                                   offboardingLoading || removingId === detail.member.id || !offboardingPreview
-                                  || (offboardingHandoffCount > 0 && !offboardingReplacementId)
+                                  || (offboardingHandoffCount > 0 && !offboardingSelected)
                                   || (offboardingHasDrive && !offboardingDriveChoice)
                                   || (offboardingHasDrive && offboardingDriveChoice === 'hand_over' && !offboardingSelected)
                                 }

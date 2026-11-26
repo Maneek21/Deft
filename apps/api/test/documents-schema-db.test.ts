@@ -166,6 +166,16 @@ test('one personal drive per person and one Workspace drive per org', async () =
   await drive(orgB, { system_key: 'workspace' });
 });
 
+test('a frozen personal drive is not the live one: its owner can have a new personal drive beside it', async () => {
+  const personal = { kind: 'personal', default_role: null, owner_user_id: bob };
+  const first = await drive(orgB, personal);
+  await rejectsWith('23505', driveInsert, driveValues(newId(), orgB, personal));
+  await client.query('UPDATE drives SET frozen_at = now() WHERE id = $1', [first]);
+  const second = await drive(orgB, personal);
+  assert.notEqual(second, first);
+  await rejectsWith('23505', driveInsert, driveValues(newId(), orgB, personal));
+});
+
 test('an open drive has a default role, and only a personal drive has an owner', async () => {
   await rejectsWith('23514', driveInsert, driveValues(newId(), orgA, { default_role: null }));
   await rejectsWith('23514', driveInsert, driveValues(newId(), orgA, { kind: 'private', default_role: 'view' }));

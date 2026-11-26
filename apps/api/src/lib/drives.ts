@@ -3,23 +3,26 @@
 //
 // - Workspace: every workspace's first open drive, default role "can edit"
 //   (system_key 'workspace'). Made the first time anyone lists drives.
-// - My drive: one personal drive per person, made when they first need it.
-//   Its owner holds full access only through a `full` drive_members row
+// - My drive: one live personal drive per person, made when they first need
+//   it. Its owner holds full access only through a `full` drive_members row
 //   (lib/document-access.ts has no rule of its own for personal drives), so
 //   ensurePersonalDrive writes that row every time, and restores it if it was
-//   lost or lowered, for someone who can hold access.
+//   lost or lowered, for someone who can hold access. A frozen personal drive
+//   (a departure's) is not a live one: someone who comes back gets a fresh My
+//   drive, and the frozen one waits for the owner to hand it on.
 // - Shared notes: the open drive, default "can view", that the notes move
 //   (F14) creates for notes visible to the whole workspace (system_key
 //   'shared_notes').
 //
 // Each is idempotent and safe under concurrency: a partial unique index
-// (one live personal drive per person, one live drive per system key and
-// workspace) makes a concurrent second insert do nothing, and the row is
-// then read back.
+// (one live, unfrozen personal drive per person, one live drive per system
+// key and workspace) makes a concurrent second insert do nothing, and the row
+// is then read back.
 //
 // When a person leaves, their personal drive is frozen, or, on a removal
 // with a replacement, handed to the replacement as a private drive
 // (endDriveAccessOnDepartureInTx, handOverPersonalDriveInTx; spec 5.2, F6).
+import { randomUUID } from 'node:crypto';
 import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { documents, driveMembers, drives, type DocRole, type DocShareRole, type DriveRow, type DriveSystemKey } from '@deft/db/documents';
 import { auditLog, users } from '@deft/db/schema';
@@ -55,8 +58,10 @@ async function liveDocumentIds(tx: Tx, orgId: string, driveId: string): Promise<
  * Their live personal drive is frozen first (spec 5.2, F6): its own grants
  * end for everyone, owners and admins included, and shares out of it give
  * view at most, until the workspace owner hands it on
- * (POST /api/drives/:id/handover). That is a loss of its own, naming the
- * drive and its documents; the person's own loss follows. A removal that
+ * (POST /api/drives/:id/handover). A chat link on it is removed, as deleting
+ * a drive removes one, so that chat can link another drive. That is a loss
+ * of its own, naming the drive and its documents; the person's own loss
+ * follows. A removal that
  * handed the drive to a replacement (routes/members.ts
  * reassignMemberOwnership) left nothing to freeze; a drive frozen before
  * stays frozen. The caller finishes the returned losses after commit
@@ -72,6 +77,7 @@ export async function endDriveAccessOnDepartureInTx(tx: Tx, orgId: string, userI
     .returning({ id: drives.id });
   const losses: PendingAccessLoss[] = [];
   for (const drive of frozen) {
+    await tx.delete(driveMembers).where(and(eq(driveMembers.drive_id, drive.id), eq(driveMembers.is_link, true)));
     losses.push(await accessLossInTx(tx, { orgId, driveId: drive.id, documentIds: await liveDocumentIds(tx, orgId, drive.id) }));
   }
   losses.push(await accessLossInTx(tx, { orgId, userIds: [userId] }));
@@ -82,13 +88,18 @@ export async function endDriveAccessOnDepartureInTx(tx: Tx, orgId: string, userI
  * After commit: finishes each loss (finishAccessLoss), then sends
  * `document:updated` for the documents a loss names to the people who can
  * view them now (rule C4): after a freeze, the holders of shares out of the
- * drive; after a handover, the new holder too. Never throws.
+ * drive; after a handover, the new holder too. Each loss is finished on its
+ * own, so one that fails never skips the next. Never throws.
  */
 export async function finishDriveLosses(losses: readonly PendingAccessLoss[]): Promise<void> {
   for (const loss of losses) {
-    await finishAccessLoss(loss.change, loss.result);
-    const documentIds = loss.change.documentIds ?? [];
-    if (documentIds.length > 0) await emitDocumentUpdated(loss.change.orgId, documentIds);
+    try {
+      await finishAccessLoss(loss.change, loss.result);
+      const documentIds = loss.change.documentIds ?? [];
+      if (documentIds.length > 0) await emitDocumentUpdated(loss.change.orgId, documentIds);
+    } catch {
+      console.error('[drives] finishing a drive access loss failed');
+    }
   }
 }
 
@@ -229,10 +240,19 @@ export async function ensureSharedNotesDrive(orgId: string, createdBy: string, e
   return ensureSystemDrive(executor, orgId, 'shared_notes', 'Shared notes', 'view', createdBy);
 }
 
-async function livePersonalDrive(executor: Executor, orgId: string, userId: string): Promise<DriveRow | undefined> {
-  const [drive] = await executor.select().from(drives)
-    .where(and(eq(drives.org_id, orgId), eq(drives.owner_user_id, userId), eq(drives.kind, 'personal'), eq(drives.is_deleted, false)))
-    .limit(1);
+/**
+ * `userId`'s live personal drive: not deleted and not frozen (a frozen one
+ * is a departure's, waiting for the owner to hand it on). Share-locked until
+ * commit, which a handover's FOR UPDATE and a freeze's update wait for.
+ */
+async function livePersonalDriveLocked(tx: Tx, orgId: string, userId: string): Promise<DriveRow | undefined> {
+  const [drive] = await tx.select().from(drives)
+    .where(and(
+      eq(drives.org_id, orgId), eq(drives.owner_user_id, userId), eq(drives.kind, 'personal'), eq(drives.is_deleted, false),
+      isNull(drives.frozen_at),
+    ))
+    .limit(1)
+    .for('share');
   return drive;
 }
 
@@ -261,28 +281,42 @@ export class PrincipalCannotHoldAccessError extends Error {
 }
 
 /**
- * `userId`'s My drive in `orgId`, with their `full` drive_members row. A
- * grant is made only to someone who can hold access (canHoldDocumentAccess:
- * an active human member, or an agent user with an active employee); for
- * anyone else this throws PrincipalCannotHoldAccessError and creates nothing.
+ * `userId`'s My drive in `orgId`, with their `full` drive_members row, in one
+ * transaction (the caller's `tx`, or its own). A grant is made only to
+ * someone who can hold access (canHoldDocumentAccess: an active human member,
+ * or an agent user with an active employee), checked with their rows locked
+ * (canHoldDocumentAccessLocked); for anyone else this throws
+ * PrincipalCannotHoldAccessError and creates nothing.
+ *
+ * Against a handover or a freeze of the same drive: the drive is read FOR
+ * SHARE, which waits for (or holds off) their FOR UPDATE and update, and the
+ * owner row is written only while the drive is still this person's live,
+ * unfrozen personal drive. So a drive handed on meanwhile never gets its
+ * former owner's row back; they get a new My drive instead.
  */
-export async function ensurePersonalDrive(orgId: string, userId: string, executor: Executor = db): Promise<DriveRow> {
-  if (!(await canHoldDocumentAccess(userId, orgId, executor))) throw new PrincipalCannotHoldAccessError();
-  let drive = await livePersonalDrive(executor, orgId, userId);
+export async function ensurePersonalDrive(orgId: string, userId: string, tx?: Tx): Promise<DriveRow> {
+  return tx ? ensurePersonalDriveInTx(tx, orgId, userId) : db.transaction((own) => ensurePersonalDriveInTx(own, orgId, userId));
+}
+
+async function ensurePersonalDriveInTx(tx: Tx, orgId: string, userId: string): Promise<DriveRow> {
+  if (!(await canHoldDocumentAccessLocked(tx, orgId, userId))) throw new PrincipalCannotHoldAccessError();
+  let drive = await livePersonalDriveLocked(tx, orgId, userId);
   if (!drive) {
-    await executor.insert(drives)
+    await tx.insert(drives)
       .values({ org_id: orgId, name: 'My drive', kind: 'personal', owner_user_id: userId, created_by: userId })
-      .onConflictDoNothing({ target: [drives.org_id, drives.owner_user_id], where: sql`kind = 'personal' AND NOT is_deleted` });
-    drive = await livePersonalDrive(executor, orgId, userId);
+      .onConflictDoNothing({
+        target: [drives.org_id, drives.owner_user_id], where: sql`kind = 'personal' AND NOT is_deleted AND frozen_at IS NULL`,
+      });
+    drive = await livePersonalDriveLocked(tx, orgId, userId);
     if (!drive) throw new Error('the personal drive could not be created');
   }
-  await executor.insert(driveMembers)
-    .values({ org_id: orgId, drive_id: drive.id, principal_type: 'user', principal_id: userId, role: 'full', added_by: userId })
-    .onConflictDoUpdate({
-      target: [driveMembers.drive_id, driveMembers.principal_type, driveMembers.principal_id],
-      set: { role: 'full', updated_at: sql`now()` },
-      setWhere: sql`${driveMembers.role} <> 'full'`,
-    });
+  await tx.execute(sql`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role, added_by)
+    SELECT ${randomUUID()}, ensured_drive.org_id, ensured_drive.id, 'user', ${userId}, 'full', ${userId}
+    FROM drives ensured_drive
+    WHERE ensured_drive.id = ${drive.id} AND ensured_drive.org_id = ${orgId} AND ensured_drive.kind = 'personal'
+      AND ensured_drive.owner_user_id = ${userId} AND ensured_drive.frozen_at IS NULL AND ensured_drive.is_deleted = false
+    ON CONFLICT (drive_id, principal_type, principal_id) DO UPDATE SET role = 'full', updated_at = now()
+      WHERE drive_members.role <> 'full'`);
   return drive;
 }
 

@@ -37,7 +37,7 @@ CREATE TABLE drives (
 );
 
 CREATE UNIQUE INDEX drives_personal_owner_uidx ON drives (org_id, owner_user_id)
-  WHERE kind = 'personal' AND NOT is_deleted;
+  WHERE kind = 'personal' AND NOT is_deleted AND frozen_at IS NULL;
 CREATE UNIQUE INDEX drives_system_key_uidx ON drives (org_id, system_key)
   WHERE system_key IS NOT NULL AND NOT is_deleted;
 

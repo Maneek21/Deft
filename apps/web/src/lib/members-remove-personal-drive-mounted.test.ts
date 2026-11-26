@@ -319,3 +319,87 @@ test('Members page: a late preview for a member the dialog has left never enable
     await browser.close();
   }
 });
+
+/**
+ * The picker offers the drive only to people who can hold it (consult
+ * S-F10): the preview names a paused agent, listed first, and it is not
+ * offered. When the API still refuses (someone paused meanwhile), the error
+ * shows above the loaded choices, which stay, so another person can be
+ * picked and the removal sent again.
+ */
+test('Members page: the drive goes only to someone who can hold it, and a refusal keeps the choices to pick again', async () => {
+  const pausedAgent = {
+    ...member('paused-agent', 'Paused Pat'), kind: 'agent', email: null,
+    agent: { id: 'emp-paused', name: 'Paused Pat', role: 'project_manager', trust_level: 'standard', runtime_kind: 'custom', certification_status: null, is_active: false, unhealthy: false, last_mcp_call_at: null, last_heartbeat_at: null },
+  };
+  // The paused agent comes first, so it would be the default replacement.
+  const members = [pausedAgent, ...MEMBERS];
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  try {
+    const tab = await browser.newPage();
+    tab.setDefaultTimeout(6000);
+    const deletes: Array<Record<string, unknown>> = [];
+    await tab.route('**/*', (route: any) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+      if (url.origin !== 'http://127.0.0.1') return route.abort();
+      if (url.pathname === '/settings/members') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' });
+      if (url.pathname === '/api/auth/me') {
+        return json({ user: { id: 'viewer', name: 'Viewer', email: 'viewer@example.test', timezone: 'UTC', role: 'owner' }, org: { id: 'org', name: 'Org', slug: 'org' } });
+      }
+      if (url.pathname === '/api/members/directory') return json({ members, invites: [], summary: { active: 4, pending: 0, inactive: 0, agents: 1 } });
+      if (url.pathname === '/api/members/seats') return json({ hosted: false });
+      if (url.pathname === '/api/members/leaver/offboarding-preview') {
+        return json({ ...preview(0, true), cannot_hold_drive_ids: ['paused-agent'] });
+      }
+      if (url.pathname === '/api/members/leaver' && request.method() === 'DELETE') {
+        deletes.push(JSON.parse(request.postData() ?? '{}'));
+        if (deletes.length === 1) {
+          return json({ error: 'The replacement can’t be given this person’s personal drive; choose someone else', code: 'PRINCIPAL_CANNOT_HOLD_ACCESS' }, 400);
+        }
+        return json({ success: true, receipt: {} });
+      }
+      const detail = /^\/api\/members\/([^/]+)\/detail$/.exec(url.pathname);
+      if (detail) {
+        return json({ member: members.find((m) => m.id === detail[1]), spaces: [], open_tasks: [], led_projects: [], pending_invites: [], mcp_tokens: [], oauth_grants: [] });
+      }
+      return route.abort();
+    });
+    await tab.goto('http://127.0.0.1/settings/members');
+    await tab.evaluate((access: string) => {
+      localStorage.setItem('deft-access-token', access);
+      localStorage.setItem('deft-refresh-token', access);
+    }, token({ id: 'viewer', org_id: 'org', sid: 'session', jti: 'v1' }));
+    await tab.addScriptTag({ content: await bundle() });
+
+    await tab.getByRole('button', { name: /Lea Leaver/ }).first().click();
+    await tab.getByText('Admin actions').waitFor();
+    await tab.getByRole('button', { name: 'Remove', exact: true }).click();
+    await tab.getByText(/Also revokes/).waitFor();
+    const picker = tab.getByTestId('offboarding-replacement-select');
+    const offered = await picker.locator('option').evaluateAll((options: HTMLOptionElement[]) => options.map((option) => option.value));
+    assert.deepEqual(offered, ['heir', 'other'], 'the paused agent is not offered');
+    assert.equal(await picker.inputValue(), 'heir', 'the default falls to the first who can hold it');
+
+    await tab.getByTestId('offboarding-drive-hand-over').check();
+    const confirm = tab.getByRole('button', { name: 'Confirm remove' });
+    await confirm.click();
+    await tab.getByText('The replacement can’t be given this person’s personal drive; choose someone else').waitFor();
+    // The choices stay, with the error, so another person can be picked.
+    assert.equal(await picker.isVisible(), true);
+    assert.equal(await tab.getByTestId('offboarding-drive-hand-over').isChecked(), true);
+    assert.equal(await tab.getByTestId('offboarding-drive-freeze').isVisible(), true);
+    assert.equal(await confirm.isDisabled(), false);
+    await picker.selectOption('other');
+    assert.equal((await tab.getByTestId('offboarding-personal-drive').textContent())?.trim(), 'Their personal drive goes to Ola Other.');
+    await confirm.click();
+    await tab.waitForFunction(() => !document.body.textContent?.includes('Remove Lea Leaver?'));
+    assert.deepEqual(deletes, [
+      { replacement_user_id: 'heir', personal_drive: 'hand_over' },
+      { replacement_user_id: 'other', personal_drive: 'hand_over' },
+    ]);
+  } finally {
+    await browser.close();
+  }
+});

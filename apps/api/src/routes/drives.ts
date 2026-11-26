@@ -826,8 +826,20 @@ driveRoutes.delete('/:id/link-space/:spaceId', async (c) => {
 // frozen personal drive becomes a private drive held by `user_id` at full
 // (lib/drives.ts handOverPersonalDriveInTx), and the holder is told. The
 // owner role is checked first, so nobody else learns whether a drive exists.
-// The holder's rows are locked before the drive, as a removal locks its
-// member before their drive, so the two never wait on each other in turn.
+// The answer carries the caller's own role on the drive and their pin.
+//
+// Lock order: the owner's org_members row FOR SHARE; the holder's
+// org_members row, then (an agent's) employee row, FOR SHARE; the frozen
+// drive FOR UPDATE; then its drive_members rows and the audit row. A removal
+// with a replacement (routes/members.ts reassignMemberOwnership) takes its
+// member's room-access lock, users and org_members rows FOR UPDATE, then
+// their unfrozen personal drive FOR UPDATE, then the replacement's
+// org_members and employee rows FOR SHARE. The two never wait on each other
+// in turn: they never lock the same drive (this one only a frozen drive, a
+// removal only an unfrozen one, and a removal's freeze skips frozen drives);
+// both take holders' rows only FOR SHARE, which don't conflict; and when the
+// holder here is someone being removed, the removal holds their row first
+// and waits for nothing this route holds.
 driveRoutes.post('/:id/handover', async (c) => {
   try {
     const user = c.get('user');
@@ -845,7 +857,8 @@ driveRoutes.post('/:id/handover', async (c) => {
       return handOverPersonalDriveInTx(tx, drive, parsed.data.user_id, user.id, 'handover');
     });
     await finishDriveHandover(outcome.handover);
-    return c.json({ drive: driveShape(outcome.drive, null, false) });
+    const role = await driveRoleFor(user.id, user.org_id, outcome.drive.id);
+    return c.json({ drive: driveShape(outcome.drive, role, await isPinned(user.id, user.org_id, outcome.drive.id)) });
   } catch (error) {
     if (error instanceof Refused) return answer(c, error.refusal);
     if (error instanceof PrincipalCannotHoldAccessError) return answer(c, CANNOT_HOLD);

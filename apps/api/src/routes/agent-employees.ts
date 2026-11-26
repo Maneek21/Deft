@@ -2540,6 +2540,25 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
     // The agent's membership ends on the membership locked path
     // (lib/membership-guard.ts), under the choke point's locks.
     const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, async (tx) => {
+      // A clone shares its source's user (POST /:id/clone). While another
+      // employee still names that user, the user stays in the workspace and
+      // keeps its personal drive: only this employee goes. manageAgent holds
+      // the user's account row, so two such deletions run one after the
+      // other and the second sees the first. The shared user's access
+      // follows the employee users.agent_employee_id names
+      // (lib/document-access.ts); deleting that one ends it, an access loss
+      // without a freeze.
+      const [sibling] = await tx.select({ id: agentEmployees.id }).from(agentEmployees)
+        .where(and(
+          eq(agentEmployees.org_id, user.org_id), eq(agentEmployees.user_id, existing.user_id), eq(agentEmployees.is_deleted, false),
+          sql`${agentEmployees.id} <> ${id}`,
+        ))
+        .limit(1);
+      if (sibling) {
+        await tx.update(agentEmployees).set({ is_active: false, is_deleted: true, deleted_at: new Date() }).where(eq(agentEmployees.id, id));
+        const [shared] = await tx.select({ agent_employee_id: users.agent_employee_id }).from(users).where(eq(users.id, existing.user_id)).limit(1);
+        return shared?.agent_employee_id === id ? [await accessLossInTx(tx, { orgId: user.org_id, userIds: [existing.user_id] })] : [];
+      }
       const locked = await lockMembership(tx, { orgId: user.org_id, targetUserId: existing.user_id });
       await recordMembershipChange(tx, { orgId: user.org_id, targetUserId: existing.user_id, locked, change: { isActive: false } });
       await tx

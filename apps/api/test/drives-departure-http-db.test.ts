@@ -37,6 +37,7 @@ import { isDeepStrictEqual } from 'node:util';
 import test, { after, before } from 'node:test';
 import { sql } from 'drizzle-orm';
 import { closeDb } from '../src/lib/db.js';
+import { ensurePersonalDrive } from '../src/lib/drives.js';
 import { documentRoleFor, driveRoleFor } from '../src/lib/document-access.js';
 import { onDocumentAccessChanged, type DocumentAccessChange } from '../src/lib/document-access-events.js';
 import { currentAccessGeneration, onAccessLossInTx } from '../src/lib/document-access-change.js';
@@ -374,6 +375,8 @@ test('an owner hands a frozen drive to someone; an admin gets 403 OWNER_ONLY', a
   assert.equal(handed.drive.kind, 'private');
   assert.equal(handed.drive.name, "Asha Departed's drive");
   assert.equal(handed.drive.frozen, false);
+  assert.equal(handed.drive.role, null, 'the owner who handed it on holds no role on it');
+  assert.equal(handed.drive.pinned, false);
 
   const state = await driveState(drive);
   assert.equal(state.kind, 'private');
@@ -873,4 +876,170 @@ test('linking a chat takes the linker’s room-access lock first, so it never de
   }
   const { rows } = await fx.client.query('SELECT count(*)::int AS n FROM drive_members WHERE drive_id = $1 AND is_link', [drive]);
   assert.equal(rows[0].n, 0);
+});
+
+// ── Consult fixes (batch A) ─────────────────────────────────────────────────
+
+/** An extra employee naming `userId`, as cloning does (routes/agent-employees.ts POST /:id/clone shares the user). */
+async function cloneEmployee(userId: string): Promise<string> {
+  const id = randomUUID();
+  await fx!.client.query(`INSERT INTO agent_employees (id, org_id, user_id, name, slug, role, system_prompt, trust_level, is_active, is_byoa, runtime_kind, created_by)
+    VALUES ($1, $2, $3, 'Clone', $4, 'custom', 'Test.', 'conservative', true, true, 'custom_mcp', $5)`,
+  [id, fx!.orgId, userId, `clone-${id.slice(0, 8)}`, fx!.people.owner]);
+  return id;
+}
+
+test('ensurePersonalDrive never gives a drive handed on meanwhile back to its former owner (S-F3)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const owner = await person('Ensures During A Handover');
+  const first = await ensurePersonalDrive(fx.orgId, owner);
+  const holder = await lockHolder();
+  let ensured: Awaited<ReturnType<typeof ensurePersonalDrive>>;
+  try {
+    // A handover in progress, as handOverPersonalDriveInTx makes one: the
+    // drive locked, made private with no owner, the owner's row gone.
+    await holder.query('BEGIN');
+    await holder.query('SELECT id FROM drives WHERE id = $1 FOR UPDATE', [first.id]);
+    await holder.query(`UPDATE drives SET kind = 'private', owner_user_id = NULL, name = 'Handed on' WHERE id = $1`, [first.id]);
+    await holder.query('DELETE FROM drive_members WHERE drive_id = $1 AND principal_id = $2', [first.id, owner]);
+    const pending = ensurePersonalDrive(fx.orgId, owner);
+    await waitForLockWaiters(1, 'ensurePersonalDrive waits for the handover');
+    await holder.query('COMMIT');
+    ensured = await pending;
+  } finally {
+    await holder.query('ROLLBACK').catch(() => undefined);
+    await holder.end();
+  }
+  assert.notEqual(ensured.id, first.id, 'a new My drive');
+  assert.deepEqual(await membersOf(first.id), [], 'the former owner’s row is not written back on the handed-on drive');
+  assert.equal(await driveRoleFor(owner, fx.orgId, first.id), null);
+  assert.equal(ensured.kind, 'personal');
+  assert.deepEqual(await membersOf(ensured.id), [[owner, 'full']]);
+});
+
+test('a re-invited member gets a fresh My drive; the frozen one waits, untouched, for the owner (O-F1)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { owner } = fx.people;
+  const back = await person('Comes Back Later');
+  const old = await ensurePersonalDrive(fx.orgId, back);
+  const doc = await fx.insertDocument({ driveId: old.id, title: 'From before' });
+  await call(owner, 'DELETE', `/api/members/${back}`, {}, 200);
+  const frozen = await driveState(old.id);
+  assert.equal(frozen.frozen, true);
+  const { rows: [account] } = await fx.client.query('SELECT email FROM users WHERE id = $1', [back]);
+  try {
+    const invited = await fx.request(owner, 'POST', '/api/members/invite', { email: account.email, role: 'member' });
+    assert.ok(invited.ok, `re-invite: ${invited.status} ${await invited.clone().text()}`);
+    assert.equal(await isActiveMember(back), true, 'the invite made them a member again');
+
+    const fresh = await ensurePersonalDrive(fx.orgId, back);
+    assert.notEqual(fresh.id, old.id, 'a new, live My drive');
+    assert.equal(fresh.kind, 'personal');
+    assert.equal(fresh.frozen_at, null);
+    assert.equal(fresh.name, 'My drive');
+    assert.deepEqual(await membersOf(fresh.id), [[back, 'full']]);
+    assert.equal(await driveRoleFor(back, fx.orgId, fresh.id), 'full');
+    assert.equal((await ensurePersonalDrive(fx.orgId, back)).id, fresh.id, 'and the same one next time');
+
+    assert.deepEqual(await driveState(old.id), frozen, 'the frozen drive is untouched');
+    assert.equal(await documentRoleFor(back, fx.orgId, doc), null);
+    const listed = (await frozenList(owner)).find((row) => row.id === old.id);
+    assert.ok(listed, 'still listed for the owner to hand on');
+    assert.deepEqual(listed.former_owner, { id: back, name: 'Comes Back Later' });
+    const theirs = (await call(back, 'GET', '/api/drives', undefined, 200)).drives as Array<Record<string, any>>;
+    assert.ok(theirs.some((row) => row.id === fresh.id));
+    assert.equal(theirs.some((row) => row.id === old.id), false);
+  } finally {
+    await fx.client.query('DELETE FROM invites WHERE org_id = $1', [fx.orgId]);
+  }
+});
+
+test('an owner who hands a frozen drive to themselves gets their role and pin back, and no notice (S-F11)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { owner } = fx.people;
+  const departed = await person('Left It To The Owner');
+  const drive = await fx.insertDrive({ kind: 'personal', ownerUserId: departed, name: 'My drive' });
+  await fx.insertDocument({ driveId: drive, title: 'Kept' });
+  await call(owner, 'DELETE', `/api/members/${departed}`, {}, 200);
+  const handed = await call(owner, 'POST', `/api/drives/${drive}/handover`, { user_id: owner }, 200);
+  assert.equal(handed.drive.role, 'full');
+  assert.equal(handed.drive.pinned, false);
+  assert.deepEqual(await handoverNotices(owner, drive), [], 'no notice to the person who acted');
+  await call(owner, 'POST', `/api/drives/${drive}/pin`, undefined, 200);
+  assert.equal((await call(owner, 'GET', `/api/drives/${drive}`, undefined, 200)).drive.pinned, true);
+});
+
+test('deleting a cloned agent employee leaves the shared user, its membership and its drive; deleting the source ends its access without a freeze (O-F5)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { owner } = fx.people;
+  // Deleting the clone: the source still names the user.
+  const source = randomUUID();
+  const agent = await fx.addPerson({ kind: 'agent', agentEmployeeId: source });
+  const clone = await cloneEmployee(agent);
+  const drive = await ensurePersonalDrive(fx.orgId, agent);
+  resetEvents();
+  await call(owner, 'DELETE', `/api/agent-employees/${clone}`, undefined, 200);
+  const { rows: [cloneRow] } = await fx.client.query('SELECT is_deleted FROM agent_employees WHERE id = $1', [clone]);
+  assert.equal(cloneRow.is_deleted, true);
+  const { rows: [sourceRow] } = await fx.client.query('SELECT is_active, is_deleted FROM agent_employees WHERE id = $1', [source]);
+  assert.deepEqual(sourceRow, { is_active: true, is_deleted: false });
+  assert.equal(await isActiveMember(agent), true, 'the shared user stays a member');
+  const { rows: [shared] } = await fx.client.query('SELECT is_agent FROM users WHERE id = $1', [agent]);
+  assert.equal(shared.is_agent, true);
+  assert.equal((await driveState(drive.id)).frozen, false, 'the source’s drive is not frozen');
+  assert.equal(await driveRoleFor(agent, fx.orgId, drive.id), 'full');
+  assert.deepEqual(lossesInTx, [], 'nothing was lost');
+
+  // Deleting the source while a clone still names the user: its access ends
+  // (it followed the source), but nothing is frozen and the membership stays.
+  const source2 = randomUUID();
+  const agent2 = await fx.addPerson({ kind: 'agent', agentEmployeeId: source2 });
+  await cloneEmployee(agent2);
+  const drive2 = await ensurePersonalDrive(fx.orgId, agent2);
+  resetEvents();
+  await call(owner, 'DELETE', `/api/agent-employees/${source2}`, undefined, 200);
+  assert.equal(await isActiveMember(agent2), true);
+  assert.equal((await driveState(drive2.id)).frozen, false);
+  lossRecorded({ orgId: fx.orgId, userIds: [agent2] });
+  assert.equal(lossesInTx.length, 1, 'only the user’s own loss');
+  assert.equal(await driveRoleFor(agent2, fx.orgId, drive2.id), null, 'its access followed the source');
+});
+
+test('freezing a personal drive removes its chat link, so the chat can link another drive (O-F7)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member2, owner } = fx.people;
+  const linker = await person('Linked Their Drive');
+  const drive = await fx.insertDrive({ kind: 'personal', ownerUserId: linker, name: 'My drive' });
+  await fx.addDriveMember(drive, { space: fx.spaces.other }, 'view');
+  await fx.client.query('UPDATE drive_members SET is_link = true WHERE drive_id = $1 AND principal_id = $2', [drive, fx.spaces.other]);
+  const created = await call(member2, 'POST', '/api/drives', { name: 'For the other chat', kind: 'private' }, 201);
+  const next = created.drive.id as string;
+  assert.equal((await call(member2, 'POST', `/api/drives/${next}/link-space`, { space_id: fx.spaces.other, role: 'view' }, 409)).code,
+    'SPACE_ALREADY_LINKED');
+
+  resetEvents();
+  await call(owner, 'DELETE', `/api/members/${linker}`, {}, 200);
+  assert.equal((await driveState(drive)).frozen, true);
+  const { rows } = await fx.client.query('SELECT count(*)::int AS n FROM drive_members WHERE drive_id = $1 AND is_link', [drive]);
+  assert.equal(rows[0].n, 0, 'the link went with the freeze');
+  lossRecorded({ orgId: fx.orgId, driveId: drive, documentIds: [] });
+  await call(member2, 'POST', `/api/drives/${next}/link-space`, { space_id: fx.spaces.other, role: 'view' }, 201);
+});
+
+test('the offboarding preview names the members who can’t be given a drive, a paused agent with an active clone included (S-F10)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { admin, member2 } = fx.people;
+  const source = randomUUID();
+  const paused = await fx.addPerson({ kind: 'agent', agentEmployeeId: source });
+  await cloneEmployee(paused);
+  await fx.client.query('UPDATE agent_employees SET is_active = false WHERE id = $1', [source]);
+  const noEmployeeAgent = await fx.addPerson({ kind: 'agent' });
+  const leaver = await person('Previewed Leaver');
+  const preview = await call(admin, 'GET', `/api/members/${leaver}/offboarding-preview`, undefined, 200);
+  const cannot = preview.cannot_hold_drive_ids as string[];
+  assert.ok(cannot.includes(paused), 'its own employee is paused; the active clone doesn’t count');
+  assert.ok(cannot.includes(noEmployeeAgent));
+  assert.equal(cannot.includes(member2), false);
+  assert.equal(cannot.includes(fx.people.agentUser), false, 'an agent with an active employee can hold a drive');
+  assert.equal(cannot.includes(leaver), false, 'not the person being removed');
 });
