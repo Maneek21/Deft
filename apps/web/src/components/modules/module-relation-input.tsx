@@ -55,7 +55,7 @@ export function ModuleRelationInput({ slug, field, targetCollection, value, init
       <div className="max-h-52 overflow-y-auto p-1">
         {state.isLoading ? <p role="status" className="flex items-center gap-2 p-3 text-xs"><Loader2 size={14} className="animate-spin" />Loading…</p>
           : state.error ? <div role="alert" className="p-3 text-xs"><p>Unable to load choices.</p><button type="button" onClick={() => void state.mutate()} className="min-h-11 underline">Try again</button></div>
-            : state.records.length === 0 ? <p className="p-3 text-xs" style={{ color: 'var(--on-surface-variant)' }}>{search ? 'No matching records. Try another search.' : `No ${targetCollection?.name.toLowerCase() ?? 'records'} yet. Create one in its collection first.`}</p>
+            : state.records.length === 0 ? <p className="p-3 text-xs" style={{ color: 'var(--on-surface-variant)' }}>{search ? 'No matching records. Try another search.' : `No ${targetCollection?.name.toLowerCase() ?? 'records'} yet. Create one in its app first.`}</p>
               : state.records.map((record) => {
                 const label = targetCollection ? getModuleRecordTitle(record, targetCollection) : record.id;
                 const selected = ids.includes(record.id);

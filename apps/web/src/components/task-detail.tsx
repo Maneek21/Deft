@@ -2039,7 +2039,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             const evidence = [
               effects?.task_comments.count ? `${effects.task_comments.count} task comment${effects.task_comments.count === 1 ? '' : 's'}` : null,
               effects?.task_activity.count ? `${effects.task_activity.count} task change${effects.task_activity.count === 1 ? '' : 's'}` : null,
-              effects?.module_mutations.count ? `${effects.module_mutations.count} module artifact${effects.module_mutations.count === 1 ? '' : 's'}` : null,
+              effects?.module_mutations.count ? `${effects.module_mutations.count} app record change${effects.module_mutations.count === 1 ? '' : 's'}` : null,
               effects?.action_receipts.count ? `${effects.action_receipts.count} signed receipt${effects.action_receipts.count === 1 ? '' : 's'}` : null,
             ].filter((value): value is string => Boolean(value));
             return (

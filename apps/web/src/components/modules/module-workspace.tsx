@@ -140,7 +140,7 @@ export function ModuleWorkspace() {
   const [notice, setNotice] = useState<string | null>(null);
   useModuleRealtime(slug);
   useSetPageContext(
-    <span className="max-w-[55vw] truncate text-[0.875rem] font-semibold">{appOwner?.name ?? installedModule?.manifest.name ?? 'Module'}</span>,
+    <span className="max-w-[55vw] truncate text-[0.875rem] font-semibold">{appOwner?.name ?? installedModule?.manifest.name ?? 'App'}</span>,
     [appOwner?.name, installedModule?.manifest.name],
   );
 
@@ -181,7 +181,7 @@ export function ModuleWorkspace() {
   }, [activeSavedView, collection, installedModule, requestedSavedViewId, resolvedViewKey, router, savedViewsState.data]);
 
   const handleCreate = async (data: Record<string, unknown>, idempotencyKey: string, _unsetFields: string[], relations: Record<string, string[]>) => {
-    if (!installedModule?.manifestDigest || !collection) throw new Error('The active module schema is unavailable.');
+    if (!installedModule?.manifestDigest || !collection) throw new Error('This app’s current version is unavailable. Reload the page and try again.');
     const response = await api.post(`/api/modules/${encodeURIComponent(installedModule.slug)}/records`, {
       collection_key: collection.key,
       data,
@@ -199,10 +199,10 @@ export function ModuleWorkspace() {
     const response = await api.patch(`/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(record.id)}`, moduleBoardMovePayload(record, field, value, manifestDigest, idempotencyKey));
     if (!response.ok) {
       if (response.status === 409) {
-        setActionError('This record or its module changed. Reopen the record to review its latest values.');
+        setActionError('This record or its app changed. Reopen the record to review its latest values.');
         await recordsState.mutate().catch(() => undefined);
         await refreshModuleCaches(slug).catch(() => undefined);
-        throw new Error('This record or its module changed. Close this dialog and reopen it to use the latest values.');
+        throw new Error('This record or its app changed. Close this dialog and reopen it to use the latest values.');
       }
       throw new Error(await moduleApiError(response, 'Unable to change this record.'));
     }
@@ -272,11 +272,11 @@ export function ModuleWorkspace() {
     }), { scroll: false });
   };
 
-  if (moduleState.isLoading) return <ModuleLoadingState label="Loading module…" />;
+  if (moduleState.isLoading) return <ModuleLoadingState label="Loading app…" />;
   if (moduleState.error || !installedModule) {
     return (
       <ModuleErrorState
-        message={moduleState.error instanceof Error ? moduleState.error.message : 'This module was not found.'}
+        message={moduleState.error instanceof Error ? moduleState.error.message : 'This app was not found.'}
         onRetry={() => void moduleState.mutate()}
       />
     );
@@ -301,7 +301,7 @@ export function ModuleWorkspace() {
             </h1>
           </div>
           <p className="mt-0.5 hidden sm:block line-clamp-1 max-w-2xl text-[0.6875rem] md:text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
-            {installedModule.manifest.description ?? 'A schema-driven workspace module.'}
+            {installedModule.manifest.description ?? 'Records, fields and views for your workspace.'}
           </p>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
@@ -350,15 +350,15 @@ export function ModuleWorkspace() {
           {!installedModule.enabled ? (
             <EmptyState
               icon={<Settings2 size={20} style={{ color: 'var(--outline)' }} />}
-              title="Module disabled"
-              description="Its records are preserved. A workspace owner or admin can enable it from Settings."
+              title="This app is off"
+              description="Its records are kept. A workspace owner or admin can turn it back on in Settings → Apps."
               action={canManage ? { label: 'Open app settings', href: MODULE_SETTINGS_HREF } : undefined}
             />
           ) : showFollowUps ? <ModuleFollowUpQueue key={slug} slug={slug} /> : !collection || !view ? (
             <EmptyState
               icon={<TableProperties size={20} style={{ color: 'var(--outline)' }} />}
-              title="No collections"
-              description="This module manifest does not expose a record collection."
+              title="No record types"
+              description="This app’s file doesn’t declare a record type yet."
             />
           ) : (
             <div className="space-y-3">
@@ -420,7 +420,7 @@ export function ModuleWorkspace() {
                 <EmptyState
                   icon={<TableProperties size={20} style={{ color: 'var(--primary)' }} />}
                   title={`No ${collection.name.toLowerCase()} yet`}
-                  description={`Create the first ${collection.singularName.toLowerCase()} to start using this collection.`}
+                  description={`Create the first ${collection.singularName.toLowerCase()} to start using this record type.`}
                   action={canWrite ? { label: `New ${collection.singularName.toLowerCase()}`, onClick: () => setCreating(true) } : undefined}
                 />
               ) : (

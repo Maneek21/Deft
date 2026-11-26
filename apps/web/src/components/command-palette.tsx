@@ -658,7 +658,7 @@ export function CommandPalette() {
               />
               {/* Module records */}
               <ResultGroup
-                title="Modules"
+                title="Apps"
                 icon={Boxes}
                 items={results.modules ?? []}
                 startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length}

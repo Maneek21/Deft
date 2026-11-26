@@ -33,7 +33,7 @@ export function ModuleCollectionNav({
       ref={navRef}
       className="flex flex-shrink-0 gap-1 overflow-x-auto px-3 py-2 md:gap-1.5 md:px-6 md:py-2.5"
       style={{ borderBottom: '1px solid var(--ghost-border)' }}
-      aria-label={`${moduleName} collections`}
+      aria-label={`${moduleName} record types`}
       role="tablist"
     >
       {nav.items.map((item, index) => (

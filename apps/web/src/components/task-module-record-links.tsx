@@ -65,7 +65,7 @@ export function TaskModuleRecordLinks({
     }
     try {
       const response = await api.get(`/api/tasks/${encodeURIComponent(taskId)}/module-records?limit=25&offset=${offset}`);
-      if (!response.ok) throw new Error('Unable to load module records.');
+      if (!response.ok) throw new Error('Unable to load app records.');
       const page = normalizeTaskModuleRecordLinkPage(await response.json());
       if (sequence !== loadSequence.current) return;
       const seen = new Set<string>();
@@ -80,7 +80,7 @@ export function TaskModuleRecordLinks({
       onCountChange?.(next.length);
     } catch (reason) {
       if (sequence !== loadSequence.current) return;
-      setError(reason instanceof Error ? reason.message : 'Unable to load module records.');
+      setError(reason instanceof Error ? reason.message : 'Unable to load app records.');
       if (!append) onCountChange?.(0);
     } finally {
       if (sequence === loadSequence.current) {
@@ -192,10 +192,10 @@ export function TaskModuleRecordLinks({
   };
 
   return (
-    <section aria-label="Module records" className="space-y-2">
+    <section aria-label="App records" className="space-y-2">
       <div className="flex items-center justify-between gap-3 px-1">
         <span className="inline-flex items-center gap-1.5 text-[0.6875rem] font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
-          <Boxes size={12} /> Module records
+          <Boxes size={12} /> App records
         </span>
         {canEdit && !adding && (
           <button
@@ -217,7 +217,7 @@ export function TaskModuleRecordLinks({
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search module records…"
+              placeholder="Search app records…"
               className="min-h-9 min-w-0 flex-1 bg-transparent text-[0.75rem] outline-none"
               style={{ color: 'var(--foreground)' }}
             />
@@ -256,7 +256,7 @@ export function TaskModuleRecordLinks({
       {loading ? (
         <div className="flex items-center gap-2 px-2 py-2 text-[0.6875rem]" style={{ color: 'var(--muted)' }}><Loader2 size={12} className="animate-spin" /> Loading records…</div>
       ) : links.length === 0 ? (
-        <p className="px-2 py-1 text-[0.6875rem]" style={{ color: 'var(--muted)' }}>No module records attached.</p>
+        <p className="px-2 py-1 text-[0.6875rem]" style={{ color: 'var(--muted)' }}>No app records attached.</p>
       ) : (
         <div className="space-y-1.5">
           {links.map((link) => (

@@ -744,7 +744,7 @@ export function AgentActionCard({
   const taskLinkReviewPanel = needsTaskLinkReview ? (
     <section aria-label="Task link review" className="mt-3 rounded-xl border p-3 text-sm" style={{ borderColor: 'var(--border)' }}>
       {reviewedTaskLink ? (
-        <dl className="space-y-2 break-words [overflow-wrap:anywhere]"><div><dt className="font-medium">Module record</dt><dd><a className="underline" href={reviewedTaskLink.record.href}>{reviewedTaskLink.record.label}</a></dd></div><div><dt className="font-medium">Task</dt><dd><a className="underline" href={reviewedTaskLink.task.href}>{reviewedTaskLink.task.identifier}: {reviewedTaskLink.task.title}</a></dd></div><div><dt className="font-medium">Project</dt><dd>{reviewedTaskLink.task.project_name}</dd></div></dl>
+        <dl className="space-y-2 break-words [overflow-wrap:anywhere]"><div><dt className="font-medium">App record</dt><dd><a className="underline" href={reviewedTaskLink.record.href}>{reviewedTaskLink.record.label}</a></dd></div><div><dt className="font-medium">Task</dt><dd><a className="underline" href={reviewedTaskLink.task.href}>{reviewedTaskLink.task.identifier}: {reviewedTaskLink.task.title}</a></dd></div><div><dt className="font-medium">Project</dt><dd>{reviewedTaskLink.task.project_name}</dd></div></dl>
       ) : <p>Resolve the current record and task before approving this link change.</p>}
       <button type="button" onClick={loadTaskLinkReview} disabled={reviewLoading || isBusy} className="mt-2 min-h-9 rounded-md border px-3 py-1 text-xs disabled:opacity-60" style={{ borderColor: 'var(--border)' }}>{reviewLoading ? 'Loading targets…' : reviewedTaskLink ? 'Refresh target review' : 'Review link targets'}</button>
     </section>

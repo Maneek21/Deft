@@ -300,7 +300,7 @@ async function main() {
       await page.getByText('Contacts is installed.', { exact: false }).first().waitFor({ timeout: 15_000 });
     }
     await settle(page, '/modules/contacts/contacts');
-    const collectionTabs = page.getByRole('tablist', { name: /contacts collections/i });
+    const collectionTabs = page.getByRole('tablist', { name: /contacts record types/i });
     await collectionTabs.waitFor({ state: 'visible', timeout: 10_000 });
     const collectionAside = page.locator('aside').filter({ hasText: /^Collections$/ });
     if (await collectionAside.count()) {

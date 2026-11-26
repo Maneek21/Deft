@@ -78,7 +78,7 @@ export default function ModuleRecordDetailPage() {
   const recordReturnHref = moduleRecordHrefFromReturnContext(slug, collectionKey, recordId, searchParams);
 
   const handleUpdate = async (patch: Record<string, unknown>, idempotencyKey: string, unsetFields: string[], relations: Record<string, string[]>) => {
-    if (!installedModule?.manifestDigest || !record || !collection || !editingRecord) throw new Error('The active module schema is unavailable.');
+    if (!installedModule?.manifestDigest || !record || !collection || !editingRecord) throw new Error('This app’s current version is unavailable. Reload the page and try again.');
     const response = await api.patch(`/api/modules/${encodeURIComponent(installedModule.slug)}/records/${encodeURIComponent(record.id)}`, {
       patch,
       unset_fields: unsetFields,
@@ -125,7 +125,7 @@ export default function ModuleRecordDetailPage() {
     const error = moduleState.error ?? recordState.error;
     return (
       <ModuleErrorState
-        message={error instanceof Error ? error.message : 'This module record was not found or is no longer available.'}
+        message={error instanceof Error ? error.message : 'This record was not found or is no longer available.'}
         onRetry={() => void Promise.all([moduleState.mutate(), recordState.mutate()])}
       />
     );

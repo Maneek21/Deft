@@ -251,7 +251,7 @@ export function ModuleRecordExplorer({
 
         {hasActiveControls && (
           <div className="flex items-center justify-between gap-3 text-[0.6875rem]" style={{ color: 'var(--on-surface-variant)' }}>
-            <span>Search, filters, and sorting run across the full collection.</span>
+            <span>Search, filters, and sorting run across every record of this type.</span>
             <button type="button" onClick={clearControls} className="flex-shrink-0 font-medium" style={{ color: 'var(--primary)' }}>
               Clear all
             </button>
@@ -317,7 +317,7 @@ function FilterPanel({
     >
       {fields.length === 0 ? (
         <p className="text-[0.75rem] sm:col-span-2" style={{ color: 'var(--on-surface-variant)' }}>
-          This collection has no fields available to filter.
+          This record type has no fields to filter by.
         </p>
       ) : (
         <>
@@ -480,7 +480,7 @@ function ModuleBoard({
   const nextTasks = useModuleRecordNextTasks(slug, groupField ? records.map((record) => record.id) : []);
   if (!groupField) {
     return (
-      <ViewFallback message="This board has no group field. Showing a table until the manifest defines one.">
+      <ViewFallback message="This board has no group field. Showing a table until the app file defines one.">
         <ModuleRecordTable collection={collection} view={{ ...view, type: 'table' }} records={records} recordHref={recordHref} outcomeForRecord={outcomeForRecord} />
       </ViewFallback>
     );
@@ -574,7 +574,7 @@ function ModuleTimeline({
   const fields = getModuleTimelineFields(collection, view);
   if (!fields.start) {
     return (
-      <ViewFallback message="This timeline has no date field. Showing a table until the manifest defines one.">
+      <ViewFallback message="This timeline has no date field. Showing a table until the app file defines one.">
         <ModuleRecordTable collection={collection} view={{ ...view, type: 'table' }} records={records} recordHref={recordHref} outcomeForRecord={outcomeForRecord} />
       </ViewFallback>
     );
