@@ -1,13 +1,14 @@
 // Folders in drives (spec 5.1; plan Task F5). Folders only organise and carry
 // no access of their own: creating, changing and deleting one needs edit on
 // its drive, and a drive the caller can't see is a 404. Deleting a folder
-// moves its contents up to its parent folder, or to the drive root. The rules
+// moves its contents up to its parent folder, or to the drive root. DELETE
+// takes no body: a malformed one is a 400 before anything changes. The rules
 // and the lock order are in lib/documents.ts.
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import type { DocFolderRow } from '@deft/db/documents';
 import { createFolder, deleteFolder, DocumentRefusal, updateFolder } from '../lib/documents.js';
-import { jsonBody } from '../lib/request-body.js';
+import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 
 export const docFolderRoutes = new Hono();
 
@@ -82,6 +83,7 @@ docFolderRoutes.patch('/:id', async (c) => {
 docFolderRoutes.delete('/:id', async (c) => {
   try {
     const user = c.get('user');
+    if (!(await noBodyOrJson(c))) return invalid(c);
     await deleteFolder({ orgId: user.org_id, userId: user.id, folderId: c.req.param('id') });
     return c.json({ success: true });
   } catch (error) {

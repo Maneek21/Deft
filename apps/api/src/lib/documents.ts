@@ -37,22 +37,31 @@
 // order), then the folders and documents changed. A document's drive is read
 // before the locks, to know which drive to lock, and checked again under
 // them. My drive is ensured between the actor and the drive
-// (ensurePersonalDrive: the actor's rows FOR SHARE, then the drive FOR
-// SHARE, which this transaction then raises to FOR UPDATE; the room-access
-// lock keeps the person's own other writes out meanwhile).
+// (ensurePersonalDrive with lockForUpdate: the actor's rows FOR SHARE, then
+// the drive FOR UPDATE before its owner row is written, so this transaction
+// never raises a share lock while a concurrent ensure waits on that row).
 //
 // Access loss (rule C3): a move to another drive and a delete call
 // applyAccessLossInTx in their transaction and finishAccessLoss after the
 // commit. A move also tells listeners the target drive's people gained
 // access, and a restore that access came back (emitDocumentAccessChanged).
 //
-// Events (rule C4): `document:updated`, ids only, to each person who can view
-// the document (lib/document-access-events.ts). A delete tells the people who
-// could view it before; a move tells the people who can view it after, with
-// its new drive, and the people who could view it only before, with the
-// drive they knew. Lifecycle events (lib/document-events.ts) follow every
-// create, move, delete and restore. After a commit each step runs on its own,
-// so one that fails never skips the next.
+// Events (rule C4): after a commit, `document:updated`, ids only, goes to each
+// person who can view the document now (emitDocumentUpdated,
+// lib/document-access-events.ts). Someone who lost access through a move or
+// a delete hears only through the access-loss path (finishAccessLoss's
+// access change), never the document event; after a delete nobody can view
+// the documents, so none is sent, as after a drive delete. Lifecycle events
+// (lib/document-events.ts) follow every create, move, delete and restore.
+// After a commit each step runs on its own, so one that fails never skips the
+// next.
+//
+// What a viewer is shown (rule C4): every document a route returns comes from
+// one projection (viewerDocumentColumns), in which `folder_id` is null
+// unless the viewer can view the drive (folders carry no access of their
+// own) and `parent_document_id` is null unless they can view the parent page.
+// The breadcrumb shows each run of ancestors they can't see as one "Shared
+// with you". A delete answers with only the ids the caller could view.
 import { and, asc, desc, eq, gte, inArray, isNull, ne, notExists, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { docFavorites, docFolders, documentShares, documents, type DocFolderRow, type DocRole, type DocumentRow } from '@deft/db/documents';
@@ -60,9 +69,7 @@ import { EMPTY_DOCUMENT, ensureBlockIds, getDocumentSchema, jsonToText } from '@
 import { db } from './db.js';
 import { documentRoleFor, roleAtLeast, visibleDocumentCondition, visibleDocumentIdSql, visibleDriveIdSql, type Executor } from './document-access.js';
 import { accessLossInTx, finishAccessLoss, type PendingAccessLoss } from './document-access-change.js';
-import {
-  documentEventAudience, emitDocumentAccessChanged, emitDocumentUpdated, sendDocumentEvent, type DocumentEventAudience,
-} from './document-access-events.js';
+import { emitDocumentAccessChanged, emitDocumentUpdated } from './document-access-events.js';
 import { emitDocumentEvent } from './document-events.js';
 import { driveAccess, lockActorInTx, type DriveAccess, type DriveActor } from './drive-locks.js';
 import { ensurePersonalDrive, PrincipalCannotHoldAccessError } from './drives.js';
@@ -73,9 +80,6 @@ type JSONContent = Parameters<typeof jsonToText>[0];
 
 /** How long a deleted document stays in its drive's trash. */
 export const TRASH_DAYS = 30;
-
-/** The deepest page or folder chain the breadcrumb follows. */
-const MAX_DEPTH = 64;
 
 /** A refusal for the caller: the routes answer `{ error: message, code }` with `status`. */
 export class DocumentRefusal extends Error {
@@ -229,31 +233,35 @@ function initialContent(json: JSONContent | undefined) {
 
 /**
  * Creates a document (see the header for the roles): in `driveId`, else in
- * the parent page's drive, else in the caller's My drive. With `executor`
- * it runs in the caller's transaction, and the caller calls
- * finishDocumentCreated after its commit; otherwise it commits and finishes
- * itself.
+ * the parent page's drive, else in the caller's My drive. Commits in its own
+ * transaction, then raises `created` and sends `document:updated`.
  */
-export async function createDocument(input: CreateDocumentInput, executor?: Tx): Promise<DocumentRow> {
-  if (input.folderId && input.parentDocumentId) throw invalid('A document is in a folder or under a page, not both');
-  const content = initialContent(input.json);
-  if (executor) return createDocumentInTx(executor, input, content);
-  const document = await db.transaction((tx) => createDocumentInTx(tx, input, content));
-  await finishDocumentCreated(document, input.userId);
+export async function createDocument(input: CreateDocumentInput): Promise<DocumentRow> {
+  const { document, finish } = await db.transaction((tx) => createDocumentInTx(tx, input));
+  await finish();
   return document;
 }
 
-async function createDocumentInTx(tx: Tx, input: CreateDocumentInput, content: ReturnType<typeof initialContent>): Promise<DocumentRow> {
+/**
+ * createDocument in the caller's transaction. `finish` is the post-commit
+ * step (the `created` lifecycle event, then `document:updated` to the
+ * viewers); the caller runs it after its commit, never before. It never
+ * throws.
+ */
+export async function createDocumentInTx(tx: Tx, input: CreateDocumentInput): Promise<{ document: DocumentRow; finish: () => Promise<void> }> {
+  if (input.folderId && input.parentDocumentId) throw invalid('A document is in a folder or under a page, not both');
+  const content = initialContent(input.json);
   const { orgId, userId } = input;
   const actor = actorOf(orgId, userId);
   const folderId = input.folderId ?? null;
   const parentId = input.parentDocumentId ?? null;
+  // A parent page the caller can't see is missing, whichever drive it is in.
+  if (parentId && !(await documentRoleFor(userId, orgId, parentId, tx))) throw notFound();
   const parentDriveId = parentId ? await liveDriveOf(tx, orgId, parentId) : null;
   if (parentId && !parentDriveId) throw notFound();
   if (parentDriveId && input.driveId && input.driveId !== parentDriveId) throw parentNotInDrive();
   await lockActorInTx(tx, actor);
   const driveId = input.driveId ?? parentDriveId ?? (await myDriveInTx(tx, orgId, userId));
-  // A parent page the caller can't see reads as a missing page, not a drive.
   await lockDriveForEditInTx(tx, actor, driveId, parentId ? notFound() : notFound('Drive'));
   if (parentId) {
     const underLock = await liveDriveOf(tx, orgId, parentId);
@@ -277,13 +285,24 @@ async function createDocumentInTx(tx: Tx, input: CreateDocumentInput, content: R
     last_edited_at: now,
   }).returning();
   if (parentId) await copySharesInTx(tx, orgId, parentId, created!.id);
-  return created!;
+  const document = created!;
+  return {
+    document,
+    finish: async () => {
+      emitDocumentEvent({ type: 'created', orgId, documentIds: [document.id], toDriveId: document.drive_id, actorId: userId });
+      await emitDocumentUpdated(orgId, [document.id]);
+    },
+  };
 }
 
-/** The caller's My drive, in this transaction. Someone who can never hold access is refused. */
+/**
+ * The caller's My drive, in this transaction, locked FOR UPDATE before its
+ * owner row is written (the header's lock order). Someone who can never hold
+ * access is refused.
+ */
 async function myDriveInTx(tx: Tx, orgId: string, userId: string): Promise<string> {
   try {
-    return (await ensurePersonalDrive(orgId, userId, tx)).id;
+    return (await ensurePersonalDrive(orgId, userId, tx, { lockForUpdate: true })).id;
   } catch (error) {
     if (error instanceof PrincipalCannotHoldAccessError) {
       throw new DocumentRefusal(403, 'ORG_MEMBERSHIP_INACTIVE', 'Not an active member of this workspace');
@@ -301,12 +320,6 @@ async function copySharesInTx(tx: Tx, orgId: string, parentId: string, documentI
     org_id: orgId, document_id: documentId, principal_type: share.principal_type, principal_id: share.principal_id,
     role: share.role, shared_by: share.shared_by,
   })));
-}
-
-/** After a create's commit: the `created` lifecycle event, then `document:updated` to the document's viewers. Never throws. */
-export async function finishDocumentCreated(document: DocumentRow, actorId: string): Promise<void> {
-  emitDocumentEvent({ type: 'created', orgId: document.org_id, documentIds: [document.id], toDriveId: document.drive_id, actorId });
-  await emitDocumentUpdated(document.org_id, [document.id]);
 }
 
 // ---------------------------------------------------------------------------
@@ -331,21 +344,6 @@ export async function updateDocument(input: { orgId: string; userId: string; doc
   });
   if (outcome.changed) await emitDocumentUpdated(orgId, [outcome.document.id]);
   return outcome.document;
-}
-
-/**
- * A move's `document:updated`: the people who can view the documents after
- * it, with the new drive; the people who could view them only before, with
- * the drive they knew.
- */
-function sendMovedEvents(before: DocumentEventAudience | null, after: DocumentEventAudience): void {
-  sendDocumentEvent(after, 'document:updated');
-  if (!before) return;
-  const viewingAfter = new Map(after.documents.map((doc) => [doc.documentId, new Set(doc.userIds)]));
-  sendDocumentEvent({
-    orgId: before.orgId,
-    documents: before.documents.map((doc) => ({ ...doc, userIds: doc.userIds.filter((userId) => !viewingAfter.get(doc.documentId)?.has(userId)) })),
-  }, 'document:updated');
 }
 
 /**
@@ -381,8 +379,6 @@ export async function moveDocument(input: { orgId: string; userId: string; docum
     if (parentId && (await liveDriveOf(tx, orgId, parentId)) !== toDriveId) throw parentNotInDrive();
     if (folderId && !(await liveFolderInDrive(tx, orgId, toDriveId, folderId))) throw folderNotInDrive();
     const position = input.position ?? await nextDocumentPosition(tx, orgId, toDriveId, folderId, parentId, document.id);
-    const crossDrive = fromDriveId !== toDriveId;
-    const before = crossDrive ? await documentEventAudience(orgId, ids, tx) : null;
     const isRoot = sql`${documents.id} = ${document.id}`;
     await tx.update(documents).set({
       drive_id: toDriveId,
@@ -391,39 +387,43 @@ export async function moveDocument(input: { orgId: string; userId: string; docum
       position: sql`CASE WHEN ${isRoot} THEN ${position}::double precision ELSE ${documents.position} END`,
       updated_at: new Date(),
     }).where(and(eq(documents.org_id, orgId), inArray(documents.id, ids)));
-    const after = await documentEventAudience(orgId, ids, tx);
-    const loss = crossDrive ? await accessLossInTx(tx, { orgId, driveId: fromDriveId, documentIds: ids }) : null;
-    return { ids, fromDriveId, before, after, loss };
+    const loss = fromDriveId !== toDriveId ? await accessLossInTx(tx, { orgId, driveId: fromDriveId, documentIds: ids }) : null;
+    return { ids, fromDriveId, loss };
   });
   if (outcome.loss) await finishLoss(outcome.loss);
   if (outcome.fromDriveId !== toDriveId) emitDocumentAccessChanged({ orgId, driveId: toDriveId, documentIds: outcome.ids });
   emitDocumentEvent({ type: 'moved', orgId, documentIds: outcome.ids, fromDriveId: outcome.fromDriveId, toDriveId, actorId: userId });
-  sendMovedEvents(outcome.before, outcome.after);
+  await emitDocumentUpdated(orgId, outcome.ids);
   return { movedIds: outcome.ids };
 }
 
 /**
  * Moves a document and its live sub-pages to the drive's trash (edit on the
- * document), with one deleted_at for them all. Deleted ids are sorted.
+ * document), with one deleted_at for them all. `deletedIds` is every page
+ * trashed, sorted; `visibleIds` only those the caller could view before the
+ * delete (a page shared on its own can have sub-pages they can't see), for
+ * the caller's answer.
  */
-export async function softDeleteDocument(input: { orgId: string; userId: string; documentId: string }): Promise<{ deletedIds: string[] }> {
+export async function softDeleteDocument(input: { orgId: string; userId: string; documentId: string }): Promise<{ deletedIds: string[]; visibleIds: string[] }> {
   const { orgId, userId } = input;
   const outcome = await db.transaction(async (tx) => {
     const document = await lockDocumentForEditInTx(tx, actorOf(orgId, userId), input.documentId);
     const ids = await subtreeIds(tx, orgId, document.id, true);
-    const before = await documentEventAudience(orgId, ids, tx);
+    const visible = await tx.select({ id: documents.id }).from(documents)
+      .where(and(inArray(documents.id, ids), visibleDocumentCondition(userId, orgId)));
     const now = new Date();
     const deleted = await tx.update(documents).set({ is_deleted: true, deleted_at: now, deleted_by: userId, updated_at: now })
       .where(and(eq(documents.org_id, orgId), inArray(documents.id, ids), eq(documents.is_deleted, false)))
       .returning({ id: documents.id });
     const deletedIds = deleted.map((row) => row.id).sort();
     const loss = await accessLossInTx(tx, { orgId, driveId: document.drive_id, documentIds: deletedIds });
-    return { driveId: document.drive_id, deletedIds, before, loss };
+    const visibleIds = visible.map((row) => row.id).filter((id) => deletedIds.includes(id)).sort();
+    return { driveId: document.drive_id, deletedIds, visibleIds, loss };
   });
+  // No document:updated: nobody can view a deleted document (header).
   await finishLoss(outcome.loss);
   emitDocumentEvent({ type: 'deleted', orgId, documentIds: outcome.deletedIds, fromDriveId: outcome.driveId, actorId: userId });
-  sendDocumentEvent(outcome.before, 'document:updated');
-  return { deletedIds: outcome.deletedIds };
+  return { deletedIds: outcome.deletedIds, visibleIds: outcome.visibleIds };
 }
 
 /**
@@ -562,79 +562,117 @@ export async function deleteFolder(input: { orgId: string; userId: string; folde
 
 export type BreadcrumbItem = { type: 'drive' | 'folder' | 'document'; id: string; title: string } | { type: 'shared'; title: string };
 
-const sharedCrumb = (): BreadcrumbItem => ({ type: 'shared', title: 'Shared with you' });
-
 /**
  * The statement documentBreadcrumb runs for the page chain: the document and
- * its parent pages, top first, each with whether the viewer can see it.
- * Exported for its planning test.
+ * every parent page above it, top first, each with whether the viewer can
+ * see it. The whole chain is followed; `visited` stops a cycle. Exported for
+ * its planning test.
  */
 export function breadcrumbChainQuery(userId: string, orgId: string, documentId: string): SQL {
   return sql`WITH RECURSIVE crumb_chain AS (
-      SELECT crumb_doc.id, crumb_doc.parent_document_id, crumb_doc.folder_id, crumb_doc.drive_id, crumb_doc.title, 0 AS depth
+      SELECT crumb_doc.id, crumb_doc.parent_document_id, crumb_doc.folder_id, crumb_doc.drive_id, crumb_doc.title,
+        ARRAY[crumb_doc.id] AS visited
       FROM documents crumb_doc
       WHERE crumb_doc.id = ${documentId} AND crumb_doc.org_id = ${orgId} AND crumb_doc.is_deleted = false
       UNION ALL
       SELECT crumb_parent.id, crumb_parent.parent_document_id, crumb_parent.folder_id, crumb_parent.drive_id, crumb_parent.title,
-        crumb_chain.depth + 1
+        crumb_chain.visited || crumb_parent.id
       FROM documents crumb_parent
       JOIN crumb_chain ON crumb_parent.id = crumb_chain.parent_document_id
-      WHERE crumb_parent.org_id = ${orgId} AND crumb_parent.is_deleted = false AND crumb_chain.depth < ${MAX_DEPTH}
+      WHERE crumb_parent.org_id = ${orgId} AND NOT crumb_parent.id = ANY(crumb_chain.visited)
     )
     SELECT crumb_chain.id, crumb_chain.folder_id, crumb_chain.drive_id, crumb_chain.title,
       ${visibleDocumentIdSql(userId, orgId, sql.raw('crumb_chain.id'))} AS visible
     FROM crumb_chain
-    ORDER BY crumb_chain.depth DESC`;
+    ORDER BY cardinality(crumb_chain.visited) DESC`;
 }
 
 /**
- * Where a document sits, for its viewer (consult rule C4): its drive, the
- * folders above it, its parent pages, then itself. Each ancestor the viewer
- * can't see shows as "Shared with you", one for a run of them, with no id.
- * Folders carry no access of their own, so they show only with the drive.
+ * Where a document sits, for its viewer (consult rule C4): its drive, every
+ * folder above it, every parent page, then itself. Folders carry no access
+ * of their own, so they follow the drive; each page is checked on its own.
+ * Each run of ancestors the viewer can't see (drive, folders, pages) shows
+ * as one "Shared with you", with no id; what they can see after it still
+ * shows. Both chains are followed in full, a cycle stopped by `visited`.
  */
 export async function documentBreadcrumb(documentId: string, viewer: { orgId: string; userId: string }, executor: Executor = db): Promise<BreadcrumbItem[]> {
   const { orgId, userId } = viewer;
-  const chain = (await executor.execute(breadcrumbChainQuery(userId, orgId, documentId))).rows as Array<{
+  const pages = (await executor.execute(breadcrumbChainQuery(userId, orgId, documentId))).rows as Array<{
     id: string; folder_id: string | null; drive_id: string; title: string; visible: boolean;
   }>;
-  const top = chain[0];
+  const top = pages[0];
   if (!top) return [];
-  const crumbs: BreadcrumbItem[] = [];
   const driveRows = await executor.execute(sql`SELECT crumb_drive.name,
       ${visibleDriveIdSql(userId, orgId, sql.raw('crumb_drive.id'))} AS visible
     FROM drives crumb_drive WHERE crumb_drive.id = ${top.drive_id} AND crumb_drive.org_id = ${orgId}`);
   const drive = driveRows.rows[0] as { name: string; visible: boolean } | undefined;
-  if (drive?.visible) {
-    crumbs.push({ type: 'drive', id: top.drive_id, title: drive.name });
-    if (top.folder_id) {
-      const folders = await executor.execute(sql`WITH RECURSIVE crumb_folders AS (
-          SELECT crumb_folder.id, crumb_folder.parent_folder_id, crumb_folder.name, 0 AS depth
-          FROM doc_folders crumb_folder
-          WHERE crumb_folder.id = ${top.folder_id} AND crumb_folder.org_id = ${orgId} AND crumb_folder.drive_id = ${top.drive_id}
-          UNION ALL
-          SELECT crumb_up.id, crumb_up.parent_folder_id, crumb_up.name, crumb_folders.depth + 1
-          FROM doc_folders crumb_up
-          JOIN crumb_folders ON crumb_up.id = crumb_folders.parent_folder_id
-          WHERE crumb_up.org_id = ${orgId} AND crumb_up.drive_id = ${top.drive_id} AND crumb_folders.depth < ${MAX_DEPTH}
-        )
-        SELECT id, name FROM crumb_folders ORDER BY depth DESC`);
-      for (const folder of folders.rows as Array<{ id: string; name: string }>) crumbs.push({ type: 'folder', id: folder.id, title: folder.name });
-    }
-  } else {
-    crumbs.push(sharedCrumb());
+  const driveVisible = drive?.visible === true;
+  const folders = top.folder_id ? (await executor.execute(sql`WITH RECURSIVE crumb_folders AS (
+      SELECT crumb_folder.id, crumb_folder.parent_folder_id, crumb_folder.name, ARRAY[crumb_folder.id] AS visited
+      FROM doc_folders crumb_folder
+      WHERE crumb_folder.id = ${top.folder_id} AND crumb_folder.org_id = ${orgId} AND crumb_folder.drive_id = ${top.drive_id}
+      UNION ALL
+      SELECT crumb_up.id, crumb_up.parent_folder_id, crumb_up.name, crumb_folders.visited || crumb_up.id
+      FROM doc_folders crumb_up
+      JOIN crumb_folders ON crumb_up.id = crumb_folders.parent_folder_id
+      WHERE crumb_up.org_id = ${orgId} AND crumb_up.drive_id = ${top.drive_id} AND NOT crumb_up.id = ANY(crumb_folders.visited)
+    )
+    SELECT id, name FROM crumb_folders ORDER BY cardinality(visited) DESC`)).rows as Array<{ id: string; name: string }> : [];
+  const path: Array<{ visible: boolean; item: BreadcrumbItem }> = [
+    { visible: driveVisible, item: { type: 'drive', id: top.drive_id, title: drive?.name ?? '' } },
+    ...folders.map((folder) => ({ visible: driveVisible, item: { type: 'folder' as const, id: folder.id, title: folder.name } })),
+    ...pages.map((page) => ({ visible: page.visible, item: { type: 'document' as const, id: page.id, title: page.title } })),
+  ];
+  const crumbs: BreadcrumbItem[] = [];
+  for (const step of path) {
+    if (step.visible) crumbs.push(step.item);
+    else if (crumbs[crumbs.length - 1]?.type !== 'shared') crumbs.push({ type: 'shared', title: 'Shared with you' });
   }
-  for (const page of chain) crumbs.push(page.visible ? { type: 'document', id: page.id, title: page.title } : sharedCrumb());
-  return crumbs.filter((crumb, at) => !(crumb.type === 'shared' && crumbs[at - 1]?.type === 'shared'));
+  return crumbs;
+}
+
+/**
+ * The one projection of a document a route returns to `userId` (rule C4):
+ * `folder_id` only when they can view the drive (folders carry no access of
+ * their own), `parent_document_id` only when they can view the parent page,
+ * else null. GET /api/documents/:id, the create and change answers, recent
+ * and favourites all use it.
+ */
+export function viewerDocumentColumns(userId: string, orgId: string) {
+  return {
+    id: documents.id,
+    title: documents.title,
+    icon: documents.icon,
+    drive_id: documents.drive_id,
+    folder_id: sql<string | null>`CASE WHEN ${documents.folder_id} IS NOT NULL
+      AND ${visibleDriveIdSql(userId, orgId, sql`${documents.drive_id}`)} THEN ${documents.folder_id} END`,
+    parent_document_id: sql<string | null>`CASE WHEN ${documents.parent_document_id} IS NOT NULL
+      AND ${visibleDocumentIdSql(userId, orgId, sql`${documents.parent_document_id}`)} THEN ${documents.parent_document_id} END`,
+    position: documents.position,
+    is_template: documents.is_template,
+    created_by: documents.created_by,
+    last_edited_by: documents.last_edited_by,
+    last_edited_at: documents.last_edited_at,
+    created_at: documents.created_at,
+    updated_at: documents.updated_at,
+  };
+}
+
+/** A document `userId` can view, in viewerDocumentColumns' projection, or null. */
+export async function documentForViewer(reader: Reader, userId: string, orgId: string, documentId: string) {
+  const [document] = await reader.select(viewerDocumentColumns(userId, orgId)).from(documents)
+    .where(and(eq(documents.id, documentId), visibleDocumentCondition(userId, orgId))).limit(1);
+  return document ?? null;
 }
 
 /**
  * GET /api/drives/:id/tree's documents: those of the drive the caller can
  * see, by position, then title. The caller has checked they can view the
- * drive. Exported for its planning test (`.toSQL()`).
+ * drive, so its folders and pages are theirs to see. Exported for its
+ * planning test (`.toSQL()`).
  */
-export function driveTreeDocumentsQuery(userId: string, orgId: string, driveId: string) {
-  return db.select({
+export function driveTreeDocumentsQuery(userId: string, orgId: string, driveId: string, reader: Reader = db) {
+  return reader.select({
     id: documents.id, title: documents.title, icon: documents.icon, folder_id: documents.folder_id,
     parent_document_id: documents.parent_document_id, position: documents.position, updated_at: documents.updated_at,
   }).from(documents)
@@ -642,45 +680,43 @@ export function driveTreeDocumentsQuery(userId: string, orgId: string, driveId: 
     .orderBy(asc(documents.position), asc(documents.title), asc(documents.id));
 }
 
-/** A drive's folders and the documents the caller can see in it (they can view the drive). */
-export async function driveTree(userId: string, orgId: string, driveId: string) {
-  const folders = await db.select({ id: docFolders.id, parent_folder_id: docFolders.parent_folder_id, name: docFolders.name, position: docFolders.position })
+/**
+ * A drive's folders and the documents the caller can see in it (they can
+ * view the drive), read through `reader`: the route's snapshot.
+ */
+export async function driveTree(reader: Reader, userId: string, orgId: string, driveId: string) {
+  const folders = await reader.select({ id: docFolders.id, parent_folder_id: docFolders.parent_folder_id, name: docFolders.name, position: docFolders.position })
     .from(docFolders)
     .where(and(eq(docFolders.org_id, orgId), eq(docFolders.drive_id, driveId), eq(docFolders.is_deleted, false)))
     .orderBy(asc(docFolders.position), asc(docFolders.name), asc(docFolders.id));
-  return { folders, documents: await driveTreeDocumentsQuery(userId, orgId, driveId) };
+  return { folders, documents: await driveTreeDocumentsQuery(userId, orgId, driveId, reader) };
 }
 
 /**
- * A drive's trash: its documents deleted in the last TRASH_DAYS, newest
- * first. A page deleted together with its parent comes back with it, so only
- * the document each delete started from is listed. The caller has checked
- * they can edit the drive.
+ * A drive's trash, read through `reader` (the route's snapshot): its
+ * documents deleted in the last TRASH_DAYS, newest first. A page deleted
+ * together with its parent comes back with it, so it is folded into the
+ * parent's row; a page deleted on its own earlier keeps its own row. The
+ * caller has checked they can edit the drive.
  */
-export async function driveTrash(orgId: string, driveId: string) {
+export async function driveTrash(reader: Reader, orgId: string, driveId: string) {
   const parent = alias(documents, 'trash_parent');
-  return db.select({
+  return reader.select({
     id: documents.id, title: documents.title, icon: documents.icon, folder_id: documents.folder_id,
     parent_document_id: documents.parent_document_id, deleted_at: documents.deleted_at, deleted_by: documents.deleted_by,
   }).from(documents)
     .where(and(
       eq(documents.org_id, orgId), eq(documents.drive_id, driveId), eq(documents.is_deleted, true), gte(documents.deleted_at, trashCutoff()),
-      notExists(db.select({ id: parent.id }).from(parent).where(and(
+      notExists(reader.select({ id: parent.id }).from(parent).where(and(
         eq(parent.id, documents.parent_document_id), eq(parent.is_deleted, true), eq(parent.deleted_at, documents.deleted_at),
       ))),
     ))
     .orderBy(desc(documents.deleted_at), asc(documents.id));
 }
 
-const listColumns = {
-  id: documents.id, title: documents.title, icon: documents.icon, drive_id: documents.drive_id, folder_id: documents.folder_id,
-  parent_document_id: documents.parent_document_id, last_edited_by: documents.last_edited_by, last_edited_at: documents.last_edited_at,
-  updated_at: documents.updated_at,
-};
-
 /** GET /api/documents/recent: the 20 most recently edited documents the caller can see. Exported for its planning test. */
 export function recentDocumentsQuery(userId: string, orgId: string) {
-  return db.select(listColumns).from(documents)
+  return db.select(viewerDocumentColumns(userId, orgId)).from(documents)
     .where(visibleDocumentCondition(userId, orgId))
     .orderBy(desc(sql`COALESCE(${documents.last_edited_at}, ${documents.updated_at})`), asc(documents.id))
     .limit(20);
@@ -688,7 +724,7 @@ export function recentDocumentsQuery(userId: string, orgId: string) {
 
 /** GET /api/documents/favorites: the caller's starred documents they can still see, newest star first. Exported for its planning test. */
 export function favoriteDocumentsQuery(userId: string, orgId: string) {
-  return db.select({ ...listColumns, favorited_at: docFavorites.created_at }).from(documents)
+  return db.select({ ...viewerDocumentColumns(userId, orgId), favorited_at: docFavorites.created_at }).from(documents)
     .innerJoin(docFavorites, and(
       eq(docFavorites.org_id, orgId), eq(docFavorites.user_id, userId), eq(docFavorites.target_type, 'document'),
       eq(docFavorites.target_id, documents.id),

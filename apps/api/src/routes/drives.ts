@@ -72,8 +72,9 @@
 // a grant takes before them, so one waits for the other and none cycles.
 //
 // The privileged reads (the members panel, drives without a manager, frozen
-// drives) run their authorization and their data reads in one read-only,
-// repeatable-read transaction (READ_SNAPSHOT), so both see one snapshot.
+// drives) and the tree and trash run their authorization and their data
+// reads in one read-only, repeatable-read transaction (READ_SNAPSHOT), so
+// both see one snapshot.
 //
 // Deleting a drive, or changing its Knowledge default, raises a lifecycle
 // event for each of its documents, so Knowledge withdraws or re-learns them
@@ -914,14 +915,19 @@ driveRoutes.post('/:id/handover', async (c) => {
 });
 
 // GET /api/drives/:id/tree (needs view): the drive's folders, and the
-// documents in it the caller can see (lib/documents.ts driveTree).
+// documents in it the caller can see (lib/documents.ts driveTree). The role
+// and the lists come from one snapshot (READ_SNAPSHOT).
 driveRoutes.get('/:id/tree', async (c) => {
   try {
     const user = c.get('user');
-    const access = await driveAccess(db, user, c.req.param('id'));
-    const refused = refuse(access, 'view');
-    if (refused) return answer(c, refused);
-    return c.json(await driveTree(user.id, user.org_id, access!.drive.id));
+    const result = await db.transaction(async (tx) => {
+      const access = await driveAccess(tx, user, c.req.param('id'));
+      const refused = refuse(access, 'view');
+      if (refused) return { ok: false as const, refused };
+      return { ok: true as const, body: await driveTree(tx, user.id, user.org_id, access!.drive.id) };
+    }, READ_SNAPSHOT);
+    if (!result.ok) return answer(c, result.refused);
+    return c.json(result.body);
   } catch {
     return failed(c, 'load the drive’s documents');
   }
@@ -929,14 +935,19 @@ driveRoutes.get('/:id/tree', async (c) => {
 
 // GET /api/drives/:id/trash (needs edit): documents deleted in the last 30
 // days (lib/documents.ts driveTrash). The access check doesn't see deleted
-// documents, so the drive role is the gate.
+// documents, so the drive role is the gate. The role and the list come from
+// one snapshot (READ_SNAPSHOT).
 driveRoutes.get('/:id/trash', async (c) => {
   try {
     const user = c.get('user');
-    const access = await driveAccess(db, user, c.req.param('id'));
-    const refused = refuse(access, 'edit');
-    if (refused) return answer(c, refused);
-    return c.json({ items: await driveTrash(user.org_id, access!.drive.id) });
+    const result = await db.transaction(async (tx) => {
+      const access = await driveAccess(tx, user, c.req.param('id'));
+      const refused = refuse(access, 'edit');
+      if (refused) return { ok: false as const, refused };
+      return { ok: true as const, items: await driveTrash(tx, user.org_id, access!.drive.id) };
+    }, READ_SNAPSHOT);
+    if (!result.ok) return answer(c, result.refused);
+    return c.json({ items: result.items });
   } catch {
     return failed(c, 'load the drive’s trash');
   }

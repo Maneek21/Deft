@@ -5,23 +5,29 @@
 // workspace or another, is a 404.
 //
 // GET /:id answers in one read-only snapshot (the role, the document, its
-// drive and its breadcrumb). The drive's name and kind show only to someone
-// who can view the drive, and the breadcrumb names only the ancestors the
-// caller can see (consult rule C4). Content comes through live editing (F7);
-// `content_json` is included only when live editing is off or `?content=1`
-// asks for it.
+// drive and its breadcrumb). What a caller is shown follows rule C4: every
+// document answer uses lib/documents.ts's viewerDocumentColumns, so a folder
+// or parent page the caller can't see is null; the drive's name and kind
+// show only to someone who can view the drive; the breadcrumb shows hidden
+// ancestors as "Shared with you"; a delete answers with only the ids the
+// caller could view. Content comes through live editing (F7); `content_json`
+// is included only when live editing is off or `?content=1` asks for it.
+//
+// Routes that take no body (delete, restore, star and unstar) accept none, a
+// blank one or well-formed JSON, and answer a malformed body with 400 before
+// changing anything.
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import type { PgTransactionConfig } from 'drizzle-orm/pg-core';
-import { docFavorites, documents, drives, type DocumentRow } from '@deft/db/documents';
+import { docFavorites, documents, drives } from '@deft/db/documents';
 import { db } from '../lib/db.js';
 import { documentRoleFor, driveRoleFor } from '../lib/document-access.js';
 import {
-  createDocument, documentBreadcrumb, DocumentRefusal, favoriteDocumentsQuery, moveDocument, recentDocumentsQuery, restoreDocument,
-  softDeleteDocument, updateDocument,
+  createDocument, documentBreadcrumb, documentForViewer, DocumentRefusal, favoriteDocumentsQuery, moveDocument, recentDocumentsQuery,
+  restoreDocument, softDeleteDocument, updateDocument, viewerDocumentColumns,
 } from '../lib/documents.js';
-import { jsonBody } from '../lib/request-body.js';
+import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 
 export const documentRoutes = new Hono();
 
@@ -68,22 +74,15 @@ function failed(c: Context, error: unknown, what: string) {
   return c.json({ error: `Failed to ${what}`, code: 'INTERNAL_ERROR' }, 500);
 }
 
-function documentShape(row: DocumentRow) {
-  return {
-    id: row.id,
-    title: row.title,
-    icon: row.icon,
-    drive_id: row.drive_id,
-    folder_id: row.folder_id,
-    parent_document_id: row.parent_document_id,
-    position: row.position,
-    is_template: row.is_template,
-    created_by: row.created_by,
-    last_edited_by: row.last_edited_by,
-    last_edited_at: row.last_edited_at,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-  };
+/**
+ * After a change commits: the document as the caller is shown it
+ * (viewerDocumentColumns). A 404 if they can no longer view it.
+ */
+async function answerDocument(c: Context, documentId: string, status: 200 | 201 = 200) {
+  const user = c.get('user');
+  const document = await documentForViewer(db, user.id, user.org_id, documentId);
+  if (!document) return c.json(NOT_FOUND, 404);
+  return c.json({ document }, status);
 }
 
 // POST /api/documents { drive_id?, folder_id?, parent_document_id?, title?, json? }:
@@ -98,7 +97,7 @@ documentRoutes.post('/', async (c) => {
       orgId: user.org_id, userId: user.id, driveId: body.drive_id, folderId: body.folder_id, parentDocumentId: body.parent_document_id,
       title: body.title, json: body.json,
     });
-    return c.json({ document: documentShape(document) }, 201);
+    return await answerDocument(c, document.id, 201);
   } catch (error) {
     return failed(c, error, 'create the document');
   }
@@ -133,7 +132,10 @@ documentRoutes.get('/:id', async (c) => {
     const body = await db.transaction(async (tx) => {
       const role = await documentRoleFor(user.id, user.org_id, documentId, tx);
       if (!role) return null;
-      const [row] = await tx.select({ document: documents, drive: { id: drives.id, name: drives.name, kind: drives.kind } })
+      const [row] = await tx.select({
+        document: { ...viewerDocumentColumns(user.id, user.org_id), content_json: documents.content_json },
+        drive: { id: drives.id, name: drives.name, kind: drives.kind },
+      })
         .from(documents)
         .innerJoin(drives, and(eq(drives.id, documents.drive_id), eq(drives.org_id, documents.org_id)))
         .where(and(eq(documents.id, documentId), eq(documents.org_id, user.org_id), eq(documents.is_deleted, false)))
@@ -175,7 +177,7 @@ documentRoutes.patch('/:id', async (c) => {
       orgId: user.org_id, userId: user.id, documentId: c.req.param('id'),
       patch: { title: parsed.data.title, icon: parsed.data.icon, isTemplate: parsed.data.is_template },
     });
-    return c.json({ document: documentShape(document) });
+    return await answerDocument(c, document.id);
   } catch (error) {
     return failed(c, error, 'update the document');
   }
@@ -198,12 +200,14 @@ documentRoutes.post('/:id/move', async (c) => {
   }
 });
 
-// DELETE /api/documents/:id (needs edit): the document and its sub-pages go to the trash.
+// DELETE /api/documents/:id (needs edit): the document and its sub-pages go
+// to the trash. The answer lists only the pages the caller could view.
 documentRoutes.delete('/:id', async (c) => {
   try {
     const user = c.get('user');
-    const { deletedIds } = await softDeleteDocument({ orgId: user.org_id, userId: user.id, documentId: c.req.param('id') });
-    return c.json({ deleted_ids: deletedIds });
+    if (!(await noBodyOrJson(c))) return invalid(c);
+    const { visibleIds } = await softDeleteDocument({ orgId: user.org_id, userId: user.id, documentId: c.req.param('id') });
+    return c.json({ deleted_ids: visibleIds });
   } catch (error) {
     return failed(c, error, 'delete the document');
   }
@@ -213,6 +217,7 @@ documentRoutes.delete('/:id', async (c) => {
 documentRoutes.post('/:id/restore', async (c) => {
   try {
     const user = c.get('user');
+    if (!(await noBodyOrJson(c))) return invalid(c);
     const { restoredIds } = await restoreDocument({ orgId: user.org_id, userId: user.id, documentId: c.req.param('id') });
     return c.json({ restored_ids: restoredIds });
   } catch (error) {
@@ -224,6 +229,7 @@ documentRoutes.post('/:id/restore', async (c) => {
 documentRoutes.post('/:id/favorite', async (c) => {
   try {
     const user = c.get('user');
+    if (!(await noBodyOrJson(c))) return invalid(c);
     const documentId = c.req.param('id');
     if (!(await documentRoleFor(user.id, user.org_id, documentId))) return c.json(NOT_FOUND, 404);
     await db.insert(docFavorites)
@@ -239,6 +245,7 @@ documentRoutes.post('/:id/favorite', async (c) => {
 documentRoutes.delete('/:id/favorite', async (c) => {
   try {
     const user = c.get('user');
+    if (!(await noBodyOrJson(c))) return invalid(c);
     await db.delete(docFavorites).where(and(
       eq(docFavorites.org_id, user.org_id), eq(docFavorites.user_id, user.id), eq(docFavorites.target_type, 'document'),
       eq(docFavorites.target_id, c.req.param('id')),

@@ -2,7 +2,9 @@
  * The privileged drive reads run their authorization and their data reads in
  * one read-only, repeatable-read transaction, so both see one snapshot
  * (consult S-F7): the members panel (GET /api/drives/:id/members, members and
- * admin changes), drives without a manager and frozen drives.
+ * admin changes), drives without a manager and frozen drives. So do a
+ * drive's tree and trash (F5), which must also read nothing outside it: the
+ * wrapper records each query started on the pool itself (`direct`).
  *
  * A race between the authorization and a data read can't be placed inside
  * one request from here, so this is the unit-level check: the database
@@ -19,6 +21,7 @@ import { after, before, mock, test } from 'node:test';
 import { sql } from 'drizzle-orm';
 
 const opened: Array<{ config: unknown; isolation: string | null }> = [];
+const direct: string[] = [];
 const actualDb = await import('../src/lib/db.js');
 const realDb = actualDb.db;
 const recordingDb = new Proxy(realDb, {
@@ -30,6 +33,7 @@ const recordingDb = new Proxy(realDb, {
         return run(tx);
       }, config as any);
     }
+    if (prop === 'select' || prop === 'execute') direct.push(prop);
     const value = Reflect.get(target, prop, target);
     return typeof value === 'function' ? value.bind(target) : value;
   },
@@ -101,4 +105,27 @@ test('the members panel, drives without a manager and frozen drives each read in
   const refused = await fx.request(member2, 'GET', `/api/drives/${drive}/members`);
   assert.equal(refused.status, 403);
   assertOneSnapshot('GET /:id/members (refused)');
+});
+
+test('the drive tree and trash read their role and their lists in one repeatable-read snapshot', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const drive = await fx.insertDrive({ kind: 'private', name: 'Tree snapshot' });
+  await fx.addDriveMember(drive, { user: member }, 'full');
+  const folder = await fx.insertFolder({ driveId: drive });
+  const document = await fx.insertDocument({ driveId: drive, folderId: folder, title: 'In the tree' });
+  const trashed = await fx.insertDocument({ driveId: drive, title: 'In the trash', deleted: true });
+
+  direct.length = 0;
+  const tree = await read(member, `/api/drives/${drive}/tree`);
+  assertOneSnapshot('GET /:id/tree');
+  assert.deepEqual(direct, [], 'GET /:id/tree reads nothing outside the snapshot');
+  assert.deepEqual(tree.folders.map((row: any) => row.id), [folder]);
+  assert.deepEqual(tree.documents.map((row: any) => row.id), [document]);
+
+  direct.length = 0;
+  const trash = await read(member, `/api/drives/${drive}/trash`);
+  assertOneSnapshot('GET /:id/trash');
+  assert.deepEqual(direct, [], 'GET /:id/trash reads nothing outside the snapshot');
+  assert.deepEqual(trash.items.map((row: any) => row.id), [trashed]);
 });

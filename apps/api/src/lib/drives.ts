@@ -242,17 +242,17 @@ export async function ensureSharedNotesDrive(orgId: string, createdBy: string, e
 
 /**
  * `userId`'s live personal drive: not deleted and not frozen (a frozen one
- * is a departure's, waiting for the owner to hand it on). Share-locked until
- * commit, which a handover's FOR UPDATE and a freeze's update wait for.
+ * is a departure's, waiting for the owner to hand it on). Locked in `mode`
+ * until commit, which a handover's FOR UPDATE and a freeze's update wait for.
  */
-async function livePersonalDriveLocked(tx: Tx, orgId: string, userId: string): Promise<DriveRow | undefined> {
+async function livePersonalDriveLocked(tx: Tx, orgId: string, userId: string, mode: 'share' | 'update'): Promise<DriveRow | undefined> {
   const [drive] = await tx.select().from(drives)
     .where(and(
       eq(drives.org_id, orgId), eq(drives.owner_user_id, userId), eq(drives.kind, 'personal'), eq(drives.is_deleted, false),
       isNull(drives.frozen_at),
     ))
     .limit(1)
-    .for('share');
+    .for(mode);
   return drive;
 }
 
@@ -293,21 +293,28 @@ export class PrincipalCannotHoldAccessError extends Error {
  * owner row is written only while the drive is still this person's live,
  * unfrozen personal drive. So a drive handed on meanwhile never gets its
  * former owner's row back; they get a new My drive instead.
+ *
+ * With `lockForUpdate` (a caller in `tx` that goes on to lock the drive FOR
+ * UPDATE, lib/documents.ts), the drive is read FOR UPDATE instead, before the
+ * owner row is written. Raising a share lock to FOR UPDATE after writing that
+ * row would deadlock with a concurrent ensure that holds the drive FOR SHARE
+ * and waits on the same owner row.
  */
-export async function ensurePersonalDrive(orgId: string, userId: string, tx?: Tx): Promise<DriveRow> {
-  return tx ? ensurePersonalDriveInTx(tx, orgId, userId) : db.transaction((own) => ensurePersonalDriveInTx(own, orgId, userId));
+export async function ensurePersonalDrive(orgId: string, userId: string, tx?: Tx, options: { lockForUpdate?: boolean } = {}): Promise<DriveRow> {
+  const mode = options.lockForUpdate ? 'update' : 'share';
+  return tx ? ensurePersonalDriveInTx(tx, orgId, userId, mode) : db.transaction((own) => ensurePersonalDriveInTx(own, orgId, userId, mode));
 }
 
-async function ensurePersonalDriveInTx(tx: Tx, orgId: string, userId: string): Promise<DriveRow> {
+async function ensurePersonalDriveInTx(tx: Tx, orgId: string, userId: string, mode: 'share' | 'update'): Promise<DriveRow> {
   if (!(await canHoldDocumentAccessLocked(tx, orgId, userId))) throw new PrincipalCannotHoldAccessError();
-  let drive = await livePersonalDriveLocked(tx, orgId, userId);
+  let drive = await livePersonalDriveLocked(tx, orgId, userId, mode);
   if (!drive) {
     await tx.insert(drives)
       .values({ org_id: orgId, name: 'My drive', kind: 'personal', owner_user_id: userId, created_by: userId })
       .onConflictDoNothing({
         target: [drives.org_id, drives.owner_user_id], where: sql`kind = 'personal' AND NOT is_deleted AND frozen_at IS NULL`,
       });
-    drive = await livePersonalDriveLocked(tx, orgId, userId);
+    drive = await livePersonalDriveLocked(tx, orgId, userId, mode);
     if (!drive) throw new Error('the personal drive could not be created');
   }
   await tx.execute(sql`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role, added_by)

@@ -16,14 +16,17 @@
  *   DATABASE_URL=... DEFT_TEST_DATABASE_URL=... pnpm --filter @deft/api test test/documents-http-db.test.ts
  */
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import test, { after, before } from 'node:test';
 import { sql } from 'drizzle-orm';
-import { closeDb } from '../src/lib/db.js';
+import pg from 'pg';
+import { closeDb, db } from '../src/lib/db.js';
 import { documentRoleFor } from '../src/lib/document-access.js';
 import { onDocumentAccessChanged, type DocumentAccessChange } from '../src/lib/document-access-events.js';
 import { currentAccessGeneration, onAccessLossInTx } from '../src/lib/document-access-change.js';
 import { onDocumentEvent, type DocumentLifecycleEvent } from '../src/lib/document-events.js';
+import * as documentsLib from '../src/lib/documents.js';
 import { docFolderRoutes } from '../src/routes/doc-folders.js';
 import { documentRoutes } from '../src/routes/documents.js';
 import { driveRoutes } from '../src/routes/drives.js';
@@ -318,13 +321,13 @@ test('moving a document with sub-pages into a private drive moves the sub-pages,
     assert.equal(await documentRoleFor(owner, fx.orgId, subsub), null);
     assert.equal(await documentRoleFor(member2, fx.orgId, subsub), 'view');
 
-    // Viewers before the move are told, ids only: the owner, who lost access, with the drive they knew.
-    await waitFor(() => harness.updates(owner).length >= 3 && harness.updates(member).length >= 3, 'the viewers are told');
+    // Only the people who can view the documents now are sent document:updated, ids only. The
+    // owner, who lost access, hears only through the access change above (rule C3).
+    await waitFor(() => harness.updates(member).length >= 3, 'the current viewers are told');
     await new Promise((r) => setTimeout(r, 300));
-    assert.deepEqual(harness.updates(owner).map((u: any) => u.id).sort(), ids);
-    for (const update of harness.updates(owner)) assert.deepEqual(update, { id: update.id, drive_id: fx.workspaceDriveId });
+    assert.deepEqual(harness.updates(member).map((u: any) => u.id).sort(), ids);
     for (const update of harness.updates(member)) assert.deepEqual(update, { id: update.id, drive_id: target });
-    assert.equal(harness.updates(member).length, 3);
+    assert.deepEqual(harness.updates(owner), [], 'a former viewer is sent no document event');
   } finally {
     await harness.close();
   }
@@ -402,6 +405,7 @@ test('deleting a document closes its open connections', async (t) => {
   const stop = onDocumentAccessChanged((change) => {
     if (change.orgId === fx!.orgId) for (const id of change.documentIds ?? []) open.delete(id);
   });
+  const harness = await socketHarness(fx.orgId, [member]);
   try {
     resetEvents();
     const generation = currentAccessGeneration();
@@ -412,8 +416,12 @@ test('deleting a document closes its open connections', async (t) => {
     assert.ok(lossesInTx[0]!.txid, 'the loss ran inside the delete’s transaction');
     assert.ok(currentAccessGeneration() > generation, 'connections re-check their role before their next update');
     assert.deepEqual([...open], [other], 'the deleted document and its sub-page are closed; nothing else');
+    // Nobody can view a deleted document, so nobody is sent document:updated for it (rule C4).
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(harness.updates(member), [], 'the people who could view it hear only through the access change');
   } finally {
     stop();
+    await harness.close();
   }
 });
 
@@ -588,4 +596,186 @@ test('every new document and folder route answers malformed JSON with 400', asyn
     assert.equal((await json(res)).code, 'VALIDATION_ERROR');
   }
   assert.equal((await rows([doc])).get(doc).title, 'Malformed');
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1
+
+test('creating a document in My drive does not deadlock with a concurrent ensure of the same drive', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const person = await fx.addPerson();
+  const first = (await call(person, 'POST', '/api/documents', { title: 'Makes My drive' }, 201)).document;
+  const holder = new pg.Client({ connectionString: url!, connectionTimeoutMillis: 3000 });
+  await holder.connect();
+  try {
+    await holder.query("SET lock_timeout = '15s'");
+    const { rows: [{ pid }] } = await holder.query('SELECT pg_backend_pid() AS pid');
+    await holder.query('BEGIN');
+    // A standalone ensurePersonalDrive, part way: the drive FOR SHARE ...
+    await holder.query('SELECT id FROM drives WHERE id = $1 FOR SHARE', [first.drive_id]);
+    const creating = fx.request(person, 'POST', '/api/documents', { title: 'While another ensure runs' });
+    const deadline = Date.now() + 5_000;
+    let waiting = 0;
+    while (waiting === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+      const { rows: [row] } = await fx.client.query(`SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> $1`, [pid]);
+      waiting = row.n;
+    }
+    assert.ok(waiting > 0, 'the create waits for the other ensure');
+    // ... then the owner row, as ensurePersonalDrive writes it.
+    await holder.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role, added_by)
+      SELECT gen_random_uuid()::text, d.org_id, d.id, 'user', $2, 'full', $2 FROM drives d WHERE d.id = $1
+      ON CONFLICT (drive_id, principal_type, principal_id) DO UPDATE SET role = 'full', updated_at = now()
+        WHERE drive_members.role <> 'full'`, [first.drive_id, person]);
+    await holder.query('COMMIT');
+    const res = await creating;
+    const body = await json(res);
+    assert.equal(res.status, 201, JSON.stringify(body));
+    assert.equal(body.document.drive_id, first.drive_id);
+  } finally {
+    await holder.query('ROLLBACK').catch(() => undefined);
+    await holder.end();
+  }
+});
+
+test('the breadcrumb follows the whole page chain, however deep, and shows what the viewer can see after a hidden run', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { guest, member } = fx.people;
+  const drive = await privateDrive(member, 'Deep drive');
+  const folder = await fx.insertFolder({ driveId: drive });
+  const chain: string[] = [];
+  for (let at = 0; at < 70; at += 1) {
+    chain.push(await fx.insertDocument({
+      driveId: drive, folderId: at === 0 ? folder : undefined, parentDocumentId: chain[at - 1], title: `Level ${at}`,
+    }));
+  }
+  const deepest = chain[chain.length - 1]!;
+  const full = (await call(member, 'GET', `/api/documents/${deepest}`, undefined, 200)).document;
+  assert.deepEqual(full.breadcrumb.map((crumb: any) => crumb.id), [drive, folder, ...chain], 'every ancestor, 70 pages deep');
+  // Shared with the guest on its own, and one page far above it: each hidden run is one "Shared with you".
+  await fx.share(deepest, { user: guest }, 'view');
+  await fx.share(chain[10]!, { user: guest }, 'view');
+  const shared = (await call(guest, 'GET', `/api/documents/${deepest}`, undefined, 200)).document;
+  assert.deepEqual(shared.breadcrumb, [
+    { type: 'shared', title: 'Shared with you' },
+    { type: 'document', id: chain[10], title: 'Level 10' },
+    { type: 'shared', title: 'Shared with you' },
+    { type: 'document', id: deepest, title: 'Level 69' },
+  ]);
+});
+
+test("a viewer is never shown the id of a folder or parent page they can't see", async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { guest, member, member2 } = fx.people;
+  const drive = await privateDrive(member, 'Hidden drive');
+  const folder = await fx.insertFolder({ driveId: drive });
+  const inFolder = await fx.insertDocument({ driveId: drive, folderId: folder, title: 'In a hidden folder' });
+  const parent = await fx.insertDocument({ driveId: drive, title: 'Hidden parent' });
+  const sub = await fx.insertDocument({ driveId: drive, parentDocumentId: parent, title: 'Shared sub-page' });
+  await fx.share(inFolder, { user: guest }, 'view');
+  await fx.share(sub, { user: guest }, 'view');
+  await fx.share(sub, { user: member2 }, 'edit');
+  assert.equal((await call(guest, 'GET', `/api/documents/${inFolder}`, undefined, 200)).document.folder_id, null);
+  assert.equal((await call(guest, 'GET', `/api/documents/${sub}`, undefined, 200)).document.parent_document_id, null);
+  // Recent and favourites use the same projection.
+  const recent = (await call(guest, 'GET', '/api/documents/recent', undefined, 200)).documents as Array<Record<string, unknown>>;
+  assert.equal(recent.find((d) => d.id === inFolder)?.folder_id, null);
+  assert.equal(recent.find((d) => d.id === sub)?.parent_document_id, null);
+  await call(guest, 'POST', `/api/documents/${sub}/favorite`, undefined, 200);
+  const favourites = (await call(guest, 'GET', '/api/documents/favorites', undefined, 200)).documents as Array<Record<string, unknown>>;
+  assert.deepEqual(favourites.map((d) => [d.id, d.parent_document_id]), [[sub, null]]);
+  // So does the answer to a change made through a share.
+  assert.equal((await call(member2, 'PATCH', `/api/documents/${sub}`, { title: 'Renamed' }, 200)).document.parent_document_id, null);
+  // Someone who can view the drive is shown both.
+  assert.equal((await call(member, 'GET', `/api/documents/${sub}`, undefined, 200)).document.parent_document_id, parent);
+  assert.equal((await call(member, 'GET', `/api/documents/${inFolder}`, undefined, 200)).document.folder_id, folder);
+  // A parent page the caller can't see is not found, whichever drive is named.
+  for (const body of [{ parent_document_id: parent, drive_id: fx.workspaceDriveId }, { parent_document_id: parent }]) {
+    assert.equal((await call(member2, 'POST', '/api/documents', body, 404)).code, 'NOT_FOUND');
+  }
+});
+
+test('deleting a page shared on its own answers with only the ids the caller could see', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const drive = await privateDrive(member);
+  const page = await fx.insertDocument({ driveId: drive, title: 'Shared page' });
+  const hiddenSub = await fx.insertDocument({ driveId: drive, parentDocumentId: page, title: 'Not shared' });
+  await fx.share(page, { user: member2 }, 'edit');
+  resetEvents();
+  assert.deepEqual((await call(member2, 'DELETE', `/api/documents/${page}`, undefined, 200)).deleted_ids, [page]);
+  const all = sorted([page, hiddenSub]);
+  const after = await rows(all);
+  for (const id of all) assert.equal(after.get(id).is_deleted, true, 'the whole sub-page tree is trashed');
+  assert.deepEqual(lossesInTx[0]?.change.documentIds, all, 'the access loss names every page');
+  assert.ok(lifecycle.some((event) => event.type === 'deleted' && isDeepStrictEqual(event.documentIds, all)), 'so does the lifecycle event');
+});
+
+test('a sub-page deleted on its own keeps its trash row when its parent is restored, and comes back under it', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const drive = await privateDrive(member);
+  const parent = await fx.insertDocument({ driveId: drive, title: 'Parent' });
+  const child = await fx.insertDocument({ driveId: drive, parentDocumentId: parent, title: 'Child' });
+  const trashIds = async () => ((await call(member, 'GET', `/api/drives/${drive}/trash`, undefined, 200)).items as Array<{ id: string }>)
+    .map((item) => item.id).sort();
+  await call(member, 'DELETE', `/api/documents/${child}`, undefined, 200);
+  assert.deepEqual((await call(member, 'DELETE', `/api/documents/${parent}`, undefined, 200)).deleted_ids, [parent]);
+  assert.deepEqual(await trashIds(), sorted([parent, child]), 'each delete has its own row');
+  assert.deepEqual((await call(member, 'POST', `/api/documents/${parent}/restore`, undefined, 200)).restored_ids, [parent]);
+  assert.equal((await rows([child])).get(child).is_deleted, true, 'deleted on its own, it stays deleted');
+  assert.deepEqual(await trashIds(), [child], 'and still listed');
+  assert.deepEqual((await call(member, 'POST', `/api/documents/${child}/restore`, undefined, 200)).restored_ids, [child]);
+  assert.equal((await rows([child])).get(child).parent_document_id, parent, 'back under its parent');
+});
+
+test('routes that take no body refuse a malformed one before changing anything', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const drive = await privateDrive(member);
+  const doc = await fx.insertDocument({ driveId: drive, title: 'Stays live' });
+  const trashed = await fx.insertDocument({ driveId: drive, title: 'Stays trashed', deleted: true });
+  const starred = await fx.insertDocument({ driveId: drive, title: 'Stays starred' });
+  const folder = await fx.insertFolder({ driveId: drive });
+  await call(member, 'POST', `/api/documents/${starred}/favorite`, undefined, 200);
+  for (const [method, path] of [
+    ['DELETE', `/api/documents/${doc}`], ['POST', `/api/documents/${trashed}/restore`], ['POST', `/api/documents/${doc}/favorite`],
+    ['DELETE', `/api/documents/${starred}/favorite`], ['DELETE', `/api/doc-folders/${folder}`],
+  ] as const) {
+    const res = await fx.requestRaw(member, method, path, '{"oops": ');
+    assert.equal(res.status, 400, `${method} ${path}`);
+    assert.equal((await json(res)).code, 'VALIDATION_ERROR');
+  }
+  const state = await rows([doc, trashed]);
+  assert.equal(state.get(doc).is_deleted, false, 'not deleted');
+  assert.equal(state.get(trashed).is_deleted, true, 'not restored');
+  const { rows: stars } = await fx.client.query(`SELECT target_id FROM doc_favorites WHERE user_id = $1 AND target_id = ANY($2::text[])`,
+    [member, [doc, starred]]);
+  assert.deepEqual(stars.map((row) => row.target_id), [starred], 'not starred, not unstarred');
+  const { rows: [folderRow] } = await fx.client.query('SELECT is_deleted FROM doc_folders WHERE id = $1', [folder]);
+  assert.equal(folderRow.is_deleted, false, 'the folder is not deleted');
+  // A blank body, or well-formed JSON, is accepted.
+  assert.equal((await fx.requestRaw(member, 'POST', `/api/documents/${trashed}/restore`, '')).status, 200);
+  assert.equal((await fx.requestRaw(member, 'DELETE', `/api/doc-folders/${folder}`, '{}')).status, 200);
+});
+
+test('createDocumentInTx creates in the caller’s transaction and hands back the post-commit step', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const input = { orgId: fx.orgId, userId: member, driveId: fx.workspaceDriveId };
+  resetEvents();
+  const made = await db.transaction((tx) => documentsLib.createDocumentInTx(tx, { ...input, title: 'In a caller’s transaction' }));
+  assert.equal((await rows([made.document.id])).get(made.document.id).title, 'In a caller’s transaction');
+  assert.deepEqual(lifecycle, [], 'nothing is raised until the caller runs finish');
+  await made.finish();
+  assert.ok(lifecycle.some((event) => event.type === 'created' && isDeepStrictEqual(event.documentIds, [made.document.id])));
+  // Rolled back with the caller's transaction, it leaves nothing.
+  const title = `Rolled back ${randomUUID()}`;
+  await assert.rejects(db.transaction(async (tx) => {
+    await documentsLib.createDocumentInTx(tx, { ...input, title });
+    throw new Error('roll back');
+  }), /roll back/);
+  const { rows: left } = await fx.client.query('SELECT id FROM documents WHERE org_id = $1 AND title = $2', [fx.orgId, title]);
+  assert.deepEqual(left, []);
 });
