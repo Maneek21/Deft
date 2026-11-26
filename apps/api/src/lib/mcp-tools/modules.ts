@@ -363,7 +363,7 @@ async function priorEmployeeMutation(
     return {
       kind: 'result',
       result: errorResult(JSON.stringify({
-        error: 'Idempotency key was already used for a different module mutation',
+        error: 'Idempotency key was already used for a different app record change',
         code: 'MODULE_IDEMPOTENCY_CONFLICT',
       })),
     };
@@ -372,7 +372,7 @@ async function priorEmployeeMutation(
     return {
       kind: 'result',
       result: errorResult(JSON.stringify({
-        error: 'Idempotency key was already used for a different module mutation',
+        error: 'Idempotency key was already used for a different app record change',
         code: 'MODULE_IDEMPOTENCY_CONFLICT',
       })),
     };

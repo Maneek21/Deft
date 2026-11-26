@@ -289,23 +289,30 @@ export async function inspectAppPackageJson(value: string): Promise<InspectedApp
  * one-click install and every later bundled update) or adopt an installed
  * Contacts (moving its ownership and on/off switch to the App).
  *
- * Only a first-party package passes (`reviewedFirstPartyEntry`): Email through
- * the reviewed Protocol 7 entry point, or a package the host itself stages
- * with `firstPartyPackage` (no HTTP route sets that). Customer uploads, the
- * plain stage route and the developer install path never do.
+ * Two separate first-party exemptions, each as narrow as it can be:
+ * - `firstPartyAppId`: the App may use a com.deft.* / io.deft.* id. Only
+ *   Email's reviewed Protocol 7 entry (a P7 package with id io.deft.email) and
+ *   host-set `firstPartyPackage` get it.
+ * - `bundledCopies`: the App may carry a shipped bundled manifest unchanged.
+ *   Only host-set `firstPartyPackage` gets it (no HTTP route sets that);
+ *   Email carries no modules, so its entry never needs it.
+ * Customer uploads, the plain stage route and the developer install path get
+ * neither.
  */
+export type AppIdentityTrust = { firstPartyAppId: boolean; bundledCopies: boolean };
+
 export function assertAppIdentityNotReserved(
   inspected: Pick<InspectedAppPackage, 'manifest' | 'package'>,
-  options: { reviewedFirstPartyEntry: boolean },
+  trust: AppIdentityTrust,
 ): void {
-  if (!options.reviewedFirstPartyEntry && isFirstPartyReservedId(inspected.manifest.id)) {
+  if (!trust.firstPartyAppId && isFirstPartyReservedId(inspected.manifest.id)) {
     throw new AppError(
       'App ids that start with com.deft. or io.deft. are kept for apps made by Deft. Choose another id, such as com.example.my-app.',
       'MODULE_IDENTITY_RESERVED',
       409,
     );
   }
-  assertIncludedModulesNotReserved(inspected, options);
+  assertIncludedModulesNotReserved(inspected, trust);
 }
 
 /**
@@ -313,25 +320,34 @@ export function assertAppIdentityNotReserved(
  * Protocol 7 package with id io.deft.email. Any other package on that route
  * (another id, or another protocol) gets no first-party exemption.
  */
-function isReviewedEmailEntry(inspected: Pick<InspectedAppPackage, 'manifest'>, attachmentStage: boolean): boolean {
-  return attachmentStage
+function isReviewedEmailEntry(inspected: Pick<InspectedAppPackage, 'manifest'>, attachmentEntry: boolean): boolean {
+  return attachmentEntry
     && inspected.manifest.schema_version === '7'
     && inspected.manifest.id === FIRST_PARTY_EMAIL_APP_ID;
 }
 
 const FIRST_PARTY_EMAIL_APP_ID = 'io.deft.email';
 
+export function appIdentityTrust(
+  inspected: Pick<InspectedAppPackage, 'manifest'>,
+  options: { firstPartyPackage?: boolean; attachmentEntry?: boolean },
+): AppIdentityTrust {
+  const host = options.firstPartyPackage === true;
+  return {
+    firstPartyAppId: host || isReviewedEmailEntry(inspected, options.attachmentEntry === true),
+    bundledCopies: host,
+  };
+}
+
 function assertIncludedModulesNotReserved(
   inspected: Pick<InspectedAppPackage, 'manifest' | 'package'>,
-  options: { reviewedFirstPartyEntry: boolean },
+  trust: Pick<AppIdentityTrust, 'bundledCopies'>,
 ): void {
   for (const reference of inspected.manifest.modules) {
     const artifact = inspected.package.artifacts.find((item) => item.path === reference.manifest_path);
     if (!artifact) continue;
     const moduleManifest = parseDeftModuleManifest(JSON.parse(artifact.content) as unknown);
-    const reason = moduleIdentityReservation(moduleManifest, {
-      allowExactBundledCopy: options.reviewedFirstPartyEntry,
-    });
+    const reason = moduleIdentityReservation(moduleManifest, { allowExactBundledCopy: trust.bundledCopies });
     if (reason) throw new AppError(reason, 'MODULE_IDENTITY_RESERVED', 409);
   }
 }
@@ -346,10 +362,10 @@ export async function stageAppPackage(
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
-  assertAppIdentityNotReserved(inspected, {
-    reviewedFirstPartyEntry: options.firstPartyPackage === true
-      || isReviewedEmailEntry(inspected, options.attachmentStage === true),
-  });
+  assertAppIdentityNotReserved(inspected, appIdentityTrust(inspected, {
+    firstPartyPackage: options.firstPartyPackage,
+    attachmentEntry: options.attachmentStage,
+  }));
   if (inspected.manifest.schema_version === '7') {
     if (options.attachmentStage !== true) throw new AppError('Attachment staging requires its reviewed host entry point', 'APP_PROTOCOL_UNSUPPORTED', 409);
     assertAttachmentManifestAdmission(inspected.manifest, options.attachmentComposition === true);
@@ -484,7 +500,9 @@ export async function stageAppUpgrade(
     // An update may keep the apps it already owns, but may not add a bundled
     // or first-party one unless it is a first-party package (see
     // assertAppIdentityNotReserved).
-    if (options.firstPartyPackage !== true && !attachmentUpgrade) {
+    // Every upgrade path, the attachment one included, is checked; only a
+    // host-staged first-party package may add a bundled copy.
+    if (options.firstPartyPackage !== true) {
       const owned = new Set((await tx.select({ module_id: appModuleBindings.module_id }).from(appModuleBindings).where(and(
         eq(appModuleBindings.org_id, actor.org_id),
         eq(appModuleBindings.app_installation_id, installation.id),
@@ -492,7 +510,7 @@ export async function stageAppUpgrade(
       assertIncludedModulesNotReserved({
         manifest: { ...inspected.manifest, modules: inspected.manifest.modules.filter((reference) => !owned.has(reference.module_id)) },
         package: inspected.package,
-      }, { reviewedFirstPartyEntry: false });
+      }, { bundledCopies: false });
     }
     const [activeVersion] = await tx.select().from(appVersions).where(and(
       eq(appVersions.org_id, actor.org_id),

@@ -14,7 +14,7 @@ import {
   moduleIdentityReservation,
 } from '../src/lib/module-service.js';
 import { ModuleError } from '../src/lib/module-errors.js';
-import { assertAppIdentityNotReserved, inspectAppPackageJson, stageAppPackage } from '../src/lib/app-service.js';
+import { appIdentityTrust, assertAppIdentityNotReserved, inspectAppPackageJson, stageAppPackage } from '../src/lib/app-service.js';
 import { AppError } from '../src/lib/app-errors.js';
 import { moduleRoutes } from '../src/routes/modules.js';
 import { appRoutes } from '../src/routes/apps.js';
@@ -163,9 +163,9 @@ test('the real Email package passes the reserved check on its reviewed entry poi
   const manifest = (fixture.manifest ?? fixture) as { id: string; modules: never[] };
   assert.equal(manifest.id, 'io.deft.email');
   const inspected = { manifest, package: { artifacts: [] } } as unknown as Parameters<typeof assertAppIdentityNotReserved>[0];
-  assert.doesNotThrow(() => assertAppIdentityNotReserved(inspected, { reviewedFirstPartyEntry: true }));
+  assert.doesNotThrow(() => assertAppIdentityNotReserved(inspected, { firstPartyAppId: true, bundledCopies: false }));
   assert.throws(
-    () => assertAppIdentityNotReserved(inspected, { reviewedFirstPartyEntry: false }),
+    () => assertAppIdentityNotReserved(inspected, { firstPartyAppId: false, bundledCopies: false }),
     (error: unknown) => error instanceof AppError && error.code === 'MODULE_IDENTITY_RESERVED',
   );
   // Inspecting alone stays allowed, so a person can read why it would be refused.
@@ -236,4 +236,25 @@ test('the reviewed attachment entry trusts only a Protocol 7 io.deft.email packa
       (error: unknown) => error instanceof AppError && error.code === 'MODULE_IDENTITY_RESERVED' && error.status === 409,
     );
   }
+});
+
+test('Email\'s reviewed entry may use its own id but never carry a bundled app', { skip: !canRun }, async () => {
+  const email = { manifest: { schema_version: '7', id: 'io.deft.email' } } as unknown as Parameters<typeof appIdentityTrust>[0];
+  assert.deepEqual(appIdentityTrust(email, { attachmentEntry: true }), { firstPartyAppId: true, bundledCopies: false });
+  assert.deepEqual(appIdentityTrust(email, { attachmentEntry: false }), { firstPartyAppId: false, bundledCopies: false });
+  const other = { manifest: { schema_version: '7', id: 'com.example.mail' } } as unknown as Parameters<typeof appIdentityTrust>[0];
+  assert.deepEqual(appIdentityTrust(other, { attachmentEntry: true }), { firstPartyAppId: false, bundledCopies: false });
+  assert.deepEqual(appIdentityTrust(other, { firstPartyPackage: true }), { firstPartyAppId: true, bundledCopies: true });
+
+  // A package claiming the Email id that carries the exact Contacts manifest is refused.
+  const built = await contactsCopyPackage('community.example.unused');
+  const value = JSON.parse(built.json) as { manifest: Record<string, unknown>; artifacts: unknown };
+  const inspected = {
+    manifest: { ...value.manifest, schema_version: '7', id: 'io.deft.email' },
+    package: { artifacts: value.artifacts },
+  } as unknown as Parameters<typeof assertAppIdentityNotReserved>[0];
+  assert.throws(
+    () => assertAppIdentityNotReserved(inspected, appIdentityTrust(inspected, { attachmentEntry: true })),
+    (error: unknown) => error instanceof AppError && error.code === 'MODULE_IDENTITY_RESERVED',
+  );
 });
