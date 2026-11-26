@@ -28,7 +28,7 @@ An installed app can be turned off, which hides it and keeps its records, but no
 
 App packages are for Deft's own Email at launch, and we don't recommend building your own yet:
 
-- An App package you build yourself can be staged and turned on, but **it can't be upgraded yet**, and it can't be uninstalled. Changing it means starting a new App with a new id.
+- A basic App package you build yourself (App Protocol 0, records and views only) can be staged and turned on, but **it can't be upgraded yet**: Deft refuses another version of it, and it can't be uninstalled. Changing it means starting a new App with a new id. Connected packages have a separate, reviewed upgrade flow for operators.
 - Apps are off by default on a self-hosted install, and developer pairing is off on hosted workspaces.
 - Asking for a permission is a request for review, not a grant. A connected package is staged first; an owner or admin reviews it, binds an eligible provider, and activates it.
 
@@ -40,7 +40,7 @@ Workspace owners, admins and members can see and change every record in an app. 
 
 Only owners and admins install, update and turn off apps.
 
-A new app gives Defty and agent employees no access until an owner or admin chooses **Read** or **Read and write** under **Defty and agents** on its card, or answers yes to "Let Defty read these records?" when installing it. Their writes follow the approval policy, and an agent's request to archive a record always needs human review.
+A new app gives Defty and agent employees no access until an owner or admin chooses **Read** or **Read and write** under **Defty and agents** on its card, or answers yes to "Let Defty read these records?" when installing it. Defty's changes in chat wait for approval; an agent employee's changes follow its trust level; and a request to archive a record always needs a person's review.
 
 Personal MCP clients act as the connected person and need the `read:modules` and `write:modules` scopes. The **Defty and agents** setting doesn't control them.
 

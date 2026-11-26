@@ -30,9 +30,11 @@ Back in **Settings → Apps**, choose **Edit** on the Vendor tracker card. The e
 { "key": "account_number", "label": "Account number", "type": "text" }
 ```
 
+A view shows only the fields it lists, so also add `"account_number"` to the `fields` list of the **Add a vendor** form view (key `form`) and of the **Vendor** detail view (key `detail`).
+
 Choose **Check**. Deft checks the file the way it will when you save and explains any problem in plain words, naming where it is. Then choose **Save**. You don't need to change the version: Deft raises it for you.
 
-**Check:** the message says the app is now version 1.0.1 and every record was kept, and new vendors offer an **Account number** field.
+**Check:** the message says the app is now version 1.0.1 and every record was kept. Choose **New vendor** and open **More details** (the form shows its first eight fields, then the rest there): **Account number** is there, and a saved vendor shows it.
 
 An update keeps every record. If a change would break a record that already exists, for example making a field required while some records leave it empty, Deft refuses the update and names those records, so you can fix them first. If someone else saved the app after you opened the editor, Save is refused; load the newest version and make your change again.
 
@@ -52,7 +54,7 @@ Add this line at the top of your file and editors such as VS Code check it as yo
 
 ## 5. Defty, agents and MCP
 
-Each app card has a **Defty and agents** setting: **No access**, **Read**, or **Read and write**. It starts at **No access** unless you said yes when installing. Defty and agent employees can only use an app at the level you choose, and their writes wait for approval. Defty also needs an AI provider configured for the workspace.
+Each app card has a **Defty and agents** setting: **No access**, **Read**, or **Read and write**. It starts at **No access** unless you said yes when installing. Defty and agent employees can only use an app at the level you choose. Defty's changes in chat wait for your approval. An agent employee's changes follow its trust level, and archiving a record always needs a person's review. Defty also needs an AI provider configured for the workspace.
 
 A personal MCP connection acts as you, so it doesn't use this setting. It needs the `read:modules` scope to read app records, and `write:modules` to change them.
 

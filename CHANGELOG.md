@@ -19,7 +19,7 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   the browser (Settings → Apps, a starter app, editing, uploading a file), with
   the self-hosted command line second. "Apps and App packages" explains that a
   customer's app is an app file, and that App packages are for Deft's own Email
-  at launch and can't be upgraded yet.
+  at launch; a basic App package a customer builds can't be upgraded yet.
 
 ### The app file schema no longer flags valid files
 
