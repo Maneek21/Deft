@@ -61,7 +61,8 @@ async function main() {
       matched: `${m.matched_expected ?? 0}/${m.expected_capture_count ?? 0}`,
       falsePositives: m.false_positive_count ?? 0,
       receipts: (run.evidence?.receipts ?? []).filter((r: any) => r.ok).length,
-      note: (run.evidence?.promoted_note ?? []).length,
+      // Notes are documents (F15): a run proves its note document was created and found through search.
+      note: run.evidence?.note_document ? 'created and found' : 'not proven',
       findings: run.findings.map((f) => `${f.severity}: ${f.title}`).join('; '),
     };
   });
@@ -110,13 +111,13 @@ async function main() {
       <div class="card"><div class="metric">${escapeHtml(latest?.evidence?.metrics?.sent_messages ?? 0)}/100</div><span>Latest UI sends succeeded</span></div>
       <div class="card"><div class="metric">${escapeHtml(strongest?.evidence?.metrics?.intent_count ?? 0)}</div><span>Best run capture count</span></div>
       <div class="card"><div class="metric">${escapeHtml(receiptRun?.evidence?.receipts?.filter((r: any) => r.ok).length ?? 0)}</div><span>Verified receipts in approval run</span></div>
-      <div class="card"><div class="metric">${escapeHtml(latest?.evidence?.promoted_note?.length ?? 0)}</div><span>Latest notes promoted to wiki</span></div>
+      <div class="card"><div class="metric">${escapeHtml(latest?.evidence?.note_document ? 'Yes' : 'No')}</div><span>Latest note created as a document and found through search</span></div>
     </div>
   </section>
 
   <h2>Run Comparison</h2>
   <table>
-    <thead><tr><th>Run</th><th>UI Sends</th><th>Intents</th><th>Matched Expected</th><th>No-op Overcapture</th><th>Receipts</th><th>Note→Wiki</th><th>Findings</th></tr></thead>
+    <thead><tr><th>Run</th><th>UI Sends</th><th>Intents</th><th>Matched Expected</th><th>No-op Overcapture</th><th>Receipts</th><th>Note document</th><th>Findings</th></tr></thead>
     <tbody>
       ${rows.map((row) => `<tr><td><code>${escapeHtml(row.marker)}</code></td><td>${escapeHtml(row.sent)}</td><td>${escapeHtml(row.intents)}</td><td>${escapeHtml(row.matched)}</td><td>${escapeHtml(row.falsePositives)}</td><td>${escapeHtml(row.receipts)}</td><td>${escapeHtml(row.note)}</td><td>${escapeHtml(row.findings)}</td></tr>`).join('')}
     </tbody>

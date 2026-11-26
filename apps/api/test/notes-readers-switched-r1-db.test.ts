@@ -264,15 +264,46 @@ test('every canvas write answers 410 CANVAS_MOVED after authentication, with the
 // ---------------------------------------------------------------------------
 // A-m2
 
+// The scan (fix round 2): .ts, .tsx, .mjs, .js and .sql under apps/, packages/
+// and scripts/. Only the notes move itself (apps/api/src/lib/drives-move/, by
+// exact path) and tests are left out; so are installed and built files
+// (node_modules, dist, dot-directories such as .next), which aren't source.
+const LEGACY_WRITERS = [
+  /\binsert\s+into\s+(notes|note_versions|note_shares|note_folders|canvases)\b/i,
+  /\bupdate\s+(notes|note_versions|note_shares|note_folders|canvases)\s+set\b/i,
+  /\.(insert|update)\(\s*(notes|noteVersions|noteShares|noteFolders|canvases)\b/,
+];
+const MOVE_PREFIX = 'apps/api/src/lib/drives-move/';
+const SCANNED_FILE = /\.(ts|tsx|mjs|js|sql)$/;
+const isTestPath = (rel: string) => /(^|\/)(test|tests|__tests__)\//.test(rel) || /\.test\.[a-z]+$/.test(rel);
+
+/** The files (repository-relative paths) whose text writes a legacy notes table, with the rule each breaks. */
+function legacyWriterOffenders(files: Array<{ rel: string; text: string }>): string[] {
+  return files.flatMap(({ rel, text }) => {
+    if (!SCANNED_FILE.test(rel) || rel.startsWith(MOVE_PREFIX) || isTestPath(rel)) return [];
+    return LEGACY_WRITERS.filter((pattern) => pattern.test(text)).map((pattern) => `${rel} (${pattern.source})`);
+  });
+}
+
+test('the legacy-writer scan covers SQL files and every directory but the move\'s own', () => {
+  const insert = 'INSERT INTO notes (id) VALUES ($1)';
+  assert.deepEqual(legacyWriterOffenders([
+    { rel: 'packages/db/upgrades/0.9.0-example.sql', text: insert },
+    { rel: 'apps/web/src/drives-move/writer.ts', text: 'await db.insert(notes).values({})' },
+    { rel: 'apps/api/src/lib/other/drives-move/x.ts', text: 'UPDATE canvases SET title = $1' },
+    { rel: 'scripts/x.mjs', text: 'await tx.update(noteShares).set({})' },
+    { rel: 'apps/api/src/lib/drives-move/move-notes.ts', text: insert },
+    { rel: 'apps/api/test/x-db.test.ts', text: insert },
+    { rel: 'packages/db/scripts/x.test.ts', text: insert },
+    { rel: 'apps/api/src/lib/x.ts', text: 'SELECT id FROM notes; INSERT INTO note_files (id) VALUES ($1)' },
+  ]).map((offender) => offender.split(' ')[0]), [
+    'packages/db/upgrades/0.9.0-example.sql', 'apps/web/src/drives-move/writer.ts', 'apps/api/src/lib/other/drives-move/x.ts', 'scripts/x.mjs',
+  ]);
+});
+
 test('nothing outside the notes move writes notes, note versions, note shares, note folders or canvases', async () => {
   const root = fileURLToPath(new URL('../../../', import.meta.url));
-  const roots = ['apps/api/src', 'apps/web/src', 'packages', 'scripts'].map((dir) => join(root, dir));
-  const writers = [
-    /\binsert\s+into\s+(notes|note_versions|note_shares|note_folders|canvases)\b/i,
-    /\bupdate\s+(notes|note_versions|note_shares|note_folders|canvases)\s+set\b/i,
-    /\.(insert|update)\(\s*(notes|noteVersions|noteShares|noteFolders|canvases)\b/,
-  ];
-  const offenders: string[] = [];
+  const files: Array<{ rel: string; text: string }> = [];
   const walk = async (dir: string): Promise<void> => {
     let entries;
     try {
@@ -282,18 +313,18 @@ test('nothing outside the notes move writes notes, note versions, note shares, n
     }
     for (const entry of entries) {
       const path = join(dir, entry.name);
-      const rel = relative(root, path).split(sep).join('/');
       if (entry.isDirectory()) {
-        if (['node_modules', 'dist', '.next', 'test', 'tests', '__tests__', 'drives-move'].includes(entry.name)) continue;
+        if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name.startsWith('.')) continue;
         await walk(path);
-      } else if (/\.(ts|tsx|js|mjs|cjs)$/.test(entry.name) && !/\.test\.(ts|tsx|js)$/.test(entry.name)) {
-        const text = await readFile(path, 'utf8');
-        for (const pattern of writers) if (pattern.test(text)) offenders.push(`${rel} (${pattern.source})`);
+      } else if (SCANNED_FILE.test(entry.name)) {
+        files.push({ rel: relative(root, path).split(sep).join('/'), text: await readFile(path, 'utf8') });
       }
     }
   };
-  for (const dir of roots) await walk(dir);
-  assert.deepEqual(offenders, []);
+  for (const dir of ['apps', 'packages', 'scripts']) await walk(join(root, dir));
+  assert.ok(files.some((file) => file.rel.endsWith('.sql')), 'the scan reads SQL files');
+  assert.ok(files.some((file) => file.rel.startsWith(MOVE_PREFIX)), 'the scan reaches the move (and leaves it out)');
+  assert.deepEqual(legacyWriterOffenders(files), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -447,6 +478,59 @@ test('images a tool writes are linked to the document when the acting person upl
   assert.equal(await exists(control), false, 'the sweep ran');
   assert.equal(await exists(mine), true, 'the note image is kept');
   assert.equal(await exists(canvasImage), true, 'the canvas image is kept');
+});
+
+test('an image named only by its /api/files source is linked when it qualifies, else a placeholder; another site\'s image always is', { skip }, async () => {
+  const { executeAction } = await import('../src/lib/agent-actions.js');
+  const { member, member2 } = fx.people;
+  const links = async (id: string) => (await fx.client.query(`SELECT file_id, in_current FROM document_attachments
+    WHERE document_id = $1 ORDER BY file_id`, [id])).rows;
+  const textOf = async (id: string) => (await fx.client.query('SELECT content_json, content_text FROM documents WHERE id = $1', [id])).rows[0];
+
+  // write_canvas with structured content: images named by fileId, by a relative source only, and from another site.
+  const room = randomUUID();
+  const roomName = `${marker}-sources`;
+  await fx.client.query(`INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, $3, 'private', $4)`, [room, fx.orgId, roomName, member2]);
+  await fx.client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), room, member2]);
+  const canvasId = randomUUID();
+  await fx.client.query(`INSERT INTO canvases (id, org_id, space_id, title, content) VALUES ($1, $2, $3, 'Canvas', $4::jsonb)`,
+    [canvasId, fx.orgId, room, JSON.stringify(docJson('sources canvas'))]);
+  const canvasDocument = await fx.insertDocument({ driveId: await myDrive(member2), title: 'Sources canvas', json: docJson('sources canvas') });
+  await fx.share(canvasDocument, { space: room }, 'edit');
+  await fx.client.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+    VALUES ($1, $2, 'canvas', $3, 'document', $4)`, [randomUUID(), fx.orgId, canvasId, canvasDocument]);
+  const srcMine = await insertFile({ uploadedBy: member2 });
+  const srcTheirs = await insertFile({ uploadedBy: member });
+  const named = await insertFile({ uploadedBy: member2 });
+  const written = await executeAction(randomUUID(), 'write_canvas', {
+    space_name: roomName,
+    content: { type: 'doc', content: [
+      paragraph('mixed'),
+      { type: 'image', attrs: { src: `/api/files/${srcMine}` } },
+      { type: 'image', attrs: { src: `/api/files/${srcTheirs}`, alt: 'theirs' } },
+      { type: 'image', attrs: { fileId: named } },
+      { type: 'image', attrs: { src: 'https://example.com/tracker.png', alt: 'remote' } },
+    ] },
+  }, fx.orgId, member2);
+  assert.equal(written.success, true, written.error);
+  const canvas = await textOf(canvasDocument);
+  assert.deepEqual(imageIdsOf(canvas.content_json).sort(), [srcMine, named].sort());
+  assert.match(canvas.content_text, /Image not available: theirs/);
+  assert.match(canvas.content_text, /Image not available: remote/);
+  assert.ok(!JSON.stringify(canvas.content_json).includes('example.com'), 'no image from another site is stored');
+  assert.deepEqual(await links(canvasDocument), [srcMine, named].sort().map((fileId) => ({ file_id: fileId, in_current: true })));
+
+  // create_note, mixed: every named file qualifies, and another site's image is still a placeholder.
+  const own = await insertFile({ uploadedBy: member });
+  const created = await executeAction(randomUUID(), 'create_note', {
+    title: `${marker} mixed images`, content: `<p>mixed</p>${img(own)}<img src="https://example.com/a.png" alt="remote">`,
+  }, fx.orgId, member);
+  assert.equal(created.success, true, created.error);
+  const note = await textOf(created.result.document_id);
+  assert.deepEqual(imageIdsOf(note.content_json), [own]);
+  assert.match(note.content_text, /Image not available: remote/);
+  assert.ok(!JSON.stringify(note.content_json).includes('example.com'));
+  assert.deepEqual(await links(created.result.document_id), [{ file_id: own, in_current: true }]);
 });
 
 // ---------------------------------------------------------------------------

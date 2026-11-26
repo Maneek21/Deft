@@ -466,12 +466,31 @@ async function cleanupRunArtifacts(auth: Auth, options: { marker: string; apply:
     mutations.messages_soft_deleted = (await client.query('update messages set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_messages) and is_deleted = false')).rowCount ?? 0;
     mutations.tasks_soft_deleted = (await client.query('update tasks set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_tasks) and is_deleted = false')).rowCount ?? 0;
     mutations.wiki_pages_soft_deleted = (await client.query('update wiki_pages set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_wiki_pages) and is_deleted = false')).rowCount ?? 0;
-    // To the trash, as a soft delete leaves a document (restorable for 30 days).
-    mutations.documents_soft_deleted = (await client.query(`update documents set is_deleted = true, deleted_at = now(), deleted_by = $1, updated_at = now()
-      where id in (select id from cert_cleanup_documents) and is_deleted = false`, [auth.user.id])).rowCount ?? 0;
+    // Documents go to the trash through DELETE /api/documents/:id, F5's
+    // deletion path, so their access loss is applied in its transaction and
+    // finished after it (rule C3); an update here would skip both. As the
+    // run's manager, once this transaction has committed.
+    const documentIds = (await client.query<{ id: string }>(`select d.id from documents d
+      join cert_cleanup_documents cd on cd.id = d.id where d.is_deleted = false order by d.id`)).rows.map((row) => row.id);
     summary.mutations = mutations;
     summary.after = await readCleanupCounts(client);
     await client.query('commit');
+    let trashed = 0;
+    let notTrashed = 0;
+    for (const id of documentIds) {
+      try {
+        await api(auth, `/api/documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        trashed += 1;
+      } catch {
+        // Already in the trash with its parent page, or not this manager's to delete.
+        notTrashed += 1;
+      }
+    }
+    mutations.documents_trashed = trashed;
+    mutations.documents_not_trashed = notTrashed;
+    const left = await client.query<{ n: number }>('select count(*)::int as n from documents where id = any($1::text[]) and is_deleted = false',
+      [documentIds]);
+    summary.after = { ...summary.after, documents: left.rows[0]?.n ?? 0 };
     return summary;
   } catch (err) {
     await client.query('rollback').catch(() => null);

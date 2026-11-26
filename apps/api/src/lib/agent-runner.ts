@@ -28,6 +28,7 @@ import {
   nativeAgentToolResult,
 } from './agent-module-next-reads.js';
 import { executeActionDirect, isModuleWriteAction } from './agent-actions.js';
+import { toolInputWithContentOmitted } from './legacy-notes.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier, type TrustLevel } from './agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
 import { getIO } from '../socket.js';
@@ -840,6 +841,13 @@ export async function runAgentQuery(params: {
             approvalTier,
             { agentEmployeeId, source: 'background' },
           );
+          if (success) {
+            // F15 B-I1: a note or canvas the call wrote is a document now. The
+            // call is recorded without its content wherever this run keeps it
+            // (the assistant blocks callers store as agent_blocks, the
+            // executed actions, the history sent back to the model).
+            tool.input = toolInputWithContentOmitted(tool.name, tool.input, result) as typeof tool.input;
+          }
           executedActions.push({ actionId, action: tool.name, params: tool.input, success, result, error });
           if (requiresApproval) {
             pendingActions.push({

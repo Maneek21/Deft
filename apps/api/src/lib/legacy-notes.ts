@@ -438,6 +438,33 @@ export async function canvasDocumentToWrite(orgId: string, spaceId: string): Pro
   return { documentId: canvas.documentId };
 }
 
+/** The tools whose executed content is a document's (B-I1). */
+const DOCUMENT_CONTENT_TOOLS: ReadonlySet<string> = new Set(['create_note', 'write_canvas']);
+
+/** What an executed tool's content is recorded as: the document it is now, and its size. */
+function omittedToolContent(content: unknown, documentId: string | null) {
+  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  return { document_id: documentId, content_omitted: true, content_bytes: Buffer.byteLength(text) };
+}
+
+/**
+ * An executed create_note or write_canvas call's input as run details keep
+ * it (B-I1, at write time): its `content` omitted, naming the document from
+ * the tool's result. Any other call, or one with no content or no document
+ * in its result, is returned as it is.
+ */
+export function toolInputWithContentOmitted(action: string, toolInput: unknown, result: unknown): unknown {
+  if (!DOCUMENT_CONTENT_TOOLS.has(action) || !toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return toolInput;
+  const record = toolInput as Record<string, unknown>;
+  if (record.content === undefined || record.content === null) return toolInput;
+  if (typeof record.content === 'object' && (record.content as Record<string, unknown>).content_omitted === true) return toolInput;
+  const outcome = result && typeof result === 'object' ? result as Record<string, unknown> : {};
+  const documentId = typeof outcome.document_id === 'string' ? outcome.document_id
+    : typeof outcome.canvas_document_id === 'string' ? outcome.canvas_document_id : null;
+  if (!documentId) return toolInput;
+  return { ...record, content: omittedToolContent(record.content, documentId) };
+}
+
 /**
  * After create_note or write_canvas executed (review finding B-I1): the
  * content it was given is the document's now, read through the document's
@@ -448,12 +475,14 @@ export async function canvasDocumentToWrite(orgId: string, spaceId: string): Pro
  * and run details, whose audiences include owners and admins without the
  * document and the requester once they lose it, keep no copy. Receipts
  * leave it out too (receipt-params.ts). A pending action's proposal keeps
- * its content: it isn't a document yet.
+ * its content: it isn't a document yet. A run that executes the tool itself
+ * (agent-runner.ts's background mode) records the call without the content
+ * as it writes it (toolInputWithContentOmitted).
  */
 export async function omitExecutedToolContent(input: { orgId: string; actionId: string; documentId: string; content: unknown }): Promise<void> {
   if (input.content === undefined || input.content === null) return;
   const text = typeof input.content === 'string' ? input.content : JSON.stringify(input.content);
-  const omitted = { document_id: input.documentId, content_omitted: true, content_bytes: Buffer.byteLength(text) };
+  const omitted = omittedToolContent(input.content, input.documentId);
   const [action] = await db.select({ params: agentActions.params, message_id: agentActions.message_id }).from(agentActions)
     .where(and(eq(agentActions.id, input.actionId), eq(agentActions.org_id, input.orgId))).limit(1);
   if (!action) return;

@@ -11,9 +11,14 @@
 // - kept: a file the document already links (a canvas write can keep an
 //   image the canvas already shows).
 // - anything else (someone else's upload, a file on a message, a task or
-//   another document, another workspace's, an unknown id, an image with no
-//   file) becomes the "Image not available" placeholder, as the notes move
-//   does.
+//   another document, another workspace's, an unknown id, an image from
+//   another site or with no file) becomes the "Image not available"
+//   placeholder, as the notes move does.
+// Before deciding, an image with no `fileId` names the file the editor
+// would read it as (F1's DocumentImage): its `data-file-id`, else a relative
+// `/api/files/<id>` source. The content always goes through M1's
+// replaceImagesExcept (lib/document-images.ts) with the files kept, so no
+// image the tool may not show is ever stored.
 // The links are written in the transaction that stores the content (the
 // create's, or the writer's through writeDocument's `inTransaction`), after
 // the document's locks: the files are locked FOR UPDATE in id order and
@@ -24,34 +29,37 @@ import { documentAttachments } from '@deft/db/documents';
 import { files } from '@deft/db/schema';
 import type { jsonToText } from '@deft/doc-schema';
 import type { db } from './db.js';
+import { imageFileIds, replaceImagesExcept } from './document-images.js';
 
 type JSONContent = Parameters<typeof jsonToText>[0];
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Reader = Pick<typeof db, 'select'>;
 
-/** What an image the tool may not show becomes. The words the notes move uses. */
-export const IMAGE_PLACEHOLDER = 'Image not available';
-
-/** The file ids the content's images name, in order of first appearance. */
-export function toolImageFileIds(json: JSONContent): string[] {
-  const ids = new Set<string>();
-  const walk = (node: JSONContent) => {
-    const fileId: unknown = node.attrs?.fileId;
-    if (node.type === 'image' && typeof fileId === 'string' && fileId !== '') ids.add(fileId);
-    node.content?.forEach(walk);
-  };
-  walk(json);
-  return [...ids];
+/**
+ * F1's reading of a legacy source (packages/doc-schema DocumentImage's
+ * fileIdFromLegacyPath): a relative `/api/files/<id>` names that Deft file;
+ * an absolute or protocol-relative URL belongs to another site.
+ */
+function fileIdFromLegacyPath(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const match = value.match(/^\/api\/files\/([^/?#]+)(?:[?#]|$)/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return null;
+  }
 }
 
-/** The content with every image whose file isn't in `keep` (an image with no file included) as the placeholder, with its alt text. */
-export function placeholderImagesExcept(json: JSONContent, keep: ReadonlySet<string>): JSONContent {
+/** The content with every image that has no `fileId` given the file the editor would read it as, when it names one. */
+export function withInferredImageFileIds(json: JSONContent): JSONContent {
   const visit = (node: JSONContent): JSONContent => {
     if (node.type === 'image') {
-      const fileId: unknown = node.attrs?.fileId;
-      if (typeof fileId === 'string' && keep.has(fileId)) return node;
-      const alt = typeof node.attrs?.alt === 'string' ? node.attrs.alt.trim() : '';
-      return { type: 'paragraph', content: [{ type: 'text', text: alt ? `${IMAGE_PLACEHOLDER}: ${alt}` : IMAGE_PLACEHOLDER }] };
+      const attrs = node.attrs ?? {};
+      if (typeof attrs.fileId === 'string' && attrs.fileId !== '') return node;
+      const dataFileId = typeof attrs['data-file-id'] === 'string' && attrs['data-file-id'] !== '' ? attrs['data-file-id'] as string : null;
+      const fileId = dataFileId ?? fileIdFromLegacyPath(attrs.src);
+      return fileId ? { ...node, attrs: { ...attrs, fileId } } : node;
     }
     return node.content ? { ...node, content: node.content.map(visit) } : node;
   };
@@ -86,14 +94,15 @@ export type ToolImages = {
 export async function toolImages(reader: Reader, input: {
   orgId: string; uploaderId: string; documentId: string | null; json: JSONContent;
 }): Promise<ToolImages> {
-  const named = toolImageFileIds(input.json);
-  if (named.length === 0) return { json: input.json, link: [] };
-  const already = input.documentId === null ? [] : (await reader.select({ file_id: documentAttachments.file_id }).from(documentAttachments)
+  const json = withInferredImageFileIds(input.json);
+  const named = imageFileIds(json);
+  const already = input.documentId === null || named.length === 0 ? [] : (await reader.select({ file_id: documentAttachments.file_id })
+    .from(documentAttachments)
     .where(and(eq(documentAttachments.org_id, input.orgId), eq(documentAttachments.document_id, input.documentId),
       inArray(documentAttachments.file_id, named)))).map((row) => row.file_id);
   const link = await unlinkedOwnFiles(reader, input.orgId, input.uploaderId, named.filter((id) => !already.includes(id)));
-  const keep = new Set([...already, ...link]);
-  return { json: keep.size === named.length ? input.json : placeholderImagesExcept(input.json, keep), link: link.sort() };
+  // Always: every image not kept (src-only and another site's included) becomes the placeholder.
+  return { json: replaceImagesExcept(json, new Set([...already, ...link])), link: link.sort() };
 }
 
 /** Thrown when a file stopped qualifying between the read and the store; nothing is written. */
