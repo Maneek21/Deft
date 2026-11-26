@@ -292,8 +292,8 @@ export function ConnectedAppManagement({
               {review.module_adoptions.length > 0 && <div className="space-y-2 rounded-lg p-3 text-xs" style={{ background: 'var(--surface-container-low)' }}>
                 <h3 className="font-semibold">Use your existing workspace records</h3>
                 <ul className="space-y-1">{review.module_adoptions.map((module) => <li key={module.module_installation_id}>{module.name} · {module.is_enabled ? 'enabled' : 'will be enabled'} · agent access: {module.agent_access}</li>)}</ul>
-                <p>Records, relationships, saved views and access settings stay in place. This App will manage these apps: turning the App off turns them off, and App upgrades update them.</p>
-                <label className="flex min-h-11 items-start gap-2"><input type="checkbox" className="mt-0.5 h-4 w-4" checked={acceptedAdoptions} onChange={(event) => setAcceptedAdoptions(event.target.checked)} /><span>I accept moving these existing apps into this App.</span></label>
+                <p>Records, relationships, saved views and access settings stay in place. This App package will manage these apps: turning the package off turns them off, and package upgrades update them.</p>
+                <label className="flex min-h-11 items-start gap-2"><input type="checkbox" className="mt-0.5 h-4 w-4" checked={acceptedAdoptions} onChange={(event) => setAcceptedAdoptions(event.target.checked)} /><span>I accept moving these existing apps into this App package.</span></label>
               </div>}
               <label className="flex min-h-11 items-start gap-2 rounded-lg px-2 py-2 text-[11px]" style={{ background: 'var(--surface-container-low)' }}><input type="checkbox" className="mt-0.5 h-4 w-4" checked={acceptedPolicy} onChange={(event) => setAcceptedPolicy(event.target.checked)} /><span>I accept Deft’s host-owned approval, retention, egress, and retry policy for these exact bindings.</span></label>
               {target.activation_kind === 'upgrade' && upgradeReview && <div className="space-y-2 rounded-lg p-3 text-[11px]" style={{ background: 'var(--surface-container-low)' }}>

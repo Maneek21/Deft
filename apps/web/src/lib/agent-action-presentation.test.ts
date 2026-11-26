@@ -76,7 +76,7 @@ test('module CSV imports show one truthful batch approval', () => {
   });
 
   assert.equal(presentation.kind, 'module');
-  assert.equal(presentation.eyebrow, 'Module import draft');
+  assert.equal(presentation.eyebrow, 'App import draft');
   assert.equal(presentation.title, 'Import 2 Contacts records');
   assert.equal(presentation.approveLabel, 'Approve import');
   assert.equal(presentation.doneLabel, 'Records imported');
@@ -89,7 +89,7 @@ test('module task-link approvals name both existing resources without exposing r
   });
 
   assert.equal(presentation.kind, 'module');
-  assert.equal(presentation.title, 'Link App record b57a1930 to CRM-5');
+  assert.equal(presentation.title, 'Link app record b57a1930 to CRM-5');
   assert.equal(presentation.approveLabel, 'Approve link');
   assert.deepEqual(presentation.chips, [
     { label: 'App record b57a1930', icon: 'book' },

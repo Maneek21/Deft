@@ -195,7 +195,7 @@ export function TaskModuleRecordLinks({
     <section aria-label="App records" className="space-y-2">
       <div className="flex items-center justify-between gap-3 px-1">
         <span className="inline-flex items-center gap-1.5 text-[0.6875rem] font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
-          <Boxes size={12} /> Module records
+          <Boxes size={12} /> App records
         </span>
         {canEdit && !adding && (
           <button

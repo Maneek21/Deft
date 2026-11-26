@@ -823,8 +823,8 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
     return {
       kind,
       icon: 'module',
-      eyebrow: isBulkRetry ? 'Module import retry' : isBulkCreate ? 'Module import draft' : isCreate ? 'Module record draft' : isArchive ? 'Module archive' : 'Module record update',
-      headline: `${proposerName} proposed an app ${operation}`,
+      eyebrow: isBulkRetry ? 'App import retry' : isBulkCreate ? 'App import draft' : isCreate ? 'App record draft' : isArchive ? 'App record archive' : 'App record update',
+      headline: `${proposerName} proposed ${isBulkCreate ? 'an app record import' : isCreate ? 'a new app record' : isArchive ? 'archiving an app record' : 'an app record change'}`,
       title: isBulkCreate
         ? `Import ${rowCount || ''} ${collectionName || 'app'} record${rowCount === 1 ? '' : 's'}`.replace(/\s+/g, ' ').trim()
         : recordTitle || `${operation[0].toUpperCase()}${operation.slice(1)} ${collectionName || 'record'}`,
@@ -861,8 +861,8 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       eyebrow: unlink ? 'Unlink a record from a task' : 'Link a record to a task',
       headline: unlink ? 'An app record will be unlinked from a task' : 'An app record will be linked to a task',
       title: unlink
-        ? `Unlink ${resourceLabel} from ${taskIdentifier || 'selected task'}`
-        : `Link ${resourceLabel} to ${taskIdentifier || 'selected task'}`,
+        ? `Unlink ${resourceLabel.replace(/^App record/u, 'app record')} from ${taskIdentifier || 'selected task'}`
+        : `Link ${resourceLabel.replace(/^App record/u, 'app record')} to ${taskIdentifier || 'selected task'}`,
       summary: unlink
         ? 'Review the record and task before removing their link. Neither resource will be deleted.'
         : 'Review the record and task before creating their link.',
