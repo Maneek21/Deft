@@ -11,9 +11,12 @@
 // - PATCH /shares/:shareId { role, include_subpages }: lowering reaches the
 //   sub-pages too; raising changes this page only.
 // - DELETE /shares/:shareId { include_subpages }.
-// Raising across sub-pages, or adding sub-pages to a share made without them,
-// takes a fresh share: POST answers 409 ALREADY_SHARED for someone already
-// on the page, so the dialog says to remove the share and share again.
+// A sub-page created later starts with a copy of the page's shares as they
+// are then (lib/documents.ts copySharesInTx). A page moved under it later
+// keeps only its own. Reaching that page, raising across sub-pages, or adding
+// sub-pages to a share made without them takes a fresh share: POST answers
+// 409 ALREADY_SHARED for someone already on the page, so the dialog says to
+// remove the share and share again.
 
 import { useMemo, useState } from 'react';
 import useSWR from 'swr';
@@ -35,7 +38,7 @@ const ROLES: ShareRole[] = ['view', 'comment', 'edit'];
 const ROLE_LABEL: Record<ShareRole, string> = { view: 'Can view', comment: 'Can comment', edit: 'Can edit' };
 
 /** The note the dialog always carries about sub-pages (F9's rules). */
-export const SUBPAGES_NOTE = 'Raising a role changes this page only. To give its sub-pages the new role, or to add sub-pages to a share made without them, remove the share and share again with “Include sub-pages” on.';
+export const SUBPAGES_NOTE = 'Sub-pages created later start with this page’s shares. A page moved under this one later doesn’t get them, and raising a role changes this page only. To reach those pages, or to add sub-pages to a share made without them, remove the share and share again with “Include sub-pages” on.';
 
 /** What a refused share, change or removal says. */
 export function shareRefusalText(refusal: Refusal): string {

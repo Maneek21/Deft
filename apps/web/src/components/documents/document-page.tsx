@@ -18,16 +18,22 @@
 // - too large (4413/1009): this Y.Doc is thrown away and the document opens
 //   again from the server, with "This document is too large. Split it into
 //   sub-pages.";
-// - no access (4403/4404, or the API's 404): "You no longer have access to
-//   this document." and nothing of the document stays on screen.
+// - no access (4403/4404 on the live connection, or 403/404 from either the
+//   document's read or the read-only copy's): "You no longer have access to
+//   this document.", the live connection closes, the cached copies are
+//   dropped and nothing of the document stays on screen (rule C4).
+// The title can be edited only by an editor while the page isn't read-only.
 //
 // Header: breadcrumb, presence, History and Share (edit and up), ⋯ (copy
-// link; move and delete for editors). The right panel's Changes tab is the
-// version list (edit and up); on a phone the panel is a bottom sheet.
+// link; move and delete for editors). Presence and carets name people by user
+// id through the members list (the people rule), else "A collaborator"
+// (lib/collab-people.ts). The right panel's Changes tab is the version list
+// (edit and up); on a phone the panel is a bottom sheet. The editors load
+// through next/dynamic (document-lazy.tsx).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import useSWR from 'swr';
+import useSWR, { useSWRConfig } from 'swr';
 import type { JSONContent } from '@tiptap/core';
 import { X } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -35,10 +41,12 @@ import { useAuth } from '@/lib/auth-context';
 import { getSocket } from '@/lib/socket';
 import { isNoAccess } from '@/lib/drive-actions';
 import { createDocumentProvider, READ_ONLY_RETRY_MS, READ_ONLY_STATUSES, type CollabStatus } from '@/lib/collab-provider';
-import type { DocumentUser } from '@/lib/editor/shared-config';
+import { collaboratorName } from '@/lib/collab-people';
+import { announceDocumentUpdated } from '@/lib/document-events';
+import type { DocumentUser } from '@/lib/editor/document-extensions';
 import { AppDialog } from '@/components/overlay-primitives';
 import { canEditRole, DocumentHeader, EditedLine, type BreadcrumbItem, type DocRole, type PresenceUser } from './document-header';
-import { DocumentEditor, DocumentReadOnly } from './document-editor';
+import { LazyDocumentEditor, LazyDocumentReadOnly } from './document-lazy';
 import { DocumentRightPanel, type PanelTab } from './document-right-panel';
 import { DocumentShareDialog } from './document-share-dialog';
 import { DocumentMoveDialog } from './document-move-dialog';
@@ -128,32 +136,40 @@ function useCollab(documentId: string | null, onStatus: (status: CollabStatus) =
   return { collab, tooLarge, dismissTooLarge: () => setTooLarge(false) };
 }
 
-const NO_ONE: PresenceUser[] = [];
+const COLOR = /^#[0-9a-fA-F]{6}$/;
+const NEUTRAL = '#6b7280';
 
-/** Everyone else with the document open, one entry per person (name and colour), from awareness. */
-function usePresence(session: Session | null): PresenceUser[] {
+type Present = { id: string; color: string };
+
+/**
+ * Everyone else with the document open, one entry per person, from awareness:
+ * the user id the server set and a colour. Names come later, from the members
+ * list. The viewer's own other tabs are left out.
+ */
+function usePresence(session: Session | null, selfId: string | null): Present[] {
   // Kept with the session it was read from, so a closed session's people never show.
-  const [seenIn, setSeenIn] = useState<{ session: Session; people: PresenceUser[] } | null>(null);
+  const [seenIn, setSeenIn] = useState<{ session: Session; people: Present[] } | null>(null);
   useEffect(() => {
     const awareness = session?.provider.awareness;
     if (!session || !awareness) return;
     const read = () => {
-      const seen = new Map<string, PresenceUser>();
+      const seen = new Map<string, Present>();
       awareness.getStates().forEach((state, clientId) => {
         if (clientId === awareness.clientID) return;
-        const user = (state as { user?: { name?: unknown; color?: unknown } }).user;
-        if (!user || typeof user.name !== 'string' || !user.name.trim() || typeof user.color !== 'string') return;
-        const key = `${user.name}\u0000${user.color}`;
-        if (!seen.has(key)) seen.set(key, { key: String(clientId), name: user.name, color: user.color });
+        const user = (state as { user?: { id?: unknown; color?: unknown } }).user;
+        if (!user || typeof user.id !== 'string' || !user.id || user.id === selfId) return;
+        if (!seen.has(user.id)) seen.set(user.id, { id: user.id, color: typeof user.color === 'string' && COLOR.test(user.color) ? user.color : NEUTRAL });
       });
       setSeenIn({ session, people: [...seen.values()] });
     };
     read();
     awareness.on('change', read);
     return () => awareness.off('change', read);
-  }, [session]);
-  return seenIn && seenIn.session === session ? seenIn.people : NO_ONE;
+  }, [session, selfId]);
+  return seenIn && seenIn.session === session ? seenIn.people : NO_PRESENT;
 }
+
+const NO_PRESENT: Present[] = [];
 
 function TitleField({ title, editable, onSave }: { title: string; editable: boolean; onSave: (next: string) => void }) {
   const className = 'w-full min-w-0 bg-transparent text-[1.75rem] font-bold leading-tight outline-none md:text-[2rem]';
@@ -193,29 +209,47 @@ function Banner({ text, tone, onClose }: { text: string; tone: 'info' | 'warn'; 
 export function DocumentPage({ documentId }: { documentId: string }) {
   const router = useRouter();
   const { user, sessionCacheScope: scope } = useAuth();
-  const doc = useSWR<{ document: DocumentView }>(documentKey(scope, documentId), fetchScopedJson, {
+  const { mutate: mutateCache } = useSWRConfig();
+  const docKey = documentKey(scope, documentId);
+  const contentKey = documentContentKey(scope, documentId);
+  // Access lost, by the live connection (4403/4404) or a 403/404 on either read. Once set, it stays.
+  const [lost, setLost] = useState(false);
+  const loseAccess = useCallback(() => {
+    setLost(true);
+    // Nothing of the document stays cached in this tab, either.
+    if (docKey) void mutateCache(docKey, undefined, { revalidate: false });
+    if (contentKey) void mutateCache(contentKey, undefined, { revalidate: false });
+  }, [docKey, contentKey, mutateCache]);
+  const onReadError = useCallback((error: unknown) => { if (isNoAccess(error)) loseAccess(); }, [loseAccess]);
+  const doc = useSWR<{ document: DocumentView }>(lost ? null : docKey, fetchScopedJson, {
     // While live editing is off the page shows the stored JSON: read it again on the retry interval.
     refreshInterval: (latest) => (latest?.document.live === false ? READ_ONLY_RETRY_MS : 0),
+    onError: onReadError,
   });
   const document = doc.data?.document ?? null;
-  const lostByApi = doc.error !== undefined && isNoAccess(doc.error);
-  const live = document?.live === true && !lostByApi;
+  const lostAccess = lost || (doc.error !== undefined && isNoAccess(doc.error));
+  const live = document?.live === true && !lostAccess;
   const revalidate = doc.mutate;
   const onStatus = useCallback((status: CollabStatus) => {
-    // A reconnect may follow a role change, and a refusal may mean access is gone: read the document again.
-    if (status === 'live' || status === 'no_access') void revalidate();
-  }, [revalidate]);
+    if (status === 'no_access') loseAccess();
+    // A reconnect may follow a role change: read the document (and the role) again.
+    if (status === 'live') void revalidate();
+  }, [revalidate, loseAccess]);
   const { collab, tooLarge, dismissTooLarge } = useCollab(live ? documentId : null, onStatus);
-  const presence = usePresence(collab?.session ?? null);
+  const present = usePresence(collab?.session ?? null, user?.id ?? null);
   const members = useSWR<Array<{ id: string; name: string | null }>>(membersKey(scope), fetchScopedJson, { revalidateOnFocus: false });
   const names = useMemo(() => new Map((Array.isArray(members.data) ? members.data : [])
     .filter((m) => typeof m.name === 'string' && m.name.trim()).map((m) => [m.id, m.name!] as const)), [members.data]);
+  const presence = useMemo<PresenceUser[]>(() => present.map((person) => ({
+    key: person.id, name: collaboratorName(names, person.id), color: person.color,
+  })), [present, names]);
 
   const status: CollabStatus | null = !document ? null : live ? (collab?.status ?? 'connecting') : 'live_off';
   const everLive = collab?.everLive ?? false;
   const fallback = status !== null && (READ_ONLY_STATUSES.has(status) || (status === 'offline' && !everLive));
-  const content = useSWR<{ document: DocumentView }>(live && fallback ? documentContentKey(scope, documentId) : null, fetchScopedJson, {
+  const content = useSWR<{ document: DocumentView }>(live && fallback ? contentKey : null, fetchScopedJson, {
     refreshInterval: READ_ONLY_RETRY_MS,
+    onError: onReadError,
   });
   const readOnlyJson = live ? content.data?.document.content_json : document?.content_json;
 
@@ -231,16 +265,21 @@ export function DocumentPage({ documentId }: { documentId: string }) {
     if (!token) return;
     const socket = getSocket(token);
     const onUpdated = (payload: unknown) => {
-      if (payload && typeof payload === 'object' && (payload as { id?: unknown }).id === documentId) void revalidate();
+      if (!payload || typeof payload !== 'object' || (payload as { id?: unknown }).id !== documentId) return;
+      void revalidate();
+      // Images waiting on the server's confirmation try again (lib/editor/blocks/document-image.tsx).
+      announceDocumentUpdated(documentId);
     };
     socket.on('document:updated', onUpdated);
     return () => { socket.off('document:updated', onUpdated); };
   }, [scope, documentId, revalidate]);
 
-  const me = useMemo<DocumentUser | null>(() => (user ? { name: user.name || 'Someone', color: caretColor(user.id) } : null), [user]);
+  // Awareness carries only the id (the server sets it again) and the caret colour.
+  const me = useMemo<DocumentUser | null>(() => (user ? { id: user.id, color: caretColor(user.id) } : null), [user]);
+  const say = useCallback((text: string) => setMessage({ tone: 'warn', text }), []);
 
   if (!scope) return <div className="flex-1 p-4 text-[0.875rem]" style={{ color: 'var(--outline)' }}>Loading…</div>;
-  if (lostByApi || status === 'no_access') {
+  if (lostAccess || (content.error !== undefined && isNoAccess(content.error)) || status === 'no_access') {
     return (
       <div className="flex-1 overflow-y-auto p-6">
         <p role="alert" className="text-[0.875rem]" style={{ color: 'var(--on-surface-variant)' }}>You no longer have access to this document.</p>
@@ -258,6 +297,8 @@ export function DocumentPage({ documentId }: { documentId: string }) {
 
   const canEdit = canEditRole(document.role);
   const editable = canEdit && !!collab && !collab.readOnlyScope && (status === 'live' || status === 'offline');
+  // Paused, live editing off, busy or crowded: the page is read-only, the title too.
+  const titleEditable = canEdit && !fallback;
   const notice = status ? collabNotice(status, everLive) : null;
   const encodedId = encodeURIComponent(documentId);
 
@@ -291,9 +332,12 @@ export function DocumentPage({ documentId }: { documentId: string }) {
 
   let body;
   if (fallback) {
-    body = readOnlyJson ? <DocumentReadOnly content={readOnlyJson} /> : <p className="text-[13px]" style={{ color: 'var(--outline)' }}>Loading…</p>;
+    body = readOnlyJson ? <LazyDocumentReadOnly content={readOnlyJson} /> : <p className="text-[13px]" style={{ color: 'var(--outline)' }}>Loading…</p>;
   } else if (collab && everLive && me) {
-    body = <DocumentEditor provider={collab.session.provider} ydoc={collab.session.ydoc} user={me} editable={editable} />;
+    body = (
+      <LazyDocumentEditor documentId={documentId} provider={collab.session.provider} ydoc={collab.session.ydoc} user={me}
+        names={names} editable={editable} onNotice={say} />
+    );
   } else {
     body = <p className="text-[13px]" style={{ color: 'var(--outline)' }}>Loading…</p>;
   }
@@ -318,7 +362,7 @@ export function DocumentPage({ documentId }: { documentId: string }) {
             {tooLarge && <Banner tone="warn" text="This document is too large. Split it into sub-pages." onClose={dismissTooLarge} />}
             {notice && <Banner tone="info" text={notice} />}
             {message && <Banner tone={message.tone} text={message.text} onClose={() => setMessage(null)} />}
-            <TitleField title={document.title} editable={canEdit} onSave={(next) => { void saveTitle(next); }} />
+            <TitleField title={document.title} editable={titleEditable} onSave={(next) => { void saveTitle(next); }} />
             <div className="mb-6 mt-1">
               <EditedLine at={document.last_edited_at} by={document.last_edited_by ? names.get(document.last_edited_by) ?? null : null} />
             </div>

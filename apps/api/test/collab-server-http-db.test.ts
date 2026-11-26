@@ -135,6 +135,27 @@ async function allUnloaded(): Promise<void> {
 }
 
 /**
+ * Ordering probes ride on awareness. The server relays only the fields
+ * collab/awareness.ts allows (the user id it sets, a #RRGGBB colour and the
+ * cursor), so each probe value is sent as its own colour.
+ */
+const probeColors = new Map<string, string>();
+function probeColor(value: string): string {
+  let color = probeColors.get(value);
+  if (!color) {
+    color = `#${(probeColors.size + 1).toString(16).padStart(6, '0')}`;
+    probeColors.set(value, color);
+  }
+  return color;
+}
+function sendProbe(client: CollabTestClient, value: string): void {
+  client.provider.setAwarenessField('user', { color: probeColor(value) });
+}
+function probeSeen(observer: CollabTestClient, clientId: number, value: string): boolean {
+  return (observer.provider.awareness!.getStates().get(clientId) as { user?: { color?: string } } | undefined)?.user?.color === probeColor(value);
+}
+
+/**
  * Has `writer` type `text` (an edit attempt), then waits until `observer`
  * sees a later awareness probe from it. The server handles a socket's frames
  * in order and sends document updates no later than awareness, so by then
@@ -142,9 +163,8 @@ async function allUnloaded(): Promise<void> {
  */
 async function attemptReached(writer: CollabTestClient, observer: CollabTestClient, text: string): Promise<boolean> {
   writer.typeText(text);
-  writer.provider.setAwarenessField('probe', text);
-  await pollUntil(() => (observer.provider.awareness!.getStates().get(writer.ydoc.clientID) as { probe?: string } | undefined)?.probe === text,
-    'the probe arrives');
+  sendProbe(writer, text);
+  await pollUntil(() => probeSeen(observer, writer.ydoc.clientID, text), 'the probe arrives');
   return observer.text().includes(text);
 }
 
@@ -313,9 +333,8 @@ async function sendHandled(documentId: string, editor: CollabTestClient, observe
   const encode = o.as === 'syncStep2' ? collabFrames.syncStep2 : collabFrames.update;
   for (const frame of frames) editor.socket.send(encode(`doc:${documentId}`, frame));
   const probe = randomUUID();
-  editor.provider.setAwarenessField('probe', probe);
-  await pollUntil(() => editor.closes.length > 0
-    || (observer.provider.awareness!.getStates().get(editor.ydoc.clientID) as { probe?: string } | undefined)?.probe === probe, label, o.timeoutMs);
+  sendProbe(editor, probe);
+  await pollUntil(() => editor.closes.length > 0 || probeSeen(observer, editor.ydoc.clientID, probe), label, o.timeoutMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -466,18 +485,18 @@ test('an awareness update over 16 KB is dropped', { skip: !url && SKIP }, async 
   const b = await open(t, doc, fx!.people.member2);
   const seen: string[] = [];
   b.provider.awareness!.on('change', () => {
-    const state = b.provider.awareness!.getStates().get(a.ydoc.clientID) as { user?: { name?: string; pad?: string } } | undefined;
-    if (state?.user?.name) seen.push(state.user.pad ? `${state.user.name}+pad` : state.user.name);
+    const state = b.provider.awareness!.getStates().get(a.ydoc.clientID) as { user?: { color?: string; pad?: string } } | undefined;
+    if (state?.user?.color) seen.push(state.user.pad ? `${state.user.color}+pad` : state.user.color);
   });
-  a.provider.setAwarenessField('user', { name: 'big', pad: 'x'.repeat(20_000) });
+  a.provider.setAwarenessField('user', { color: '#b16b16', pad: 'x'.repeat(20_000) });
   // The server handles frames in order and broadcasts awareness with document
   // updates, so once B has the marker it has whatever the big state became.
   a.typeText('Marker after the big state');
   await pollUntil(() => b.text().includes('Marker after the big state'), 'the marker arrives');
-  assert.ok(!seen.some((s) => s.startsWith('big')), 'the large state was never re-broadcast');
-  a.provider.setAwarenessField('user', { name: 'small' });
-  await pollUntil(() => seen.includes('small'), 'the small state arrives');
-  assert.ok(!seen.some((s) => s.startsWith('big')));
+  assert.ok(!seen.some((s) => s.startsWith('#b16b16')), 'the large state was never re-broadcast');
+  a.provider.setAwarenessField('user', { color: '#5a5a11' });
+  await pollUntil(() => seen.includes('#5a5a11'), 'the small state arrives');
+  assert.ok(!seen.some((s) => s.startsWith('#b16b16')));
   assert.equal(a.closes.length, 0, 'dropping it does not close the connection');
 });
 
@@ -909,9 +928,8 @@ test('a no-op resync doesn\'t lower the size estimate', { skip: !url && SKIP }, 
   const observer = await open(t, doc, fx!.people.member2);
   // Everything the editor has, sent again: already applied, so Yjs emits nothing.
   editor.socket.send(collabFrames.update(`doc:${doc}`, Y.encodeStateAsUpdate(editor.ydoc)));
-  editor.provider.setAwarenessField('probe', 'after the resync');
-  await pollUntil(() => (observer.provider.awareness!.getStates().get(editor.ydoc.clientID) as { probe?: string } | undefined)?.probe === 'after the resync',
-    'the resync was handled');
+  sendProbe(editor, 'after the resync');
+  await pollUntil(() => probeSeen(observer, editor.ydoc.clientID, 'after the resync'), 'the resync was handled');
   const state = collabStateForTest();
   assert.ok(state.approxBytes(doc)! >= state.encodedBytes(doc)!, `estimate ${state.approxBytes(doc)} below the real ${state.encodedBytes(doc)}`);
   assert.equal(editor.closes.length, 0);
@@ -1854,9 +1872,8 @@ test('one connection holds awareness states for at most two client ids', { skip:
   const editor = await open(t, doc, fx!.people.member);
   const observer = await open(t, doc, fx!.people.member2);
   const probe = async (value: string) => {
-    editor.provider.setAwarenessField('probe', value);
-    await pollUntil(() => (observer.provider.awareness!.getStates().get(editor.ydoc.clientID) as { probe?: string } | undefined)?.probe === value,
-      `the probe ${value} arrives`);
+    sendProbe(editor, value);
+    await pollUntil(() => probeSeen(observer, editor.ydoc.clientID, value), `the probe ${value} arrives`);
   };
   await probe('own');
   const ids = [90_001, 90_002, 90_003, 90_004];
@@ -1876,9 +1893,42 @@ test('one awareness frame carries at most 16 KB of states', { skip: !url && SKIP
     { clientId: 91_001, clock: 1, state: { text: 'x'.repeat(10_000) } },
     { clientId: 91_002, clock: 1, state: { text: 'y'.repeat(10_000) } },
   ]));
-  raw.send(collabFrames.awareness(`doc:${doc}`, [{ clientId: 91_001, clock: 2, state: { probe: 'done' } }]));
-  await pollUntil(() => (observer.provider.awareness!.getStates().get(91_001) as { probe?: string } | undefined)?.probe === 'done', 'both frames are handled');
+  raw.send(collabFrames.awareness(`doc:${doc}`, [{ clientId: 91_001, clock: 2, state: { user: { color: '#0d0e0f' } } }]));
+  await pollUntil(() => (observer.provider.awareness!.getStates().get(91_001) as { user?: { color?: string } } | undefined)?.user?.color === '#0d0e0f',
+    'both frames are handled');
   assert.equal(observer.provider.awareness!.getStates().has(91_002), false, 'the state past 16 KB in one frame was dropped');
+});
+
+test('awareness relays only the user id the server sets, a colour and the cursor: a name or any other field is not relayed', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Awareness fields', json: paragraphs('Hello there') });
+  const a = await open(t, doc, fx!.people.member);
+  const b = await open(t, doc, fx!.people.member2);
+  const stateOf = (client: CollabTestClient) => client.provider.awareness!.getStates().get(a.ydoc.clientID) as Record<string, unknown> | undefined;
+  const fragment = a.ydoc.getXmlFragment('default');
+  // As they travel: plain JSON (relativePositionToJSON keeps Yjs's ID instances).
+  const wire = (value: unknown) => JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+  const anchor = wire(Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(fragment, 0)));
+  const head = wire(Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(fragment, 1)));
+  // A client claims someone else's id and adds a name, an email and fields of its own.
+  a.provider.awareness!.setLocalState({
+    user: { id: fx!.people.owner, name: 'Ana Rao', color: '#2563eb', email: 'ana@example.test' },
+    cursor: { anchor: { ...anchor, label: 'Ana Rao' }, head },
+    name: 'Ana Rao',
+    lastSelection: { default: { anchor, head, label: 'Ana Rao' } },
+    note: 'Ana Rao is here',
+  });
+  await pollUntil(() => (stateOf(b)?.user as { color?: string } | undefined)?.color === '#2563eb', 'the state arrives');
+  assert.deepEqual(stateOf(b), { user: { id: fx!.people.member, color: '#2563eb' }, cursor: { anchor, head } },
+    'only the server-set id, the colour and the cursor are relayed');
+  assert.doesNotMatch(JSON.stringify(stateOf(b)), /Ana Rao|ana@example/);
+  // A colour that isn't #RRGGBB is dropped; a cleared cursor stays cleared; the id is still the connection's.
+  a.provider.awareness!.setLocalState({ user: { color: 'red; background: url(x)', name: 'Ana Rao' }, cursor: null });
+  await pollUntil(() => stateOf(b)?.cursor === null, 'the second state arrives');
+  assert.deepEqual(stateOf(b), { user: { id: fx!.people.member }, cursor: null });
+  // Someone who joins later gets the stored state, filtered the same way.
+  const c = await open(t, doc, fx!.people.admin);
+  await pollUntil(() => stateOf(c) !== undefined, 'the late joiner has the state');
+  assert.deepEqual(stateOf(c), { user: { id: fx!.people.member }, cursor: null });
 });
 
 /** A private drive where `member` can edit, with one document; and the access loss that removes them. */

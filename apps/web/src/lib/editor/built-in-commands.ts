@@ -143,6 +143,20 @@ const commands: SlashCommand[] = [
     },
   },
   {
+    // Documents only: the editor uploads it with ?document_id= (lib/editor/document-extensions.ts).
+    id: 'image',
+    group: 'insert',
+    label: 'Image',
+    description: 'Upload an image',
+    keywords: ['picture', 'photo', 'upload'],
+    surfaces: ['document'],
+    iconName: 'Image',
+    run: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).run();
+      (editor.commands as unknown as { pickDocumentImage?: () => boolean }).pickDocumentImage?.();
+    },
+  },
+  {
     id: 'toggle',
     group: 'block',
     label: 'Toggle',

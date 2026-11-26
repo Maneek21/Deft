@@ -21,7 +21,7 @@ import { History } from 'lucide-react';
 import type { JSONContent } from '@tiptap/core';
 import { api } from '@/lib/api';
 import { formatDateTime, formatRelative } from '@/lib/time';
-import { DocumentReadOnly } from './document-editor';
+import { LazyDocumentReadOnly } from './document-lazy';
 import { documentVersionKey, documentVersionPages, fetchScopedJson, sendWrite, type Refusal, type SessionScope } from './document-keys';
 
 export type VersionKind = 'auto' | 'named' | 'agent' | 'restore' | 'import' | 'moved';
@@ -58,7 +58,7 @@ function VersionPreview({ scope, documentId, versionId }: { scope: SessionScope;
   if (!data) return <p className="text-[12px]" style={{ color: 'var(--outline)' }}>Loading…</p>;
   return (
     <div className="max-h-[40vh] overflow-y-auto rounded-lg px-3 py-2 text-[13px]" style={{ background: 'var(--surface)', border: '1px solid var(--outline-variant)' }}>
-      <DocumentReadOnly content={data.version.content_json} />
+      <LazyDocumentReadOnly content={data.version.content_json} />
     </div>
   );
 }

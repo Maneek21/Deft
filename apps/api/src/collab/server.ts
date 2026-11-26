@@ -69,6 +69,10 @@
 // frame carries at most AWARENESS_FRAME_MAX_BYTES of states, none over
 // AWARENESS_STATE_MAX_BYTES; anything else is dropped, not applied or
 // re-broadcast, and so is a removal of a state the connection doesn't hold.
+// A state that passes is rebuilt from an allowlist (collab/awareness.ts): the
+// connection's own user id, set here, a #RRGGBB colour and the cursor. A name
+// or any other field never reaches other people (rule C4: the people rule
+// can't be applied to a broadcast, so each viewer names people by id).
 //
 // Access changes (closeForAccessChange, subscribed to onDocumentAccessChanged)
 // read the role again for every connection the change can touch: the
@@ -155,6 +159,7 @@ import { socketOriginAllowed } from '../lib/web-origins.js';
 import { verifyWebAccess, webSessionEvents } from '../lib/web-sessions.js';
 import { captureRealtimeAccessGeneration, isRealtimeAccessGenerationCurrent } from '../socket.js';
 import { authenticateCollab, canWrite, CollabRefusal, documentIdOf, type CollabContext } from './auth.js';
+import { relayedAwarenessState } from './awareness.js';
 import {
   AWARENESS_CLIENTS_PER_CONNECTION, AWARENESS_FRAME_MAX_BYTES, AWARENESS_STATE_MAX_BYTES, COLLAB_CLOSE, COLLAB_LIMITS, encodedStateBytes, HEAP_FACTOR,
   liveEditingEnabled,
@@ -1166,12 +1171,16 @@ function createCollabServer(): CollabServer {
       // client ids, the first it uses, and send at most AWARENESS_FRAME_MAX_BYTES of
       // states in one frame; every other state, and every removal of a state it
       // doesn't hold, is dropped (not applied, not re-broadcast).
+      // A state that passes keeps only collab/awareness.ts's fields: the user id
+      // this connection authenticated as (set here), a colour and the cursor.
+      // No name or other field is applied or re-broadcast (rule C4).
       const entry = entryOf(payload.context);
-      if (!entry || entry.closed) {
+      if (!entry || entry.closed || !entry.ctx) {
         payload.states.clear();
         payload.removedClients.clear();
         return;
       }
+      const userId = entry.ctx.userId;
       let frameBytes = 0;
       for (const [clientId, state] of payload.states) {
         const bytes = Buffer.byteLength(JSON.stringify(state ?? null));
@@ -1182,6 +1191,7 @@ function createCollabServer(): CollabServer {
           continue;
         }
         frameBytes += bytes;
+        payload.states.set(clientId, relayedAwarenessState(state, userId));
       }
       for (const clientId of payload.removedClients) if (!entry.awarenessClients.has(clientId)) payload.removedClients.delete(clientId);
     },
