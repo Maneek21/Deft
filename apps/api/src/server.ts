@@ -7,6 +7,7 @@ import type { Server } from 'node:http';
 import { app } from './index.js';
 import { getIO, setupSocket } from './socket.js';
 import { getCollabServer } from './collab/server.js';
+import { startDocumentVersioning } from './lib/document-versions.js';
 import { assertPausedStartSettingValid, logPausedStart, serverStartupPlan } from './lib/paused-start.js';
 import { captureProcessError, flushErrorTelemetryBeforeExit, isErrorTelemetryEnabled } from './lib/telemetry/error-reporter.js';
 
@@ -112,6 +113,9 @@ setupSocket(server as unknown as Server);
 // Live editing at /collab (collab/server.ts). Its upgrade listener runs next
 // to engine.io's and ends upgrades for any other path.
 getCollabServer().attach(server as unknown as Server);
+// Automatic document versions and document_attachments.in_current follow
+// every derived store (lib/document-versions.ts).
+startDocumentVersioning();
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;

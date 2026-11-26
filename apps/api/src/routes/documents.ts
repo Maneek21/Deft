@@ -35,6 +35,18 @@
 // edit (400 ROLE_TOO_HIGH); GET /:id/audience?space_id= needs view and a seat
 // in the chat. POST, DELETE and a lowering PATCH reach the sub-pages too
 // unless `include_subpages` is false (DELETE takes it as an optional body).
+//
+// Versions (F8; the rules are in lib/document-versions.ts): every route needs
+// edit. A document the caller can't open is 404, checked first; then a role
+// below edit is 403 FORBIDDEN_ROLE; then a version that isn't the document's
+// is 404 VERSION_NOT_FOUND. GET /:id/versions[?limit=&before=] lists newest
+// first, at most 200 a page (default 100), `next_before` continuing;
+// GET /:id/versions/:vid adds `content_json`; POST /:id/versions { name }
+// names the current content; POST /:id/versions/:vid/restore takes no body.
+// A restore goes through the one writer, whose refusals answer: FORBIDDEN
+// 403, TOO_LARGE 413, BUSY 503 with Retry-After (live editing can't take
+// the write now; nothing changed, so the client tries again), and
+// INVALID_CONTENT or REVISION_CHANGED 409.
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
@@ -52,6 +64,10 @@ import {
 } from '../lib/document-shares.js';
 import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 import { documentCards, MAX_DOCUMENT_CARDS } from '../lib/chat-documents.js';
+import { DocumentWriteRefused, type DocumentWriteRefusalCode } from '../lib/document-writer.js';
+import {
+  getVersion, listVersions, nameVersion, restoreVersion, VERSION_PAGE_DEFAULT, VERSION_PAGE_MAX,
+} from '../lib/document-versions.js';
 
 export const documentRoutes = new Hono();
 
@@ -88,6 +104,11 @@ const shareRoleChangeSchema = z.object({ role: shareRoleSchema, include_subpages
 /** DELETE's optional body. */
 const shareRemoveSchema = z.object({ include_subpages: z.boolean().optional() });
 const cardsSchema = z.object({ ids: z.array(idSchema).max(MAX_DOCUMENT_CARDS) });
+const versionNameSchema = z.object({ name: z.string().trim().min(1).max(200) });
+const versionPageSchema = z.object({
+  limit: z.string().regex(/^\d{1,4}$/).transform(Number).pipe(z.number().int().min(1).max(VERSION_PAGE_MAX)).optional(),
+  before: idSchema.optional(),
+});
 
 /** One snapshot for GET /:id's role, document, drive and breadcrumb. */
 const READ_SNAPSHOT: PgTransactionConfig = { isolationLevel: 'repeatable read', accessMode: 'read only' };
@@ -98,9 +119,18 @@ function invalid(c: Context) {
   return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
 }
 
-/** A refusal from lib/documents.ts, or a 500 whose log line is fixed text, never a request value. */
+/** How a refusal from the one writer (lib/document-writer.ts) answers (the header). */
+const WRITE_REFUSAL_STATUS: Record<DocumentWriteRefusalCode, 403 | 409 | 413 | 503> = {
+  FORBIDDEN: 403, TOO_LARGE: 413, BUSY: 503, REVISION_CHANGED: 409, INVALID_CONTENT: 409,
+};
+
+/** A refusal from lib/documents.ts or the writer, or a 500 whose log line is fixed text, never a request value. */
 function failed(c: Context, error: unknown, what: string) {
   if (error instanceof DocumentRefusal) return c.json({ error: error.message, code: error.code }, error.status);
+  if (error instanceof DocumentWriteRefused) {
+    if (error.code === 'BUSY') c.header('Retry-After', '5');
+    return c.json({ error: error.message, code: error.code }, WRITE_REFUSAL_STATUS[error.code]);
+  }
   console.error('[documents] a document request failed');
   return c.json({ error: `Failed to ${what}`, code: 'INTERNAL_ERROR' }, 500);
 }
@@ -334,6 +364,59 @@ documentRoutes.get('/:id/audience', async (c) => {
     return c.json(await documentAudience(user.org_id, user.id, c.req.param('id'), spaceId.data));
   } catch (error) {
     return failed(c, error, 'count the chat’s audience');
+  }
+});
+
+// GET /api/documents/:id/versions[?limit=&before=] (needs edit): newest first.
+documentRoutes.get('/:id/versions', async (c) => {
+  try {
+    const user = c.get('user');
+    const page = versionPageSchema.safeParse({ limit: c.req.query('limit'), before: c.req.query('before') });
+    if (!page.success) return invalid(c);
+    const listed = await listVersions({
+      orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), limit: page.data.limit ?? VERSION_PAGE_DEFAULT, before: page.data.before,
+    });
+    return c.json({ versions: listed.versions, next_before: listed.nextBefore });
+  } catch (error) {
+    return failed(c, error, 'list the versions');
+  }
+});
+
+// GET /api/documents/:id/versions/:vid (needs edit): the version with its content.
+documentRoutes.get('/:id/versions/:vid', async (c) => {
+  try {
+    const user = c.get('user');
+    const version = await getVersion({ orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), versionId: c.req.param('vid') });
+    return c.json({ version });
+  } catch (error) {
+    return failed(c, error, 'load the version');
+  }
+});
+
+// POST /api/documents/:id/versions { name } (needs edit): names the current content.
+documentRoutes.post('/:id/versions', async (c) => {
+  try {
+    const user = c.get('user');
+    const parsed = versionNameSchema.safeParse(await jsonBody(c));
+    if (!parsed.success) return invalid(c);
+    const version = await nameVersion({ orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), name: parsed.data.name });
+    return c.json({ version }, 201);
+  } catch (error) {
+    return failed(c, error, 'save the version');
+  }
+});
+
+// POST /api/documents/:id/versions/:vid/restore (needs edit): through the one writer; saves a restore version.
+documentRoutes.post('/:id/versions/:vid/restore', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!(await noBodyOrJson(c))) return invalid(c);
+    const { versionId } = await restoreVersion({
+      orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), versionId: c.req.param('vid'),
+    });
+    return c.json({ version_id: versionId });
+  } catch (error) {
+    return failed(c, error, 'restore the version');
   }
 });
 
