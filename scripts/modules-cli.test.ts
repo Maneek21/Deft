@@ -92,7 +92,7 @@ test('init requires a nonexistent or empty destination and never overwrites unre
   assert.equal(await readFile(join(project, 'LICENSE'), 'utf8'), 'test license\n');
   assert.match(
     await readFile(join(project, 'deft.module.schema.json'), 'utf8'),
-    /Deft declarative module manifest v1/,
+    /Deft app file \(deft\.module\.json\), v1/,
   );
   await assert.rejects(
     () => initModuleProject(project, { rootDirectory: root }),

@@ -97,6 +97,7 @@ import {
 import { db } from './db.js';
 import { getIO } from '../socket.js';
 import { getBundledModule, listBundledModules } from './bundled-modules.js';
+import { cleanIssueLabel, limitIssueLines } from '@deft/shared/module-issues';
 import { ModuleError } from './module-errors.js';
 import { assertBaseReadAccess, assertBaseWriteAccess, assertInstallationAccess, isAdmin } from './module-access-policy.js';
 import { planModuleRecordMerge } from './module-merge-plan.js';
@@ -650,6 +651,118 @@ function decodeCursor(cursor?: string): number {
   } catch {
     throw new ModuleError('Invalid page cursor', 'MODULE_VALIDATION_ERROR', 400);
   }
+}
+
+const MISFIT_TITLES_NAMED = 5;
+const MISFIT_DETAIL_LIMIT = 20;
+
+type MisfitGroup = { collection: string; field: string; code: string; count: number; titles: string[] };
+type MisfitDetail = {
+  record_id: string;
+  collection_key: string;
+  title: string;
+  problems: Array<{ field: string | null; code: string }>;
+};
+
+function misfitProblem(code: string): string {
+  switch (code) {
+    case 'required': return 'now required, but empty in';
+    case 'unknown_field': return 'removed, but still has a value in';
+    case 'invalid_value': return 'has a value the new version does not allow in';
+    case 'invalid_type': return 'has a value of a different type in';
+    case 'record_too_large': return 'too large in';
+    default: return 'does not fit in';
+  }
+}
+
+/** "Dana" and "Sam"; "Dana", "Sam" and 3 more; or "7 records" once the names run out. */
+function describeMisfitRecords(titles: string[], count: number): string {
+  const quoted = titles.map((title) => `"${title}"`);
+  if (quoted.length === 0) return `${count} ${count === 1 ? 'record' : 'records'}`;
+  const rest = count - quoted.length;
+  if (rest > 0) return `${quoted.join(', ')} and ${rest} more`;
+  if (quoted.length === 1) return quoted[0]!;
+  return `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`;
+}
+
+/**
+ * Collects the records an upgrade would refuse, as it checks them, so the
+ * refusal can name them. Work per record is constant: each group keeps a
+ * count and at most five titles, and at most 20 records are kept in detail.
+ */
+class RecordMisfits {
+  count = 0;
+  private readonly groups = new Map<string, MisfitGroup>();
+  private readonly details: MisfitDetail[] = [];
+  private readonly previous: DeftModuleManifestV1 | null;
+
+  constructor(previousValue: unknown, private readonly next: DeftModuleManifestV1) {
+    let previous: DeftModuleManifestV1 | null = null;
+    try {
+      previous = parseDeftModuleManifest(previousValue);
+    } catch {
+      previous = null;
+    }
+    this.previous = previous;
+  }
+
+  add(record: { id: string; collection_key: string; data: unknown }, error: ModuleRecordValidationError): void {
+    this.count += 1;
+    const nextCollection = this.next.collections.find((item) => item.key === record.collection_key);
+    const previousCollection = this.previous?.collections.find((item) => item.key === record.collection_key);
+    const title = misfitTitle(previousCollection ?? nextCollection, record.data, record.id);
+    const collectionName = cleanIssueLabel(nextCollection?.name ?? previousCollection?.name ?? record.collection_key)
+      ?? record.collection_key;
+    for (const issue of error.issues) {
+      const key = `${record.collection_key}|${issue.field ?? ''}|${issue.code}`;
+      let group = this.groups.get(key);
+      if (!group) {
+        const field = issue.field
+          ? (nextCollection?.fields.find((item) => item.key === issue.field)
+            ?? previousCollection?.fields.find((item) => item.key === issue.field))?.label ?? issue.field
+          : 'Record';
+        group = { collection: collectionName, field: cleanIssueLabel(field) ?? 'Record', code: issue.code, count: 0, titles: [] };
+        this.groups.set(key, group);
+      }
+      group.count += 1;
+      if (group.titles.length < MISFIT_TITLES_NAMED) group.titles.push(title);
+    }
+    if (this.details.length < MISFIT_DETAIL_LIMIT) {
+      this.details.push({
+        record_id: record.id,
+        collection_key: record.collection_key,
+        title,
+        problems: error.issues.map((issue) => ({ field: issue.field, code: issue.code })),
+      });
+    }
+  }
+
+  /** One plain line per record type, field and problem, naming five records in all. */
+  error(): ModuleError {
+    let budget = MISFIT_TITLES_NAMED;
+    const lines = [...this.groups.values()].map((group) => {
+      const shown = group.titles.slice(0, budget);
+      budget -= shown.length;
+      return `${group.collection} → ${group.field}: ${misfitProblem(group.code)} ${describeMisfitRecords(shown, group.count)}`;
+    });
+    const readable = limitIssueLines(lines);
+    return new ModuleError(readable.join('\n'), 'MODULE_VALIDATION_ERROR', 400, {
+      lines: readable,
+      record_count: this.count,
+      records: this.details,
+    });
+  }
+}
+
+function misfitTitle(
+  collection: DeftModuleManifestV1['collections'][number] | undefined,
+  data: unknown,
+  recordId: string,
+): string {
+  const key = collection?.search?.title_field ?? collection?.fields[0]?.key;
+  const value = key && data && typeof data === 'object' ? (data as Record<string, unknown>)[key] : undefined;
+  const text = typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+  return cleanIssueLabel(text, 60) ?? `Record ${recordId.slice(0, 8)}`;
 }
 
 function validationError(error: ModuleRecordValidationError): ModuleError {
@@ -2237,13 +2350,28 @@ export async function upgradeModuleInstallationToManifest(
       data: ModuleRecordData;
       projection: ReturnType<typeof projectModuleRecordSearch>;
     }> = [];
+    // Check every record before refusing, so the refusal can name the
+    // records that do not fit the new version, not just the first field.
+    // Pass 1 checks every record's data against the new version and collects
+    // the ones that do not fit. Pass 2, only when all fit, checks member
+    // fields, so a member problem never hides the list of misfits.
+    const misfits = new RecordMisfits(current.version.manifest, manifest);
+    const parsedRecords: Array<{ row: RecordRow; data: ModuleRecordData }> = [];
     for (const record of records) {
-      const data = parseRecordData(manifest, record.collection_key, record.data);
-      await assertMemberFieldsValid(tx, actor.org_id, manifest, record.collection_key, data);
+      try {
+        parsedRecords.push({ row: record, data: parseModuleRecordData(manifest, record.collection_key, record.data) });
+      } catch (error) {
+        if (!(error instanceof ModuleRecordValidationError)) throw error;
+        misfits.add(record, error);
+      }
+    }
+    if (misfits.count > 0) throw misfits.error();
+    for (const { row, data } of parsedRecords) {
+      await assertMemberFieldsValid(tx, actor.org_id, manifest, row.collection_key, data);
       validatedRecords.push({
-        row: record,
+        row,
         data,
-        projection: projectModuleRecordSearch(manifest, record.collection_key, data),
+        projection: projectModuleRecordSearch(manifest, row.collection_key, data),
       });
     }
 

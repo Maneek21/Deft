@@ -185,6 +185,8 @@ jobs:
           src/lib/upload-errors-hostile.test.ts
           src/lib/module-describe.test.ts
           src/lib/app-templates.test.ts
+          src/lib/module-version-bump.test.ts
+          src/lib/module-version-bump-hostile.test.ts
           src/lib/api-retry.test.ts
           src/lib/api-auth.test.ts
           src/lib/setup-link.test.ts
