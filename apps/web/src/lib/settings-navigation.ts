@@ -1,4 +1,3 @@
-import { APPS_ENABLED } from './feature-flags';
 
 export type SettingsRole = 'owner' | 'admin' | 'member' | 'guest';
 
@@ -35,8 +34,7 @@ export const settingsNavGroups: SettingsNavGroup[] = [
     items: [
       { name: 'People', href: '/settings/members', description: 'Invite people and manage workspace access.', roles: ADMIN_ROLES },
       { name: 'Teams', href: '/settings/teams', description: 'Manage team membership and linked work.', roles: ADMIN_ROLES },
-      ...(APPS_ENABLED ? [{ name: 'Apps', href: '/settings/apps', description: 'Manage installed Apps and their access.', roles: ADMIN_ROLES }] : []),
-      { name: 'Modules', href: '/settings/modules', description: 'Manage standalone Modules and collection agent access.', roles: ADMIN_ROLES },
+      { name: 'Apps', href: '/settings/apps', description: 'Install apps, build your own, and choose what agents can use.', roles: ADMIN_ROLES },
       { name: 'Mention groups', href: '/settings/groups', description: 'Reusable @mention lists for chat; separate from team access.', roles: ADMIN_ROLES },
     ],
   },

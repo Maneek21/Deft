@@ -134,8 +134,8 @@ test('Email App: an owner gets from upload to the Connect account button with sc
     await tab.reload();
 
     // Upload the real package and stage it.
-    await tab.getByText('No Apps installed').waitFor();
-    await tab.getByLabel('Choose a Deft App package').setInputFiles({ name: 'app.deft.json', mimeType: 'application/json', buffer: Buffer.from(fixture.package) });
+    await tab.getByText('No apps installed yet').waitFor();
+    await tab.getByLabel('Choose an app file').setInputFiles({ name: 'app.deft.json', mimeType: 'application/json', buffer: Buffer.from(fixture.package) });
     await tab.getByRole('button', { name: /Stage/ }).click();
     await tab.getByText('Connected App staged for explicit authority review.').waitFor();
 
