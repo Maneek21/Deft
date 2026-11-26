@@ -44,7 +44,6 @@ import {
   BellOff,
   Bell,
   Bookmark,
-  FileText,
   CalendarDays,
   CalendarCheck2,
   Headphones,
@@ -55,6 +54,7 @@ import {
   ChevronDown,
   AppWindow,
   Compass,
+  FolderOpen,
   LifeBuoy,
   type LucideIcon,
 } from 'lucide-react';
@@ -65,6 +65,7 @@ import { BrowseSpacesModal } from './browse-spaces-modal';
 import { canBrowsePublicSpaces } from '@/lib/public-spaces';
 import { SavedMessages } from './saved-messages';
 import { CreateProjectModal } from './create-project-modal';
+import { DriveSidebarContent } from './drive/drive-sidebar';
 import { useInboxCount } from '@/hooks/use-inbox-count';
 import { AppMenu, type AppMenuItem } from './overlay-primitives';
 import { getSocket } from '@/lib/socket';
@@ -119,7 +120,7 @@ const navItems: CoreNavigationItem[] = [
   { kind: 'core', name: 'Tasks', href: '/tasks', icon: CheckSquare },
   { kind: 'core', name: 'Knowledge', href: '/knowledge', icon: BookOpen },
   { kind: 'core', name: 'Calendar', href: '/calendar', icon: CalendarDays },
-  { kind: 'core', name: 'Notes', href: '/notes', icon: FileText },
+  { kind: 'core', name: 'Drive', href: '/drive', icon: FolderOpen },
   { kind: 'core', name: 'Notifications', href: '/inbox', icon: Inbox },
 ];
 
@@ -983,6 +984,9 @@ export function Sidebar({
     }
     if (pathname.startsWith('/tasks')) {
       return <TasksSidebarContent onNav={handleNav} />;
+    }
+    if (pathname.startsWith('/drive') || pathname.startsWith('/d/')) {
+      return <DriveSidebarContent role={user?.role} pathname={pathname} onNav={handleNav} />;
     }
     if (pathname.startsWith('/notes') || pathname.startsWith('/modules') || pathname.startsWith('/dashboard')) {
       return null;

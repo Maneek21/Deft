@@ -205,6 +205,8 @@ jobs:
           src/lib/error-telemetry.test.ts
           src/hooks/use-room-pending-approvals-refresh.test.ts
           'src/app/(app)/settings/members/personal-drive-note.test.tsx'
+          src/lib/drive-tree.test.ts
+          src/components/drive/drive-sidebar.test.tsx
       - name: Install locked browser for mounted App contracts
         run: pnpm exec playwright install --with-deps chromium
       - name: Test public space preview reads
