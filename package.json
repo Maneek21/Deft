@@ -35,6 +35,7 @@
     "db:push": "pnpm --filter @deft/db push",
     "db:push-full": "pnpm --filter @deft/db push-full",
     "db:upgrade": "pnpm --filter @deft/db run upgrade",
+    "drives:move": "pnpm --filter @deft/api exec tsx src/scripts/drives-move.ts",
     "db:seed": "pnpm --filter @deft/db seed && pnpm --filter @deft/api exec tsx src/scripts/seed-platform-bundles.ts",
     "db:seed:demo": "pnpm --filter @deft/db seed:demo && pnpm --filter @deft/api exec tsx src/scripts/seed-platform-bundles.ts",
     "db:seed:pilot": "pnpm db:seed:demo && pnpm --filter @deft/api exec tsx src/scripts/seed-pilot-workspace.ts",

@@ -85,7 +85,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: sh -c "pnpm db:upgrade"
+    # The notes move (pnpm drives:move) runs straight after the upgrade. Its
+    # post-move check confirms each moved image's bytes exist, so the uploads
+    # volume is mounted read-only at both paths the app uses.
+    volumes:
+      - uploads:/app/uploads:ro
+      - uploads:/app/apps/api/uploads:ro
+    command: sh -c "pnpm db:upgrade && pnpm drives:move"
     profiles: ['tools']
 
   doctor:

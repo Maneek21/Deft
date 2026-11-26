@@ -8,6 +8,7 @@ import { app } from './index.js';
 import { getIO, setupSocket } from './socket.js';
 import { getCollabServer } from './collab/server.js';
 import { startDocumentVersioning } from './lib/document-versions.js';
+import { moveNotesBeforeListen } from './lib/drives-move/startup.js';
 import { assertPausedStartSettingValid, logPausedStart, serverStartupPlan } from './lib/paused-start.js';
 import { captureProcessError, flushErrorTelemetryBeforeExit, isErrorTelemetryEnabled } from './lib/telemetry/error-reporter.js';
 
@@ -35,6 +36,9 @@ let shuttingDown = false;
 assertPausedStartSettingValid();
 const startupPlan = serverStartupPlan();
 workerStartup.require();
+// Notes and canvases move into drives before the API listens, so it never
+// serves a half-moved workspace; skipped while paused (lib/drives-move/startup.ts).
+await moveNotesBeforeListen();
 const server = serve({ fetch: app.fetch, port }, async (info) => {
   console.log(`Deft API running on http://localhost:${logNumber(info.port)}`);
   logPausedStart();
