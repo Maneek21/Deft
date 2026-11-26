@@ -8,9 +8,9 @@
  */
 import { slashRegistry, type SlashCommand } from './commands';
 
-const COMMON_SURFACES: SlashCommand['surfaces'] = ['chat', 'note', 'task', 'task-comment', 'canvas'];
+const COMMON_SURFACES: SlashCommand['surfaces'] = ['chat', 'note', 'task', 'task-comment', 'canvas', 'document'];
 // Chat tends to be short-form; we omit headings/toggle/callout there.
-const DOC_SURFACES: SlashCommand['surfaces'] = ['note', 'task', 'canvas'];
+const DOC_SURFACES: SlashCommand['surfaces'] = ['note', 'task', 'canvas', 'document'];
 
 const commands: SlashCommand[] = [
   {

@@ -172,6 +172,9 @@ importers:
       '@fontsource/jetbrains-mono':
         specifier: 5.3.0
         version: 5.3.0
+      '@hocuspocus/provider':
+        specifier: 4.9.0
+        version: 4.9.0(y-protocols@1.0.7(yjs@13.6.33))(yjs@13.6.33)
       '@tailwindcss/postcss':
         specifier: ^4.3.3
         version: 4.3.3
@@ -181,6 +184,12 @@ importers:
       '@tiptap/extension-code-block-lowlight':
         specifier: ^3.32.0
         version: 3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/extension-code-block@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0)(highlight.js@11.11.1)(lowlight@3.3.0)
+      '@tiptap/extension-collaboration':
+        specifier: 3.32.0
+        version: 3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0)(@tiptap/y-tiptap@3.3.1(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.8)(y-protocols@1.0.7(yjs@13.6.33))(yjs@13.6.33))(yjs@13.6.33)
+      '@tiptap/extension-collaboration-caret':
+        specifier: 3.32.0
+        version: 3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0)(@tiptap/y-tiptap@3.3.1(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.8)(y-protocols@1.0.7(yjs@13.6.33))(yjs@13.6.33))
       '@tiptap/extension-details':
         specifier: ^3.32.0
         version: 3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/extension-text-style@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0)))(@tiptap/pm@3.32.0)
@@ -238,6 +247,9 @@ importers:
       '@tiptap/suggestion':
         specifier: ^3.32.0
         version: 3.32.0(@floating-ui/dom@1.8.0)(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0)
+      '@tiptap/y-tiptap':
+        specifier: 3.3.1
+        version: 3.3.1(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.8)(y-protocols@1.0.7(yjs@13.6.33))(yjs@13.6.33)
       '@types/react-resizable':
         specifier: ^4.0.0
         version: 4.0.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -310,6 +322,9 @@ importers:
       turndown:
         specifier: ^7.2.4
         version: 7.2.4
+      yjs:
+        specifier: 13.6.33
+        version: 13.6.33
     devDependencies:
       '@eslint/compat':
         specifier: 2.1.1
@@ -1330,6 +1345,21 @@ packages:
     resolution: {integrity: sha512-I+aEVl0dTmkfnU6HzBGEefb9U7ja2MkucwBBwrmoMwU+uIKpC4xw8NcHC9X6sjAcom3Pxs2HX+8WEo4Vp13R/Q==}
     peerDependencies:
       '@tiptap/core': 3.32.0
+
+  '@tiptap/extension-collaboration-caret@3.32.0':
+    resolution: {integrity: sha512-xWDNWRl7mU782lnxm0B9Lht1EzxcpRXkJcfF76MXmLj1n27PsXqEA6tcVn7RC8sQs8IcuDWQjFvvxMd08nMfCQ==}
+    peerDependencies:
+      '@tiptap/core': 3.32.0
+      '@tiptap/pm': 3.32.0
+      '@tiptap/y-tiptap': ^3.0.7
+
+  '@tiptap/extension-collaboration@3.32.0':
+    resolution: {integrity: sha512-db7VPDksD13zsYVi/Hao2Je5ZMwGRuXxVBDFv182Kr06aixxAWjBJ5JvYf6AgcrDKFx/dPPpDjctKQjJPtw6VA==}
+    peerDependencies:
+      '@tiptap/core': 3.32.0
+      '@tiptap/pm': 3.32.0
+      '@tiptap/y-tiptap': ^3.0.7
+      yjs: ^13
 
   '@tiptap/extension-details@3.32.0':
     resolution: {integrity: sha512-U9ZvyPr5S+xklYYAyfHNfFf0EmvFyPZ0ue3z2GYMK355lgdqA7/oXBgl7i75Wc2x90UwL2pHGNF8GYxARTtDjA==}
@@ -4816,6 +4846,19 @@ snapshots:
   '@tiptap/extension-code@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))':
     dependencies:
       '@tiptap/core': 3.32.0(@tiptap/pm@3.32.0)
+
+  '@tiptap/extension-collaboration-caret@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0)(@tiptap/y-tiptap@3.3.1(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.8)(y-protocols@1.0.7(yjs@13.6.33))(yjs@13.6.33))':
+    dependencies:
+      '@tiptap/core': 3.32.0(@tiptap/pm@3.32.0)
+      '@tiptap/pm': 3.32.0
+      '@tiptap/y-tiptap': 3.3.1(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.8)(y-protocols@1.0.7(yjs@13.6.33))(yjs@13.6.33)
+
+  '@tiptap/extension-collaboration@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0)(@tiptap/y-tiptap@3.3.1(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.8)(y-protocols@1.0.7(yjs@13.6.33))(yjs@13.6.33))(yjs@13.6.33)':
+    dependencies:
+      '@tiptap/core': 3.32.0(@tiptap/pm@3.32.0)
+      '@tiptap/pm': 3.32.0
+      '@tiptap/y-tiptap': 3.3.1(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.8)(y-protocols@1.0.7(yjs@13.6.33))(yjs@13.6.33)
+      yjs: 13.6.33
 
   '@tiptap/extension-details@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/extension-text-style@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0)))(@tiptap/pm@3.32.0)':
     dependencies:

@@ -6,7 +6,7 @@
  */
 import type { Editor, Range } from '@tiptap/core';
 
-export type EditorSurface = 'chat' | 'note' | 'task' | 'task-comment' | 'canvas';
+export type EditorSurface = 'chat' | 'note' | 'task' | 'task-comment' | 'canvas' | 'document';
 export type CommandGroup = 'commands' | 'block' | 'ai' | 'insert';
 
 /**
