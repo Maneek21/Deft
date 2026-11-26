@@ -176,3 +176,90 @@ test('Apps page: a guest gets a plain no-access state and the page asks for no a
     await browser.close();
   }
 });
+
+test('Apps page: templates install with no file, the Defty question sets access, and the editor checks, saves and refuses stale saves', { timeout: 180_000 }, async () => {
+  const script = await bundle();
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  const contactsManifest = { schema_version: '1', id: 'com.deft.contacts', slug: 'contacts', version: '1.0.0', name: 'Contacts', collections: [{ key: 'people', name: 'People', fields: [{ key: 'name', label: 'Name', type: 'text' }] }] };
+  const state = { modules: [installation(hiring('1.0.0'), 'sha256:active'), { ...installation(contactsManifest, 'sha256:contacts'), source: 'bundled' }] as any[], upgradeAnswer: 200 };
+  const calls: Array<{ method: string; path: string; body: string | null; ifMatch?: string }> = [];
+  try {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+    const tab = await context.newPage();
+    tab.setDefaultTimeout(15_000);
+    await tab.route('**/*', async (route: any) => {
+      const request = route.request(), url = new URL(request.url()), method = request.method(), p = url.pathname;
+      const reply = (status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+      if (url.origin !== ORIGIN) return route.abort();
+      if (p === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: script });
+      if (!p.startsWith('/api/')) return route.fulfill({ contentType: 'text/html', body: '<!doctype html><div id="root"></div><script src="/bundle.js"></script>' });
+      if (method !== 'GET') calls.push({ method, path: p, body: request.postData(), ifMatch: request.headers()['if-match'] });
+      if (p === '/api/auth/me') return reply(200, fixture.answers.auth_me.body);
+      if (p === '/api/modules' && method === 'GET') return reply(200, { modules: state.modules });
+      if (p === '/api/modules/bundled') return reply(200, { modules: [] });
+      if (p === '/api/apps' && method === 'GET') return reply(200, { apps: [], developer_pairing: { available: false } });
+      if (p === '/api/modules/sideload') { state.modules.push(installation(JSON.parse(request.postData()), 'sha256:new')); return reply(201, { module: state.modules.at(-1) }); }
+      if (method === 'PATCH' && p.startsWith('/api/modules/')) return reply(200, { module: {} });
+      if (p === '/api/modules/hiring/upgrade') {
+        if (state.upgradeAnswer === 409) return reply(409, { error: 'The active module schema changed before the update started.', code: 'MODULE_CONFLICT' });
+        state.modules[0] = installation(JSON.parse(request.postData()), 'sha256:next'); return reply(200, { module: state.modules[0] });
+      }
+      return reply(404, { error: 'Not found', code: 'NOT_FOUND' });
+    });
+    await tab.goto(`${ORIGIN}/settings/apps`);
+    const owner = fixture.answers.auth_me.body as { user: { id: string }; org: { id: string } };
+    const access = `header.${Buffer.from(JSON.stringify({ id: owner.user.id, org_id: owner.org.id, sid: 's', jti: 'j' })).toString('base64url')}.signature`;
+    await tab.evaluate((token: string) => { localStorage.setItem('deft-access-token', token); localStorage.setItem('deft-refresh-token', token); }, access);
+    await tab.reload();
+
+    // A template installs under its new name, with no file anywhere.
+    await tab.getByRole('button', { name: 'Use the Vendor tracker template' }).click();
+    await tab.getByLabel('Name', { exact: true }).fill('Suppliers');
+    await tab.getByRole('button', { name: 'Install Suppliers' }).click();
+    await tab.getByText(/^Suppliers is installed/).waitFor();
+    const installed = JSON.parse(calls.find((call) => call.path === '/api/modules/sideload')!.body!);
+    assert.deepEqual([installed.name, installed.slug, installed.id], ['Suppliers', 'suppliers', 'workspace.suppliers']);
+
+    // Answering yes to the Defty question sets read access after install.
+    await tab.getByLabel('Choose an app file').setInputFiles(file('vendors.json', vendors));
+    await tab.getByRole('radio', { name: 'Yes' }).check();
+    await tab.getByRole('button', { name: 'Install Vendor tracker' }).click();
+    await tab.getByText('Vendor tracker is installed and Defty can read its records.').waitFor();
+    assert.deepEqual(calls.filter((call) => call.method === 'PATCH').map((call) => [call.path, JSON.parse(call.body!)]), [['/api/modules/vendors', { agent_access: 'read' }]]);
+
+    // Edit: Check reports the bumped version; a stale save shows the 409; a good save upgrades with If-Match.
+    await tab.getByRole('button', { name: 'Edit Hiring pipeline' }).click();
+    const editor = tab.getByLabel('Hiring pipeline app file');
+    await editor.fill((await editor.inputValue()).replace('"label": "Name"', '"label": "Full name"'));
+    await tab.getByRole('button', { name: 'Check', exact: true }).click();
+    await tab.getByText('Looks good. Saving will update Hiring pipeline to v1.0.1.').waitFor();
+    state.upgradeAnswer = 409;
+    await tab.getByRole('button', { name: 'Save', exact: true }).click();
+    await tab.getByText(/schema changed before the update started\. Refresh and try again\./).waitFor();
+    state.upgradeAnswer = 200;
+    await tab.getByRole('button', { name: 'Save', exact: true }).click();
+    await tab.getByText('Saved. Hiring pipeline is now v1.0.1, and every record was kept.').waitFor();
+    const save = calls.filter((call) => call.path === '/api/modules/hiring/upgrade').at(-1)!;
+    assert.equal(save.ifMatch, 'sha256:active');
+    assert.equal(JSON.parse(save.body!).version, '1.0.1');
+
+    // A broken edit is caught before anything is sent.
+    const before = calls.length;
+    await editor.fill('{ "slug": ');
+    await tab.getByRole('button', { name: 'Check', exact: true }).click();
+    await tab.getByText(/isn.t valid JSON/).waitFor();
+    assert.equal(calls.length, before);
+
+    // Download saves the active file.
+    const [download] = await Promise.all([tab.waitForEvent('download'), tab.getByRole('button', { name: 'Download the file of Contacts' }).click()]);
+    assert.equal(download.suggestedFilename(), 'contacts.app.json');
+
+    // A bundled app's file is read-only, with the reason.
+    await tab.getByRole('button', { name: 'View the file of Contacts' }).click();
+    assert.equal(await tab.getByLabel('Contacts app file').getAttribute('readonly'), '');
+    await tab.getByText('This app comes with Deft and updates with Deft.', { exact: false }).waitFor();
+    assert.equal(await tab.getByRole('button', { name: 'Save', exact: true }).count(), 0);
+  } finally {
+    await browser.close();
+  }
+});
