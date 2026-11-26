@@ -52,12 +52,13 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import type { PgTransactionConfig } from 'drizzle-orm/pg-core';
 import { docFavorites, documents, drives } from '@deft/db/documents';
+import { BUILT_IN_TEMPLATES, type BuiltInTemplateKey } from '@deft/doc-schema';
 import { liveEditingEnabled } from '../collab/limits.js';
 import { db } from '../lib/db.js';
 import { documentRoleFor, driveRoleFor } from '../lib/document-access.js';
 import {
-  createDocumentInTx, documentBreadcrumb, DocumentRefusal, favoriteDocumentsQuery, moveDocument, recentDocumentsQuery, restoreDocument,
-  softDeleteDocument, updateDocument, viewerDocumentColumns, viewerDocumentInTx,
+  createDocumentInTx, documentBreadcrumb, DocumentRefusal, favoriteDocumentsQuery, listTemplates, moveDocument, recentDocumentsQuery, restoreDocument,
+  softDeleteDocument, templateContentInTx, updateDocument, viewerDocumentColumns, viewerDocumentInTx,
 } from '../lib/documents.js';
 import {
   changeShareRole, documentAudience, listDocumentShares, removeShare, shareDocument, shareShape,
@@ -71,6 +72,19 @@ import {
 } from '../lib/document-versions.js';
 
 export const documentRoutes = new Hono();
+/** Mounted at /api/document-templates (M1). */
+export const documentTemplateRoutes = new Hono();
+
+// GET /api/document-templates: the built-in, workspace and personal templates
+// the caller can use. POST /api/documents takes `template` (see lib/documents.ts).
+documentTemplateRoutes.get('/', async (c) => {
+  try {
+    const user = c.get('user');
+    return c.json(await listTemplates(user.id, user.org_id));
+  } catch (error) {
+    return failed(c, error, 'list templates');
+  }
+});
 
 const idSchema = z.string().trim().min(1).max(200);
 const titleSchema = z.string().trim().max(500);
@@ -80,7 +94,12 @@ const createSchema = z.object({
   parent_document_id: idSchema.nullable().optional(),
   title: titleSchema.optional(),
   json: z.looseObject({ type: z.literal('doc') }).optional(),
-});
+  /** A built-in template, or a template document the caller can open; its content and title are the defaults. */
+  template: z.union([
+    z.object({ builtin: z.enum(BUILT_IN_TEMPLATES.map((t) => t.key) as [BuiltInTemplateKey, ...BuiltInTemplateKey[]]) }).strict(),
+    z.object({ document_id: idSchema }).strict(),
+  ]).optional(),
+}).refine((body) => !(body.template && body.json), { message: 'Give a template or content, not both' });
 /** Content never changes here (rule C2): an unknown key, `json` included, is refused. */
 const updateSchema = z.object({
   title: titleSchema.optional(),
@@ -146,9 +165,11 @@ documentRoutes.post('/', async (c) => {
     const body = parsed.data;
     // The answer is read in the create's own transaction; events follow the commit.
     const { view, finish } = await db.transaction(async (tx) => {
+      // A template supplies the content and the default title; the content is stored by the create path (rule C2).
+      const fromTemplate = body.template ? await templateContentInTx(tx, user.id, user.org_id, body.template) : null;
       const { document, finish: afterCommit } = await createDocumentInTx(tx, {
         orgId: user.org_id, userId: user.id, driveId: body.drive_id, folderId: body.folder_id, parentDocumentId: body.parent_document_id,
-        title: body.title, json: body.json,
+        title: body.title ?? fromTemplate?.title, json: fromTemplate?.json ?? body.json,
       });
       return { view: await viewerDocumentInTx(tx, user.id, user.org_id, document.id), finish: afterCommit };
     });

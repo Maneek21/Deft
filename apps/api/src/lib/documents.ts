@@ -71,7 +71,10 @@
 import { and, asc, desc, eq, gte, inArray, isNull, ne, notExists, sql, type SQL } from 'drizzle-orm';
 import { alias, type PgInsertValue } from 'drizzle-orm/pg-core';
 import { docFavorites, docFolders, documentShares, documents, drives, type DocFolderRow, type DocRole, type DocumentRow } from '@deft/db/documents';
-import { EMPTY_DOCUMENT, ensureBlockIds, getDocumentSchema, jsonToText, jsonToYDoc } from '@deft/doc-schema';
+import {
+  BUILT_IN_TEMPLATES, EMPTY_DOCUMENT, ensureBlockIds, getDocumentSchema, jsonToText, jsonToYDoc, templateJson, withFreshBlockIds,
+  type BuiltInTemplateKey,
+} from '@deft/doc-schema';
 import { encodedStateBytes, withinSizeCap } from '../collab/limits.js';
 import { db } from './db.js';
 import { documentRoleFor, roleAtLeast, visibleDocumentCondition, visibleDocumentIdSql, visibleDriveIdSql, type Executor } from './document-access.js';
@@ -867,4 +870,52 @@ export function favoriteDocumentsQuery(userId: string, orgId: string) {
     .where(visibleDocumentCondition(userId, orgId))
     .orderBy(desc(docFavorites.created_at), asc(documents.id))
     .limit(200);
+}
+
+// Templates (M1). A template is a document (`is_template`) or one of the
+// built-ins in @deft/doc-schema. Applying one only supplies `json` and a
+// default title to createDocumentInTx, so the content is stored by the same
+// create path as any new document (rule C2).
+
+export type TemplateChoice = { builtin: BuiltInTemplateKey } | { document_id: string };
+
+/**
+ * The content and default title a template gives a new document, read in the
+ * create's transaction. A template document the caller can't open (or that
+ * doesn't exist, or is deleted) is a 404. Every block id is regenerated.
+ */
+export async function templateContentInTx(tx: Tx, userId: string, orgId: string, choice: TemplateChoice): Promise<{ title: string; json: JSONContent }> {
+  if ('builtin' in choice) {
+    const template = BUILT_IN_TEMPLATES.find((candidate) => candidate.key === choice.builtin);
+    if (!template) throw invalid('Unknown template');
+    return { title: template.title, json: templateJson(template.key) };
+  }
+  const [source] = await tx.select({ title: documents.title, content_json: documents.content_json }).from(documents)
+    .where(and(eq(documents.id, choice.document_id), visibleDocumentCondition(userId, orgId))).limit(1);
+  if (!source) throw notFound();
+  return { title: source.title, json: withFreshBlockIds(source.content_json as JSONContent) };
+}
+
+/**
+ * GET /api/document-templates: the built-in templates, the template
+ * documents in open drives the caller can view, and those in the caller's own
+ * My drive. Each template document is one the caller can open.
+ */
+export async function listTemplates(userId: string, orgId: string) {
+  const rows = await db.select({
+    id: documents.id, title: documents.title, drive_kind: drives.kind, drive_name: drives.name,
+  }).from(documents)
+    .innerJoin(drives, and(eq(drives.org_id, documents.org_id), eq(drives.id, documents.drive_id)))
+    .where(and(
+      eq(documents.is_template, true),
+      visibleDocumentCondition(userId, orgId),
+      sql`((${drives.kind} = 'open' AND ${visibleDriveIdSql(userId, orgId, sql`${drives.id}`)})
+        OR (${drives.kind} = 'personal' AND ${drives.owner_user_id} = ${userId}))`,
+    ))
+    .orderBy(asc(documents.title), asc(documents.id));
+  return {
+    builtin: BUILT_IN_TEMPLATES.map(({ key, title }) => ({ key, title })),
+    workspace: rows.filter((row) => row.drive_kind === 'open').map((row) => ({ id: row.id, title: row.title, drive_name: row.drive_name })),
+    personal: rows.filter((row) => row.drive_kind === 'personal').map((row) => ({ id: row.id, title: row.title })),
+  };
 }

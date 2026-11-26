@@ -16,6 +16,7 @@ export {
 export { htmlToJson } from './html';
 export { jsonToMarkdown, markdownToJson } from './markdown';
 export { BLOCK_ID_COMMENT, blockHash, ensureBlockIds, topLevelBlocks } from './blocks';
+export { BUILT_IN_TEMPLATES, templateJson, withFreshBlockIds, type BuiltInTemplateKey } from './templates';
 export { Callout } from './nodes/callout';
 export { DocumentImage } from './nodes/document-image';
 export { NativeMention } from './nodes/native-mention';
