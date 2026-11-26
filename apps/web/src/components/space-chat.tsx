@@ -57,7 +57,7 @@ import { EmojiPicker } from './emoji-picker';
 import { FileDropZone, useFileUpload, UploadProgress } from './file-upload';
 import { Lightbox } from './lightbox';
 import { EmptyState } from './empty-state';
-import { RichComposer } from './rich-composer';
+import { RichComposer, SCHEDULE_WITH_DOCUMENTS } from './rich-composer';
 import { SpaceMembersPanel } from './space-members-panel';
 import { TaskQuickCreate } from './task-quick-create';
 import { PinnedBar } from './pinned-messages';
@@ -1302,6 +1302,8 @@ export function SpaceChat({
   );
 
   const handleScheduleSend = async (scheduledFor: string, html: string, text: string) => {
+    // Scheduled messages don't carry documents yet (the composer also turns scheduling off while any are attached).
+    if (pendingDocuments.length > 0) throw new Error(SCHEDULE_WITH_DOCUMENTS);
     const requestSpaceId = spaceId;
     const pendingFilesToSend = [...pendingFiles];
     let content = serializeMentions(html);
@@ -1677,7 +1679,7 @@ export function SpaceChat({
         {/* Pinned messages bar — persistent at top of chat */}
         {activeTab === 'chat' && <PinnedBar spaceId={spaceId} />}
 
-        {activeTab === 'docs' && <SpaceDocsTab spaceId={spaceId} spaceName={spaceName} isDm={isDm} />}
+        {activeTab === 'docs' && <SpaceDocsTab sessionScope={sessionCacheScope} spaceId={spaceId} spaceName={spaceName} isDm={isDm} />}
 
         {/* Messages (kept mounted, and hidden, while the Docs tab shows) */}
         <div className={`flex-1 overflow-y-auto px-2 md:px-4 py-0.5 relative ${activeTab === 'docs' ? 'hidden' : ''}`} ref={scrollContainerRef} onScroll={(e) => {
@@ -2170,6 +2172,7 @@ export function SpaceChat({
                                   ))}
                                   <MessageDocuments
                                     metadata={meta}
+                                    sessionScope={sessionCacheScope}
                                     spaceId={spaceId}
                                     spaceName={spaceName}
                                     isDm={isDm}
@@ -2346,6 +2349,7 @@ export function SpaceChat({
                                   ))}
                                   <MessageDocuments
                                     metadata={meta}
+                                    sessionScope={sessionCacheScope}
                                     spaceId={spaceId}
                                     spaceName={spaceName}
                                     isDm={isDm}
@@ -2608,6 +2612,7 @@ export function SpaceChat({
 
         {documentPickerOpen && (
           <DocumentPicker
+            sessionScope={sessionCacheScope}
             alreadyPicked={pendingDocuments}
             onPick={(picked) => setPendingDocuments((current) => [...current, ...picked.filter((doc) => !current.some((item) => item.id === doc.id))])}
             onClose={() => setDocumentPickerOpen(false)}

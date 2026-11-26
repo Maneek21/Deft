@@ -33,7 +33,7 @@ import {
   visibleDriveCondition,
 } from '../src/lib/document-access.js';
 import { breadcrumbChainQuery, driveTreeDocumentsQuery, favoriteDocumentsQuery, recentDocumentsQuery } from '../src/lib/documents.js';
-import { documentCardsQuery, postableDocumentsQuery, spaceSharedDocumentsQuery } from '../src/lib/chat-documents.js';
+import { documentCardsQuery, fullDriveQuery, postableDocumentsQuery, spaceSharedDocumentsQuery } from '../src/lib/chat-documents.js';
 import { newlyReachedQuery } from '../src/lib/document-shares.js';
 import { driveListQuery, drivesWithoutManagerQuery } from '../src/lib/drives.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
@@ -167,8 +167,12 @@ test('the chat document forms plan within budget (F13)', async (t) => {
     return [
       // POST /api/documents/cards: up to 50 cards, each with the viewer's role and the drive's name where they can see it.
       ['document cards (50 ids)', query(documentCardsQuery(member, fx.orgId, ids))],
-      // GET /api/spaces/:id/documents: the documents shared into a chat (the seed shares one in four with `other`).
-      ['documents shared into a chat', query(spaceSharedDocumentsQuery(member2, fx.orgId, fx.spaces.other))],
+      // GET /api/spaces/:id/documents: a page of the documents shared into a chat (the seed shares one in four with
+      // `other`), the first and a later one, and whether the viewer holds full on some drive (`can_link`).
+      ['documents shared into a chat, first page', query(spaceSharedDocumentsQuery(member2, fx.orgId, fx.spaces.other))],
+      ['documents shared into a chat, later page', query(spaceSharedDocumentsQuery(member2, fx.orgId, fx.spaces.other,
+        { at: '2026-11-26T10:00:00.000000', id: 'share-cursor' }))],
+      ['can_link: full on some drive', fullDriveQuery(member, fx.orgId).toSQL()],
       // Posting a message with documents: the poster can open each one (at most five).
       ['posting check (5 ids)', postableDocumentsQuery(member, fx.orgId, ids.slice(0, 5)).toSQL()],
     ];

@@ -121,6 +121,9 @@ type Props = {
   spaceId?: string;
 };
 
+/** Why scheduling is off while documents are attached: scheduled messages don't carry them yet. */
+export const SCHEDULE_WITH_DOCUMENTS = 'Scheduling doesn’t support attached documents yet';
+
 function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -427,6 +430,10 @@ export function RichComposer({
 
   const handleScheduleSend = useCallback(async (isoTime: string) => {
     if (!editor || !onScheduleSend || sending || disabled) return;
+    if (pendingDocumentCount > 0) {
+      setSendError(`${SCHEDULE_WITH_DOCUMENTS}.`);
+      return;
+    }
     const html = editor.getHTML();
     const text = editor.getText();
     if (!text.trim() && pendingFiles.length === 0) return;
@@ -445,7 +452,7 @@ export function RichComposer({
     } finally {
       setSending(false);
     }
-  }, [disabled, editor, onScheduleSend, pendingFiles.length, sending]);
+  }, [disabled, editor, onScheduleSend, pendingDocumentCount, pendingFiles.length, sending]);
 
   // Cmd+K for link
   useEffect(() => {
@@ -1125,8 +1132,9 @@ export function RichComposer({
           <div className="flex items-center gap-1.5">
             {onScheduleSend && hasContent && (
               <div className="relative">
-                <button ref={scheduleBtnRef} onClick={() => setScheduleOpen(!scheduleOpen)} disabled={sending || disabled}
-                  className="flex h-8 w-8 items-center justify-center rounded-full" style={{ color: 'var(--outline)', background: 'var(--surface-container-high)' }} title="Schedule send">
+                <button ref={scheduleBtnRef} onClick={() => setScheduleOpen(!scheduleOpen)} disabled={sending || disabled || pendingDocumentCount > 0}
+                  className="flex h-8 w-8 items-center justify-center rounded-full disabled:opacity-50" style={{ color: 'var(--outline)', background: 'var(--surface-container-high)' }}
+                  title={pendingDocumentCount > 0 ? SCHEDULE_WITH_DOCUMENTS : 'Schedule send'}>
                   <Clock size={14} strokeWidth={1.5} />
                 </button>
                 {scheduleOpen && schedulePos && createPortal(

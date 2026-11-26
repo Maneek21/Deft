@@ -11,7 +11,7 @@ import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message
 import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
 import { applyAccessLossInTx, finishAccessLoss } from '../lib/document-access-change.js';
-import { spaceDocuments } from '../lib/chat-documents.js';
+import { parseSharedCursor, spaceDocuments } from '../lib/chat-documents.js';
 
 export const spaceRoutes = new Hono();
 
@@ -461,19 +461,24 @@ spaceRoutes.get('/:id', async (c) => {
   }
 });
 
-// GET /api/spaces/:id/documents — the chat's Docs tab (F13; lib/chat-documents.ts):
-// its linked drive and the documents shared into it, as far as the caller can
-// open them, each with the caller's role; hidden drive and folder names are
-// null. Needs a seat in the chat (a public chat's reader who hasn't joined is
-// refused, like a missing chat). The seat check and the reads share one
-// read-only, repeatable-read snapshot.
+// GET /api/spaces/:id/documents[?cursor=] — the chat's Docs tab (F13;
+// lib/chat-documents.ts): its linked drive, whether the caller may link one
+// (`can_link`), and the documents shared into it, as far as the caller can
+// open them, each with the caller's role, 50 a page with `next_cursor`;
+// hidden drive and folder names are null. Needs a seat in the chat (a public
+// chat's reader who hasn't joined is refused, like a missing chat). The seat
+// check and each page's reads share one read-only, repeatable-read snapshot.
+// A cursor the server didn't issue is 400.
 spaceRoutes.get('/:id/documents', async (c) => {
   try {
     const user = c.get('user');
     const spaceId = c.req.param('id');
+    const rawCursor = c.req.query('cursor');
+    const cursor = rawCursor === undefined ? null : parseSharedCursor(rawCursor);
+    if (rawCursor !== undefined && !cursor) return c.json({ error: 'Invalid cursor', code: 'VALIDATION_ERROR' }, 400);
     const listed = await db.transaction(async (tx) => {
       if (!(await requireSpaceMembership(spaceId, user.id, user.org_id, tx))) return null;
-      return spaceDocuments(tx, user.id, user.org_id, spaceId);
+      return spaceDocuments(tx, user.id, user.org_id, spaceId, cursor);
     }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
     if (!listed) return c.json(NOT_A_MEMBER, 403);
     return c.json(listed);

@@ -16,8 +16,13 @@
 //   as in lib/documents.ts's viewerDocumentColumns.
 // - The Docs tab needs a seat in the chat. Its linked drive shows only to
 //   someone who can open it, and its shared documents only those the viewer
-//   can open, each with the viewer's own role. The route reads its
-//   authorization and its data in one read-only, repeatable-read snapshot.
+//   can open, each with the viewer's own role, newest share first, 50 a page
+//   (a keyset cursor on the share's time and id, so every one is reachable).
+//   The route reads its authorization and each page in one read-only,
+//   repeatable-read snapshot. `can_link` offers "Link a drive" only when the
+//   chat has no link at all, whoever can see it, and the viewer holds full
+//   on some drive: a hidden link is never offered, so linking never answers
+//   with an error that reveals it.
 //
 // Every statement here is one statement for all its documents, held to the
 // access check (lib/document-access.ts); each has a planning-memory test
@@ -26,7 +31,7 @@ import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { driveMembers, documents, drives, type DocRole } from '@deft/db/documents';
 import type { CoreDatabaseTransaction } from './database-transaction.js';
 import { db } from './db.js';
-import { driveRoleFor, visibleDocumentCondition, visibleDriveIdSql, type Executor } from './document-access.js';
+import { driveRoleFor, visibleDocumentCondition, visibleDriveCondition, visibleDriveIdSql, type Executor } from './document-access.js';
 
 type Reader = Pick<typeof db, 'select' | 'execute'>;
 /** Reads a table query: the pool, a route's snapshot or the message's own transaction. */
@@ -38,15 +43,30 @@ export const MAX_MESSAGE_DOCUMENTS = 5;
 /** POST /api/documents/cards answers at most this many ids at once. */
 export const MAX_DOCUMENT_CARDS = 50;
 
-/** The Docs tab lists at most this many shared documents, newest share first. */
-const MAX_SHARED_LISTED = 200;
+/** The Docs tab lists the shared documents this many a page, newest share first. */
+export const SHARED_PAGE_SIZE = 50;
 
 export type DocumentCard = { id: string; title: string; icon: string | null; drive_name: string | null; role: DocRole };
 
 export type SpaceDocuments = {
   linked_drive: { id: string; name: string; role: DocRole } | null;
+  /** True when the chat has no link at all and the viewer holds full on some drive. */
+  can_link: boolean;
   shared: Array<{ id: string; title: string; home: { drive_name: string | null; folder_name: string | null }; role: DocRole }>;
+  /** The cursor of the next page of `shared`, or null on the last page. */
+  next_cursor: string | null;
 };
+
+/** A position in the shared list: the share's time, to the microsecond, and its id. */
+export type SharedCursor = { at: string; id: string };
+
+const CURSOR_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6})\|([A-Za-z0-9_-]{1,64})$/;
+
+/** A cursor this module issued, or null for anything else (the route answers 400). */
+export function parseSharedCursor(value: string): SharedCursor | null {
+  const match = CURSOR_PATTERN.exec(value);
+  return match ? { at: match[1]!, id: match[2]! } : null;
+}
 
 const idsParam = (ids: readonly string[]) => sql`${sql.param([...ids])}::text[]`;
 
@@ -110,16 +130,21 @@ export async function canPostDocuments(reader: Selector, userId: string, orgId: 
 }
 
 /**
- * The statement for the Docs tab's shared documents: those shared with the
- * chat `spaceId` that the viewer can open, newest share first, each with
- * the viewer's role and its home's names where they can view its drive.
- * Exported for its planning test.
+ * The statement for a page of the Docs tab's shared documents: those shared
+ * with the chat `spaceId` that the viewer can open, newest share first (the
+ * share's id breaks a tie), after `cursor` when given, at most `limit`, each
+ * with the viewer's role and its home's names where they can view its
+ * drive. Each row carries its share's position (`share_at`, `share_id`) for
+ * the next cursor. Exported for its planning test.
  */
-export function spaceSharedDocumentsQuery(userId: string, orgId: string, spaceId: string): SQL {
+export function spaceSharedDocumentsQuery(userId: string, orgId: string, spaceId: string, cursor: SharedCursor | null = null,
+  limit = SHARED_PAGE_SIZE + 1): SQL {
+  const after = cursor ? sql`AND (shared_into.created_at, shared_into.id) < (${cursor.at}::timestamp, ${cursor.id})` : sql``;
   return sql`SELECT ${documents.id} AS id, ${documents.title} AS title,
       CASE WHEN shared_drive_seen.visible THEN shared_drive.name END AS drive_name,
       CASE WHEN shared_drive_seen.visible THEN shared_folder.name END AS folder_name,
-      ${viewerRoleSql(userId, orgId)} AS role
+      ${viewerRoleSql(userId, orgId)} AS role,
+      to_char(shared_into.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS share_at, shared_into.id AS share_id
     FROM document_shares shared_into
     JOIN ${documents} ON ${documents.id} = shared_into.document_id AND ${documents.org_id} = shared_into.org_id
     JOIN drives shared_drive ON shared_drive.id = ${documents.drive_id} AND shared_drive.org_id = ${documents.org_id}
@@ -127,31 +152,47 @@ export function spaceSharedDocumentsQuery(userId: string, orgId: string, spaceId
       AND shared_folder.is_deleted = false
     CROSS JOIN LATERAL (SELECT ${visibleDriveIdSql(userId, orgId, sql`${documents.drive_id}`)} AS visible) shared_drive_seen
     WHERE shared_into.org_id = ${orgId} AND shared_into.principal_type = 'space' AND shared_into.principal_id = ${spaceId}
+      ${after}
       AND ${visibleDocumentCondition(userId, orgId)}
-    ORDER BY shared_into.created_at DESC, ${documents.id}
-    LIMIT ${MAX_SHARED_LISTED}`;
+    ORDER BY shared_into.created_at DESC, shared_into.id DESC
+    LIMIT ${limit}`;
 }
 
 /**
- * The Docs tab of the chat `spaceId` for `userId`, read through `reader`
- * (the route's snapshot, after it checked the seat): the chat's linked drive
- * where they can open it, and the documents shared into the chat they can
- * open.
+ * The check behind `can_link`'s second half: one drive of `orgId` where
+ * `userId` holds full. Exported for its planning test.
  */
-export async function spaceDocuments(reader: Reader, userId: string, orgId: string, spaceId: string): Promise<SpaceDocuments> {
-  const [link] = await reader.select({ id: drives.id, name: drives.name }).from(driveMembers)
+export function fullDriveQuery(userId: string, orgId: string, reader: Selector = db) {
+  return reader.select({ id: drives.id }).from(drives).where(visibleDriveCondition(userId, orgId, 'full')).limit(1);
+}
+
+/**
+ * A page of the Docs tab of the chat `spaceId` for `userId`, read through
+ * `reader` (the route's snapshot, after it checked the seat): the chat's
+ * linked drive where they can open it, whether they may link one, and the
+ * documents shared into the chat they can open, after `cursor`.
+ */
+export async function spaceDocuments(reader: Reader, userId: string, orgId: string, spaceId: string,
+  cursor: SharedCursor | null = null): Promise<SpaceDocuments> {
+  // The chat's link, whatever drive it names and whoever can see it (the link-space route's own check).
+  const [link] = await reader.select({ id: drives.id, name: drives.name, is_deleted: drives.is_deleted }).from(driveMembers)
     .innerJoin(drives, and(eq(drives.id, driveMembers.drive_id), eq(drives.org_id, driveMembers.org_id)))
     .where(and(
       eq(driveMembers.org_id, orgId), eq(driveMembers.principal_type, 'space'), eq(driveMembers.principal_id, spaceId),
-      eq(driveMembers.is_link, true), eq(drives.is_deleted, false),
+      eq(driveMembers.is_link, true),
     ))
     .limit(1);
-  const linkRole = link ? await driveRoleFor(userId, orgId, link.id, reader) : null;
-  const rows = (await reader.execute(spaceSharedDocumentsQuery(userId, orgId, spaceId))).rows as Array<{
-    id: string; title: string; drive_name: string | null; folder_name: string | null; role: DocRole;
+  const linkRole = link && !link.is_deleted ? await driveRoleFor(userId, orgId, link.id, reader) : null;
+  const canLink = !link && (await fullDriveQuery(userId, orgId, reader)).length > 0;
+  const rows = (await reader.execute(spaceSharedDocumentsQuery(userId, orgId, spaceId, cursor))).rows as Array<{
+    id: string; title: string; drive_name: string | null; folder_name: string | null; role: DocRole; share_at: string; share_id: string;
   }>;
+  const page = rows.slice(0, SHARED_PAGE_SIZE);
+  const last = page[page.length - 1];
   return {
     linked_drive: link && linkRole ? { id: link.id, name: link.name, role: linkRole } : null,
-    shared: rows.map((row) => ({ id: row.id, title: row.title, home: { drive_name: row.drive_name, folder_name: row.folder_name }, role: row.role })),
+    can_link: canLink,
+    shared: page.map((row) => ({ id: row.id, title: row.title, home: { drive_name: row.drive_name, folder_name: row.folder_name }, role: row.role })),
+    next_cursor: rows.length > SHARED_PAGE_SIZE && last ? `${last.share_at}|${last.share_id}` : null,
   };
 }

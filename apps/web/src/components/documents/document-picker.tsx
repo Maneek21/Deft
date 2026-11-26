@@ -3,13 +3,14 @@
 // "Attach document" in the chat composer's + menu (plan Task F13): pick up
 // to five documents you can open, from your recent documents or from a
 // drive, to post with the message. The message stores their ids only; the
-// titles shown here are the poster's own view.
+// titles shown here are the poster's own view, cached under their signed-in
+// session (keys.ts).
 
 import { useMemo, useState } from 'react';
 import useSWR from 'swr';
 import { Check, FileText, X } from 'lucide-react';
-import { api } from '@/lib/api';
 import { AppDialog } from '../overlay-primitives';
+import { driveTreeKey, drivesKey, fetchScoped, recentDocumentsKey, type SessionScope } from './keys';
 
 export type PickedDocument = { id: string; title: string };
 
@@ -19,15 +20,11 @@ export const MAX_MESSAGE_DOCUMENTS = 5;
 type ListedDocument = { id: string; title: string; icon: string | null };
 type ListedDrive = { id: string; name: string; role: string | null; frozen: boolean };
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const res = await api.get(path);
-  if (!res.ok) throw new Error(`Request failed (${res.status})`);
-  return res.json() as Promise<T>;
-}
-
 export function DocumentPicker({
-  alreadyPicked, onPick, onClose,
+  sessionScope, alreadyPicked, onPick, onClose,
 }: {
+  /** The signed-in session's cache scope (useAuth). */
+  sessionScope: SessionScope;
   alreadyPicked: readonly PickedDocument[];
   onPick: (documents: PickedDocument[]) => void;
   onClose: () => void;
@@ -37,9 +34,9 @@ export function DocumentPicker({
   const [picked, setPicked] = useState<PickedDocument[]>([]);
   const room = MAX_MESSAGE_DOCUMENTS - alreadyPicked.length;
 
-  const recent = useSWR<{ documents: ListedDocument[] }>(source === 'recent' ? '/api/documents/recent' : null, fetchJson);
-  const drives = useSWR<{ drives: ListedDrive[] }>('/api/drives', fetchJson);
-  const tree = useSWR<{ documents: ListedDocument[] }>(source !== 'recent' ? `/api/drives/${source}/tree` : null, fetchJson);
+  const recent = useSWR<{ documents: ListedDocument[] }>(source === 'recent' ? recentDocumentsKey(sessionScope) : null, fetchScoped);
+  const drives = useSWR<{ drives: ListedDrive[] }>(drivesKey(sessionScope), fetchScoped);
+  const tree = useSWR<{ documents: ListedDocument[] }>(source !== 'recent' ? driveTreeKey(sessionScope, source) : null, fetchScoped);
   const openable = (drives.data?.drives ?? []).filter((drive) => drive.role !== null && !drive.frozen);
   const active = source === 'recent' ? recent : tree;
 

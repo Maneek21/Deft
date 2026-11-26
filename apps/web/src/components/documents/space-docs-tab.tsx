@@ -2,33 +2,31 @@
 
 // A chat's Docs tab (spec 5.3, mockup 3 option A; plan Task F13): the
 // chat's linked drive, browsable, then the documents shared into the chat
-// with their home and this viewer's role, then "+ Link a drive" for someone
-// with full access on a drive. Everything comes from
-// GET /api/spaces/:id/documents, which lists only what this viewer can open
-// and leaves hidden drive and folder names null.
+// with their home and this viewer's role (50 at a time, "Load more"), then
+// "+ Link a drive" when the server says this viewer may link one
+// (`can_link`: the chat has no link at all and they hold full on a drive).
+// Everything comes from GET /api/spaces/:id/documents, which lists only what
+// this viewer can open and leaves hidden drive and folder names null. Every
+// read is cached under the signed-in session (keys.ts).
 
 import { useState } from 'react';
 import Link from 'next/link';
-import useSWR, { mutate as swrMutate } from 'swr';
+import useSWR from 'swr';
+import useSWRInfinite from 'swr/infinite';
 import { ChevronDown, ChevronRight, FileText, Folder, HardDrive, Plus } from 'lucide-react';
 import { api } from '@/lib/api';
 import { buildDriveTree, type DocumentDto, type DriveTreeNode, type FolderDto } from '@/lib/drive-tree';
 import { ROLE_LABEL, type DocRole } from './document-card';
+import { driveTreeKey, drivesKey, fetchScoped, spaceDocumentsPages, type SessionScope } from './keys';
 
-export type SpaceDocumentsData = {
+export type SpaceDocumentsPage = {
   linked_drive: { id: string; name: string; role: DocRole } | null;
+  can_link: boolean;
   shared: Array<{ id: string; title: string; home: { drive_name: string | null; folder_name: string | null }; role: DocRole }>;
+  next_cursor: string | null;
 };
 
 type ListedDrive = { id: string; name: string; role: DocRole | null; frozen: boolean };
-
-export const spaceDocumentsKey = (spaceId: string) => `/api/spaces/${spaceId}/documents`;
-
-async function fetchJson<T>(path: string): Promise<T> {
-  const res = await api.get(path);
-  if (!res.ok) throw new Error(`Request failed (${res.status})`);
-  return res.json() as Promise<T>;
-}
 
 async function errorText(res: Response, fallback: string): Promise<string> {
   const body = await res.json().catch(() => null) as { error?: unknown } | null;
@@ -60,9 +58,9 @@ function TreeRows({ nodes, depth }: { nodes: DriveTreeNode[]; depth: number }) {
   );
 }
 
-function LinkedDrive({ drive }: { drive: NonNullable<SpaceDocumentsData['linked_drive']> }) {
+function LinkedDrive({ scope, drive }: { scope: SessionScope; drive: NonNullable<SpaceDocumentsPage['linked_drive']> }) {
   const [open, setOpen] = useState(true);
-  const tree = useSWR<{ folders: FolderDto[]; documents: DocumentDto[] }>(open ? `/api/drives/${drive.id}/tree` : null, fetchJson);
+  const tree = useSWR<{ folders: FolderDto[]; documents: DocumentDto[] }>(open ? driveTreeKey(scope, drive.id) : null, fetchScoped);
   const nodes = tree.data ? buildDriveTree(tree.data) : [];
   return (
     <div className="min-w-0">
@@ -95,8 +93,8 @@ function LinkedDrive({ drive }: { drive: NonNullable<SpaceDocumentsData['linked_
   );
 }
 
-function LinkDrive({ spaceId }: { spaceId: string }) {
-  const drives = useSWR<{ drives: ListedDrive[] }>('/api/drives', fetchJson);
+function LinkDrive({ scope, spaceId, onLinked }: { scope: SessionScope; spaceId: string; onLinked: () => Promise<unknown> }) {
+  const drives = useSWR<{ drives: ListedDrive[] }>(drivesKey(scope), fetchScoped);
   const manageable = (drives.data?.drives ?? []).filter((drive) => drive.role === 'full' && !drive.frozen);
   const [open, setOpen] = useState(false);
   const [driveId, setDriveId] = useState('');
@@ -116,7 +114,7 @@ function LinkDrive({ spaceId }: { spaceId: string }) {
         return;
       }
       setOpen(false);
-      await swrMutate(spaceDocumentsKey(spaceId));
+      await onLinked();
     } catch {
       setError('Could not link the drive');
     } finally {
@@ -162,32 +160,38 @@ function LinkDrive({ spaceId }: { spaceId: string }) {
   );
 }
 
-export function SpaceDocsTab({ spaceId, spaceName, isDm }: { spaceId: string; spaceName: string; isDm: boolean }) {
-  const { data, error, mutate } = useSWR<SpaceDocumentsData>(spaceDocumentsKey(spaceId), fetchJson, { revalidateOnFocus: true });
+export function SpaceDocsTab({ sessionScope, spaceId, spaceName, isDm }: { sessionScope: SessionScope; spaceId: string; spaceName: string; isDm: boolean }) {
+  const { data: pages, error, mutate, size, setSize, isValidating } = useSWRInfinite<SpaceDocumentsPage>(
+    spaceDocumentsPages(sessionScope, spaceId), fetchScoped, { revalidateOnFocus: true, revalidateFirstPage: true },
+  );
+  const first = pages?.[0];
+  const shared = (pages ?? []).flatMap((page) => page.shared);
+  const last = pages?.[pages.length - 1];
+  const loadingMore = isValidating && pages !== undefined && size > pages.length;
   const where = isDm ? 'this conversation' : `#${spaceName}`;
   const heading = 'px-2 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wide';
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2 md:px-4" data-testid="space-docs-tab">
-      {error && !data && (
+      {error && !first && (
         <div className="flex items-center gap-2 px-2 py-3 text-[13px]" style={{ color: 'var(--on-surface-variant)' }}>
           Couldn&apos;t load this chat&apos;s documents.
           <button type="button" onClick={() => { void mutate(); }} className="font-semibold" style={{ color: 'var(--primary)' }}>Try again</button>
         </div>
       )}
-      {!error && !data && <p className="px-2 py-3 text-[13px]" style={{ color: 'var(--on-surface-variant)' }}>Loading documents…</p>}
-      {data && (
+      {!error && !first && <p className="px-2 py-3 text-[13px]" style={{ color: 'var(--on-surface-variant)' }}>Loading documents…</p>}
+      {first && (
         <div className="mx-auto flex w-full max-w-[760px] min-w-0 flex-col">
-          {data.linked_drive && (
+          {first.linked_drive && (
             <>
               <div className={heading} style={{ color: 'var(--outline)' }}>Linked drive</div>
-              <LinkedDrive drive={data.linked_drive} />
+              <LinkedDrive scope={sessionScope} drive={first.linked_drive} />
             </>
           )}
           <div className={heading} style={{ color: 'var(--outline)' }}>Shared into {where}</div>
-          {data.shared.length === 0 && (
+          {shared.length === 0 && (
             <p className="px-2 py-1 text-[13px]" style={{ color: 'var(--on-surface-variant)' }}>No documents have been shared into {where} yet.</p>
           )}
-          {data.shared.map((doc) => {
+          {shared.map((doc) => {
             const home = doc.home.drive_name
               ? [doc.home.drive_name, doc.home.folder_name].filter(Boolean).join(' / ')
               : 'Shared with you';
@@ -201,7 +205,14 @@ export function SpaceDocsTab({ spaceId, spaceName, isDm }: { spaceId: string; sp
               </Link>
             );
           })}
-          {!data.linked_drive && <LinkDrive spaceId={spaceId} />}
+          {last?.next_cursor && (
+            <button type="button" disabled={loadingMore} onClick={() => { void setSize(size + 1); }}
+              className="mt-1 min-h-[36px] self-start rounded-md px-3 text-[13px] font-medium disabled:opacity-60" style={{ color: 'var(--primary)' }}>
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </button>
+          )}
+          {error && first && <p role="alert" className="px-2 py-1 text-[12px]" style={{ color: 'var(--status-red, #ef4444)' }}>Couldn&apos;t load more documents.</p>}
+          {first.can_link && <LinkDrive scope={sessionScope} spaceId={spaceId} onLinked={() => mutate()} />}
         </div>
       )}
     </div>

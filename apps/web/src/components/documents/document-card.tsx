@@ -5,19 +5,25 @@
 // their own card from POST /api/documents/cards, which is null when they
 // can't open the document (rule C4). Cards are fetched in batches of up to
 // 50, whichever messages ask for them in the same tick.
+//
+// A card is cached under the signed-in session (keys.ts), and the batcher
+// keeps each session's ids apart: a batch is sent, and its answer used, only
+// while its session is still the one signed in. Someone who signs in after
+// another in the same tab never sees the previous person's cards.
 
 import { useEffect } from 'react';
 import Link from 'next/link';
 import useSWR, { mutate as swrMutate } from 'swr';
 import { FileText, Lock } from 'lucide-react';
 import { api } from '@/lib/api';
+import { getActiveSessionCacheScope } from '@/lib/session-cache';
 import { getSocket } from '@/lib/socket';
+import { cardKey, CARDS_PATH, isCardKeyOf, type SessionScope } from './keys';
 import { PostingPrompt } from './posting-prompt';
 
 export type DocRole = 'full' | 'edit' | 'comment' | 'view';
 export type DocumentCardData = { id: string; title: string; icon: string | null; drive_name: string | null; role: DocRole };
 
-const CARD_KEY = 'document-card';
 const MAX_BATCH = 50;
 
 export const ROLE_LABEL: Record<DocRole, string> = { full: 'full access', edit: 'can edit', comment: 'can comment', view: 'can view' };
@@ -35,32 +41,48 @@ export function messageDocumentIds(metadata: unknown): string[] {
 }
 
 type Waiter = { resolve: (card: DocumentCardData | null) => void; reject: (error: unknown) => void };
-let waiting = new Map<string, Waiter[]>();
+/** Session scope → document id → who waits for its card. */
+let waiting = new Map<string, Map<string, Waiter[]>>();
 let scheduled = false;
+
+const sessionChanged = () => new Error('The signed-in session changed');
 
 async function flushCards(): Promise<void> {
   scheduled = false;
-  const batch = waiting;
+  const batches = waiting;
   waiting = new Map();
-  const ids = [...batch.keys()];
-  for (let at = 0; at < ids.length; at += MAX_BATCH) {
-    const chunk = ids.slice(at, at + MAX_BATCH);
-    try {
-      const res = await api.post('/api/documents/cards', { ids: chunk });
-      if (!res.ok) throw new Error(`Could not load documents (${res.status})`);
-      const body = await res.json() as { cards?: Record<string, DocumentCardData | null> };
-      for (const id of chunk) for (const waiter of batch.get(id) ?? []) waiter.resolve(body.cards?.[id] ?? null);
-    } catch (error) {
-      for (const id of chunk) for (const waiter of batch.get(id) ?? []) waiter.reject(error);
+  for (const [scope, batch] of batches) {
+    const ids = [...batch.keys()];
+    const settle = (chunk: string[], outcome: (waiter: Waiter, id: string) => void) => {
+      for (const id of chunk) for (const waiter of batch.get(id) ?? []) outcome(waiter, id);
+    };
+    for (let at = 0; at < ids.length; at += MAX_BATCH) {
+      const chunk = ids.slice(at, at + MAX_BATCH);
+      // Sent, and used, only for the session signed in now.
+      if (getActiveSessionCacheScope() !== scope) {
+        settle(chunk, (waiter) => waiter.reject(sessionChanged()));
+        continue;
+      }
+      try {
+        const res = await api.post(CARDS_PATH, { ids: chunk });
+        if (!res.ok) throw new Error(`Could not load documents (${res.status})`);
+        const body = await res.json() as { cards?: Record<string, DocumentCardData | null> };
+        if (getActiveSessionCacheScope() !== scope) throw sessionChanged();
+        settle(chunk, (waiter, id) => waiter.resolve(body.cards?.[id] ?? null));
+      } catch (error) {
+        settle(chunk, (waiter) => waiter.reject(error));
+      }
     }
   }
 }
 
-function loadCard(id: string): Promise<DocumentCardData | null> {
+function loadCard(scope: string, id: string): Promise<DocumentCardData | null> {
   return new Promise((resolve, reject) => {
-    const list = waiting.get(id) ?? [];
+    const batch = waiting.get(scope) ?? new Map<string, Waiter[]>();
+    waiting.set(scope, batch);
+    const list = batch.get(id) ?? [];
     list.push({ resolve, reject });
-    waiting.set(id, list);
+    batch.set(id, list);
     if (!scheduled) {
       scheduled = true;
       setTimeout(() => { void flushCards(); }, 0);
@@ -68,28 +90,28 @@ function loadCard(id: string): Promise<DocumentCardData | null> {
   });
 }
 
-/** This viewer's card for one document: undefined while loading, null when they can't open it. */
-export function useDocumentCard(id: string) {
-  return useSWR<DocumentCardData | null>([CARD_KEY, id], () => loadCard(id), { revalidateOnFocus: false });
+/** This viewer's card for one document: undefined while loading or signed out, null when they can't open it. */
+export function useDocumentCard(scope: SessionScope, id: string) {
+  return useSWR<DocumentCardData | null>(cardKey(scope, id), () => loadCard(scope!, id), { revalidateOnFocus: false });
 }
 
 /**
- * Re-reads every card when a document is shared with this viewer
+ * Re-reads this session's cards when a document is shared with this viewer
  * (`document:shared`, sent only to people who can now open it), so a card
  * that said "You can't open this document." updates. Mount once per chat.
  */
-export function useDocumentCardsRefresh(sessionScope: string | null | undefined) {
+export function useDocumentCardsRefresh(scope: SessionScope) {
   useEffect(() => {
-    if (!sessionScope) return;
+    if (!scope) return;
     const token = localStorage.getItem('deft-access-token');
     if (!token) return;
     const socket = getSocket(token);
     const onShared = () => {
-      void swrMutate((key) => Array.isArray(key) && key[0] === CARD_KEY);
+      void swrMutate((key) => isCardKeyOf(key, scope));
     };
     socket.on('document:shared', onShared);
     return () => { socket.off('document:shared', onShared); };
-  }, [sessionScope]);
+  }, [scope]);
 }
 
 /** One card: a link to the document, "You can't open this document." when `card` is null, a placeholder while undefined. */
@@ -126,8 +148,8 @@ export function DocumentCard({ card }: { card: DocumentCardData | null | undefin
   );
 }
 
-function MessageDocumentCard({ id }: { id: string }) {
-  const { data, error } = useDocumentCard(id);
+function MessageDocumentCard({ scope, id }: { scope: SessionScope; id: string }) {
+  const { data, error } = useDocumentCard(scope, id);
   if (error && data === undefined) {
     return (
       <div className="mt-1.5 text-[12px]" style={{ color: 'var(--on-surface-variant)' }}>Couldn&apos;t load this document.</div>
@@ -137,17 +159,20 @@ function MessageDocumentCard({ id }: { id: string }) {
 }
 
 /**
- * The documents a message carries, each as this viewer's card. For the
+ * The documents a message carries, each as this viewer's card, read under
+ * `sessionScope` (the signed-in session's cache scope, useAuth). For the
  * poster, right after posting, `promptIds` names the documents to show the
- * posting prompt under (PostingPrompt decides whether it shows).
+ * posting prompt under, in the chat `spaceId` (PostingPrompt decides whether
+ * it shows). The thread panel passes no prompt.
  */
 export function MessageDocuments({
-  metadata, spaceId, spaceName, isDm, promptIds, onPromptClosed,
+  metadata, sessionScope, spaceId, spaceName, isDm, promptIds, onPromptClosed,
 }: {
   metadata: unknown;
-  spaceId: string;
-  spaceName: string;
-  isDm: boolean;
+  sessionScope: SessionScope;
+  spaceId?: string;
+  spaceName?: string;
+  isDm?: boolean;
   promptIds?: readonly string[];
   onPromptClosed?: (documentId: string) => void;
 }) {
@@ -157,9 +182,10 @@ export function MessageDocuments({
     <div className="flex min-w-0 flex-col">
       {ids.map((id) => (
         <div key={id} className="min-w-0">
-          <MessageDocumentCard id={id} />
-          {promptIds?.includes(id) && (
-            <PostingPrompt documentId={id} spaceId={spaceId} spaceName={spaceName} isDm={isDm} onClose={() => onPromptClosed?.(id)} />
+          <MessageDocumentCard scope={sessionScope} id={id} />
+          {spaceId && promptIds?.includes(id) && (
+            <PostingPrompt sessionScope={sessionScope} documentId={id} spaceId={spaceId} spaceName={spaceName ?? ''} isDm={isDm ?? false}
+              onClose={() => onPromptClosed?.(id)} />
           )}
         </div>
       ))}

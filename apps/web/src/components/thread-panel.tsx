@@ -31,6 +31,7 @@ import { inlineApprovalDisplayContent } from '@/lib/agent-approval-copy';
 import { ConversationReads, mergeMessagesById } from '@/lib/chat-history-merge';
 import { applyMessageEvent, replayMessageEvents, type MessageEvent } from '@/lib/chat-message-events';
 import { ChatLoadError } from './chat-load-error';
+import { MessageDocuments } from './documents/document-card';
 import { adoptFetchedThreadParent, applyThreadParentEvent, refreshThreadParent, type ScopedMessageEvent } from '@/lib/thread-parent';
 
 type Reaction = {
@@ -63,6 +64,8 @@ type Message = {
   metadata?: AgentMessageBlocksProps & {
     is_agent_reply?: boolean;
     agent_blocks?: AgentMessageBlocksProps['blocks'];
+    /** Documents posted with the message (F13): ids only, each reader's card is read for them. */
+    documents?: Array<{ id: string }>;
   };
 };
 
@@ -674,6 +677,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
               </div>
 
               <ThreadMessageFiles files={messageFiles} />
+
+              <MessageDocuments metadata={msg.metadata} sessionScope={sessionCacheScope} />
 
               {renderPendingActions(msg.id)}
 

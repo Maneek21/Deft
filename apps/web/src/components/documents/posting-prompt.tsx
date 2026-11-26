@@ -9,25 +9,19 @@
 // "{N} people in this conversation can't open this.". It shows only to
 // someone who may share the document (`can_share`, edit on it) and only
 // while somebody can't open it. The counts come from F9's
-// GET /api/documents/:id/audience; Share calls F9's POST /shares for the
-// chat; "Don't share" only closes the prompt.
+// GET /api/documents/:id/audience, cached under the signed-in session
+// (keys.ts); Share calls F9's POST /shares for the chat; "Don't share" only
+// closes the prompt.
 
 import { useState } from 'react';
 import useSWR, { mutate as swrMutate } from 'swr';
 import { X } from 'lucide-react';
 import { api } from '@/lib/api';
+import { audienceKey, fetchScoped, revalidateSpaceDocuments, type SessionScope } from './keys';
 
+export { audienceKey };
 export type Audience = { cannot_open: number; guests: number; can_share: boolean };
 type ShareRole = 'view' | 'comment' | 'edit';
-
-export const audienceKey = (documentId: string, spaceId: string) =>
-  `/api/documents/${encodeURIComponent(documentId)}/audience?space_id=${encodeURIComponent(spaceId)}`;
-
-async function fetchAudience(path: string): Promise<Audience> {
-  const res = await api.get(path);
-  if (!res.ok) throw new Error(`Could not count the chat's audience (${res.status})`);
-  return res.json() as Promise<Audience>;
-}
 
 /** Where the prompt says the document went: `#chat`, or "this conversation" in a DM. */
 export function promptPlace(spaceName: string, isDm: boolean): string {
@@ -44,15 +38,18 @@ export function postingPromptCounts(audience: Audience, spaceName: string, isDm:
 }
 
 export function PostingPrompt({
-  documentId, spaceId, spaceName, isDm, onClose,
+  sessionScope, documentId, spaceId, spaceName, isDm, onClose,
 }: {
+  /** The signed-in session's cache scope (useAuth): the audience is read and cached under it. */
+  sessionScope: SessionScope;
   documentId: string;
   spaceId: string;
   spaceName: string;
   isDm: boolean;
   onClose: () => void;
 }) {
-  const { data } = useSWR<Audience>(audienceKey(documentId, spaceId), fetchAudience, { revalidateOnFocus: false, shouldRetryOnError: false });
+  const key = audienceKey(sessionScope, documentId, spaceId);
+  const { data } = useSWR<Audience>(key, fetchScoped, { revalidateOnFocus: false, shouldRetryOnError: false });
   const [role, setRole] = useState<ShareRole>('comment');
   const [busy, setBusy] = useState(false);
   const [shared, setShared] = useState(false);
@@ -86,8 +83,8 @@ export function PostingPrompt({
       }
       setShared(true);
       // The Docs tab lists what was shared into the chat, and the counts changed.
-      void swrMutate(`/api/spaces/${spaceId}/documents`);
-      void swrMutate(audienceKey(documentId, spaceId));
+      void revalidateSpaceDocuments(sessionScope, spaceId);
+      if (key) void swrMutate(key);
     } catch {
       setError('Could not share the document');
     } finally {

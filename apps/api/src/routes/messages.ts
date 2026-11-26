@@ -157,8 +157,11 @@ export async function storeLinkPreviews(
   messageId: string,
   previews: LinkPreview[],
 ): Promise<boolean> {
+  // Merged into the metadata already there, in this one statement, so what
+  // the message carries (its documents, F13) is kept.
   const stored = await db.update(messages)
-    .set({ metadata: { link_previews: previews } })
+    .set({ metadata: sql`(CASE WHEN jsonb_typeof(${messages.metadata}) = 'object' THEN ${messages.metadata} ELSE '{}'::jsonb END)
+      || jsonb_build_object('link_previews', ${JSON.stringify(previews)}::jsonb)` })
     .where(and(eq(messages.id, messageId), eq(messages.is_deleted, false)))
     .returning({ id: messages.id });
   if (stored.length === 0) return false;
