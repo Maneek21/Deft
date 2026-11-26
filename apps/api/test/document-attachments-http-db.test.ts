@@ -445,3 +445,43 @@ test('a document_id that is empty or isn\'t an id is refused with 400 and stores
   const { rows } = await fx!.client.query('SELECT 1 FROM document_attachments WHERE document_id = $1', [documentId]);
   assert.equal(rows.length, 0, 'nothing linked');
 });
+
+// ---------------------------------------------------------------------------
+// Fix round 2: the view-or-edit rule is asked as one check. A guard that every
+// kind of grant is held to the floor: it passes on the earlier two-check form
+// too, by design.
+
+test('every kind of grant is held to the image floor: an open drive\'s default, a frozen drive\'s share, a chat link', { skip: !url && SKIP }, async () => {
+  // An open drive whose default is view: every member views it, nobody edits through the default.
+  const openView = await fx!.insertDrive({ kind: 'open', defaultRole: 'view', name: 'Images: open, view' });
+  const openDocument = await documentIn(openView, 'Images: open, view');
+  await fx!.share(openDocument, { user: who.editor2 }, 'edit');
+  const openCurrent = await linkedImage(who.editor, [{ documentId: openDocument, inCurrent: true }]);
+  const openHistory = await linkedImage(who.editor, [{ documentId: openDocument, inCurrent: false }]);
+  assert.deepEqual(await loads(openCurrent, ['stranger', 'viewer2', 'editor2', 'guest']), {
+    stranger: 200, viewer2: 200, editor2: 200, guest: 404,
+  }, 'open drive (view): an image in the text');
+  assert.deepEqual(await loads(openHistory, ['stranger', 'viewer2', 'editor2', 'guest']), {
+    stranger: 404, viewer2: 404, editor2: 200, guest: 404,
+  }, 'open drive (view): history needs edit, here from a share');
+
+  // A frozen drive: its own grants give nothing, and a share out of it gives view at most.
+  const frozen = await fx!.insertDrive({ kind: 'private', frozen: true, name: 'Images: frozen' });
+  await fx!.addDriveMember(frozen, { user: who.editor }, 'edit');
+  const frozenDocument = await documentIn(frozen, 'Images: frozen');
+  await fx!.share(frozenDocument, { user: who.editor2 }, 'edit');
+  const frozenCurrent = await linkedImage(who.editor, [{ documentId: frozenDocument, inCurrent: true }]);
+  const frozenHistory = await linkedImage(who.editor, [{ documentId: frozenDocument, inCurrent: false }]);
+  assert.deepEqual(await loads(frozenCurrent, ['editor', 'editor2']), { editor: 404, editor2: 200 }, 'frozen: an image in the text');
+  assert.deepEqual(await loads(frozenHistory, ['editor', 'editor2']), { editor: 404, editor2: 404 }, 'frozen: an edit share gives view, so no history');
+
+  // A chat linked to a private drive at edit: its member reads history; at view, only the text.
+  const chatDrive = await fx!.insertDrive({ kind: 'private', name: 'Images: chat' });
+  await fx!.addDriveMember(chatDrive, { space: fx!.spaces.other }, 'edit');
+  const chatDocument = await documentIn(chatDrive, 'Images: chat');
+  const chatHistory = await linkedImage(who.editor, [{ documentId: chatDocument, inCurrent: false }]);
+  assert.deepEqual(await loads(chatHistory, ['chatMember', 'stranger']), { chatMember: 200, stranger: 404 }, 'chat at edit');
+  await fx!.addDriveMember(chatDrive, { space: fx!.spaces.other }, 'view');
+  assert.deepEqual(await loads(chatHistory, ['chatMember']), { chatMember: 404 }, 'chat lowered to view');
+  assert.equal(await authorize(who.chatMember, chatHistory), 'NOT_FOUND');
+});

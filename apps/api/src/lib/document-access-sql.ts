@@ -181,11 +181,19 @@ function shareGrants(userId: UserRef, documentId: SQL, drive: DriveRefs): GrantG
   };
 }
 
-/** The groups as one boolean: OR'd EXISTS branches, each filtered to roles at least `min`. */
-function anyGrant(groups: GrantGroup[], min: DocRole): SQL {
-  const atLeast = DOC_ROLES.filter((role) => roleAtLeast(role, min));
-  // Every role is at least view, so view needs no filter. The literals come from DOC_ROLES.
-  const roleFilter = (role: SQL) => (min === 'view' ? sql`` : sql` AND ${role} IN (${sql.raw(atLeast.map((r) => `'${r}'`).join(', '))})`);
+/** The roles at least `min`, as an SQL list of literals (they come from DOC_ROLES). */
+function rolesAtLeastList(min: DocRole): SQL {
+  return sql.raw(DOC_ROLES.filter((role) => roleAtLeast(role, min)).map((r) => `'${r}'`).join(', '));
+}
+
+/**
+ * The groups as one boolean: OR'd EXISTS branches, each filtered to roles at
+ * least `min`, or by `filter` instead (the view-or-edit check, which passes
+ * view so that every branch is kept).
+ */
+function anyGrant(groups: GrantGroup[], min: DocRole, filter?: (role: SQL) => SQL): SQL {
+  // Every role is at least view, so view needs no filter.
+  const roleFilter = filter ?? ((role: SQL) => (min === 'view' ? sql`` : sql` AND ${role} IN (${rolesAtLeastList(min)})`));
   const parts: SQL[] = [];
   for (const group of groups) {
     const branches = group.grants.filter((grant) => roleAtLeast(grant.highest, min))
@@ -231,16 +239,24 @@ function documentGrants(userId: UserRef, documentId: SQL): GrantGroup[] {
  * alias exists, so nothing of this check is in scope there and they resolve
  * in the caller's query whatever aliases it uses. Everything after reads them
  * through `access_target`.
+ *
+ * With `viewSuffices` (a caller's boolean expression, bound in
+ * `access_target` like the others) the role asked depends on the caller's
+ * row: view where it is true, edit where it isn't, in one copy of the
+ * grants (visibleDocumentIdViewOrEditSql).
  */
-function documentIdVisibleSql(userId: UserRef, orgId: OrgRef, documentId: SQL, min: DocRole): SQL {
+function documentIdVisibleSql(userId: UserRef, orgId: OrgRef, documentId: SQL, min: DocRole, viewSuffices?: SQL): SQL {
   const user = sql.raw('access_target.user_id');
+  const floor = viewSuffices === undefined ? undefined
+    : (role: SQL) => sql` AND (access_target.view_suffices OR ${role} IN (${rolesAtLeastList('edit')}))`;
   return sql`EXISTS (SELECT 1
-    FROM (SELECT (${documentId})::text AS id, (${orgId})::text AS org_id, (${userId})::text AS user_id) access_target
+    FROM (SELECT (${documentId})::text AS id, (${orgId})::text AS org_id, (${userId})::text AS user_id${
+      viewSuffices === undefined ? sql`` : sql`, (${viewSuffices})::boolean AS view_suffices`}) access_target
     JOIN documents access_doc ON access_doc.id = access_target.id AND access_doc.org_id = access_target.org_id
     JOIN drives access_drive ON access_drive.id = access_doc.drive_id AND access_drive.org_id = access_doc.org_id
     WHERE access_doc.is_deleted = false AND access_drive.is_deleted = false
       AND ${activeActorSql(user, sql.raw('access_target.org_id'))}
-      AND ${anyGrant(documentGrants(user, sql.raw('access_doc.id')), checkedRole(min))})`;
+      AND ${anyGrant(documentGrants(user, sql.raw('access_doc.id')), checkedRole(min), floor)})`;
 }
 
 /**
@@ -267,6 +283,20 @@ export function visibleDocumentCondition(userId: string, orgId: string, min: Doc
  */
 export function visibleDocumentIdSql(userId: string | SQL, orgId: OrgRef, documentId: SQL, min: DocRole = 'view'): SQL {
   return documentIdVisibleSql(userId, orgId, documentId, min);
+}
+
+/**
+ * visibleDocumentIdSql at a role that depends on the caller's row: at least
+ * view where `viewSuffices` is true, at least edit where it is false (a
+ * document's image: view while it is in the content, edit for history;
+ * lib/document-attachment-access.ts). It is the same check, asked once:
+ * each grant is held to `viewSuffices OR` its role is at least edit, so it
+ * plans as one check rather than as a view and an edit check side by side.
+ * `viewSuffices` may be a column of the statement under any alias, like the
+ * others; it must not be null.
+ */
+export function visibleDocumentIdViewOrEditSql(userId: string | SQL, orgId: OrgRef, documentId: SQL, viewSuffices: SQL): SQL {
+  return documentIdVisibleSql(userId, orgId, documentId, 'view', viewSuffices);
 }
 
 /**

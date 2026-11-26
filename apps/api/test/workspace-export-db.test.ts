@@ -472,7 +472,7 @@ test('attachments: a document image follows its document in a member export, nev
   const documentId = randomUUID();
   const inText = randomUUID();
   const inHistory = randomUUID();
-  const images = [inText, inHistory].sort();
+  const images: string[] = [inText, inHistory].sort();
   try {
     // A private drive the member edits; the guest views the document through a share; `other` uploaded both
     // images and can't open it; the owner isn't a member of the drive.
