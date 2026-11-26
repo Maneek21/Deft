@@ -10,6 +10,17 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### The six website guides are re-checked for 155
+
+- **Changed.** The six guides the website copies from `docs/` (first workspace,
+  first agent action, first MCP connection, the MCP task example, building your
+  first app, and apps and App packages) now say "For Deft v0.3.0-preview.155."
+  and were checked against this release. "Build your first app" now starts in
+  the browser (Settings → Apps, a starter app, editing, uploading a file), with
+  the self-hosted command line second. "Apps and App packages" explains that a
+  customer's app is an app file, and that App packages are for Deft's own Email
+  at launch and can't be upgraded yet.
+
 ### The app file schema no longer flags valid files
 
 - **Fixed.** The published JSON Schema for app files

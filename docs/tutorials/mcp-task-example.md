@@ -1,6 +1,6 @@
 # Create a task through MCP
 
-For Deft v0.3.0-preview.15.
+For Deft v0.3.0-preview.155.
 
 ## Connection and scopes
 
@@ -24,7 +24,7 @@ Replace `PROJECT_ID_FROM_RESOLVER` before sending:
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"task_create","arguments":{"project_id":"PROJECT_ID_FROM_RESOLVER","title":"Review the launch announcement","description":"Check the date, demo link, and support contact.","priority":"p2","idempotency_key":"launch-pilot-announcement-001"}}}
 ```
 
-The request leaves the task unassigned. To assign it, resolve a member first and pass the returned `assignee_id`.
+The request leaves the task unassigned. To assign it, resolve the person first with `resolve_member` and pass the resolved member's `id` as `assignee_id` (`assignee_email` and `assignee_name` also work).
 
 The successful result includes the saved task fields, an `id`, and `task_key`. Keep those actual values; do not infer an id from the title. The JSON-RPC request id only matches a response to a request. `idempotency_key` identifies the write you may need to retry.
 
@@ -54,7 +54,7 @@ For `task_create`, the example also uses `description`, `priority`, and `idempot
 | Missing scope | Update the grant; retry only after it includes the required scope. |
 | Tool result has `isError: true` | Read its message; an HTTP or JSON-RPC success alone does not mean the task was created. |
 | Ambiguous project or member | Resolve the target before a write. |
-| Connection drops after creation | Read the result if known; otherwise retry the same arguments with the same idempotency key. |
+| Connection drops after creation | Read the result if known; otherwise retry the same arguments with the same idempotency key on the same connection, which returns the first result. |
 | Different task requested | Use a new idempotency key for the new intent. |
 
 Employee-token clients have a different catalog and approval behavior. Read [MCP tools](https://deft.ing/docs/mcp-tools/) before adapting this example to an employee runtime.
