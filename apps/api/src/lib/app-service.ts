@@ -201,28 +201,37 @@ function invalidAppPackage(error: unknown, options: ReadableIssueOptions = {}): 
  * prefixed with the file inside the package. Null when that does not apply.
  */
 function moduleArtifactRefusal(packageJson: string, error: unknown): AppError | null {
+  const raw = parseJsonOrUndefined(packageJson) as { artifacts?: unknown; manifest?: { modules?: unknown } } | undefined;
+  const artifacts = Array.isArray(raw?.artifacts) ? raw.artifacts as Array<{ path?: unknown; content?: unknown }> : [];
+  // The module files App Kit named in its issues first, then every module file
+  // the package lists, so a broken inner file is named even when App Kit
+  // reports it some other way (such as a JSON syntax error).
   const issues = error && typeof error === 'object' ? (error as { issues?: unknown }).issues : undefined;
-  if (!Array.isArray(issues)) return null;
-  const artifactPath = issues
-    .map((issue) => (issue && typeof issue === 'object' ? (issue as { artifact_path?: unknown }).artifact_path : undefined))
-    .find((path): path is string => typeof path === 'string');
-  if (!artifactPath) return null;
-  const raw = parseJsonOrUndefined(packageJson) as { artifacts?: unknown } | undefined;
-  const artifact = Array.isArray(raw?.artifacts)
-    ? (raw.artifacts as Array<{ path?: unknown; content?: unknown }>).find((item) => item?.path === artifactPath)
-    : undefined;
-  if (!artifact || typeof artifact.content !== 'string') return null;
-  const input = parseJsonOrUndefined(artifact.content);
-  try {
-    parseDeftModuleManifest(input);
-    return null;
-  } catch (moduleError) {
-    return invalidAppPackage(moduleError, {
-      input,
-      source: artifact.content,
-      prefix: `App file ${cleanIssueText(artifactPath, 80)}`,
-    });
+  const named = (Array.isArray(issues) ? issues : [])
+    .map((issue) => (issue && typeof issue === 'object' ? (issue as { artifact_path?: unknown }).artifact_path : undefined));
+  const listed = (Array.isArray(raw?.manifest?.modules) ? raw.manifest.modules : [])
+    .map((reference) => (reference && typeof reference === 'object' ? (reference as { manifest_path?: unknown }).manifest_path : undefined));
+  const paths = [...new Set([...named, ...listed].filter((path): path is string => typeof path === 'string'))].slice(0, 16);
+  for (const path of paths) {
+    const artifact = artifacts.find((item) => item?.path === path);
+    if (!artifact || typeof artifact.content !== 'string') continue;
+    const prefix = `App file ${cleanIssueText(path, 80)}`;
+    let input: unknown;
+    try {
+      input = JSON.parse(artifact.content) as unknown;
+    } catch (syntaxError) {
+      return invalidAppPackage(new Error('The app file is not valid JSON', { cause: syntaxError }), {
+        source: artifact.content,
+        prefix,
+      });
+    }
+    try {
+      parseDeftModuleManifest(input);
+    } catch (moduleError) {
+      return invalidAppPackage(moduleError, { input, source: artifact.content, prefix });
+    }
   }
+  return null;
 }
 
 function parseJsonOrUndefined(value: string): unknown {
