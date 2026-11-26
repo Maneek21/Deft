@@ -89,10 +89,10 @@ test('module task-link approvals name both existing resources without exposing r
   });
 
   assert.equal(presentation.kind, 'module');
-  assert.equal(presentation.title, 'Link Module record b57a1930 to CRM-5');
+  assert.equal(presentation.title, 'Link App record b57a1930 to CRM-5');
   assert.equal(presentation.approveLabel, 'Approve link');
   assert.deepEqual(presentation.chips, [
-    { label: 'Module record b57a1930', icon: 'book' },
+    { label: 'App record b57a1930', icon: 'book' },
     { label: 'CRM-5', icon: 'task' },
   ]);
 });

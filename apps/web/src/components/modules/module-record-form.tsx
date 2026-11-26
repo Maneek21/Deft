@@ -181,7 +181,7 @@ export function ModuleRecordFormDialog({
         )}
         {fields.length === 0 ? (
           <div className="rounded-lg px-4 py-5 text-[0.8125rem]" style={{ background: 'var(--surface-container-low)', color: 'var(--on-surface-variant)' }}>
-            This collection has no editable fields.
+            This record type has no editable fields.
           </div>
         ) : visibleFields.map((field) => field.type === 'relation' ? (
           <ModuleRelationInput key={field.key} slug={slug} field={field} targetCollection={collections.find((candidate) => candidate.key === field.targetCollection)} value={values[field.key]} initial={record?.relations ?? initialRelations} error={errors[field.key]} disabled={busy} onChange={(ids) => setValue(field.key, ids)} />

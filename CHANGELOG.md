@@ -10,6 +10,16 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Everything you install or build is called an app
+
+- **Changed.** The web app no longer says "module" anywhere a person reads. What you
+  install, build, and turn on or off is an "app". A collection is a "record type", and a
+  manifest is the "app file". This covers the app and record pages, task links, approval
+  cards, search, Settings → Personal AI connections, and the sign-in consent screen.
+- **Unchanged underneath.** Routes, API fields, OAuth scopes such as `read:modules` and
+  MCP tool names such as `module_list` keep their names. An app is still a module file
+  under the hood.
+
 ### One Apps page, with one Upload an app button
 
 - **Changed.** Settings → Apps now lists every app in one place: the ones that come with

@@ -28,7 +28,7 @@ const SCOPE_LABELS: Record<string, string> = {
   'read:tasks': 'Tasks, comments, progress, and workload',
   'read:messages': 'Visible spaces, threads, unread work, and search',
   'read:calendar': 'Native and subscribed calendar context',
-  'read:modules': 'Installed module schemas and records, such as the Contacts Directory',
+  'read:modules': 'Installed apps and their records, such as Contacts',
   'read:apps': 'Installed App identities, reviewed grants, bindings, and health',
   'invoke:apps': 'Discover, prepare, and invoke reviewed App actions as you',
   'read:app-runs': 'Inspect authorized App Run status, safe previews, and retained results',
@@ -36,7 +36,7 @@ const SCOPE_LABELS: Record<string, string> = {
   'write:messages': 'Post messages into spaces and DMs you can access',
   'write:wiki': 'Create and update wiki knowledge',
   'write:calendar': 'Create, update, and cancel native calendar events',
-  'write:modules': 'Create, update, and archive records in enabled modules',
+  'write:modules': 'Create, update, and archive records in apps that are on',
   'write:workspace': 'Manage notes, inbox, approvals, projects, and agent operations',
   offline_access: 'Keep this connector signed in by allowing secure refresh-token rotation',
 };
@@ -277,9 +277,9 @@ function OAuthAuthorizeContent() {
                       <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Manage your native Deft calendar events</li>
                     )}
                     {canWriteModules ? (
-                      <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Create, update, and archive records in enabled modules</li>
+                      <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Create, update, and archive records in apps that are on</li>
                     ) : (
-                      <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit module records</li>
+                      <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit app records</li>
                     )}
                     {canWriteWorkspace && (
                       <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Manage notes, inbox, approvals, projects, and agent operations</li>
@@ -290,7 +290,7 @@ function OAuthAuthorizeContent() {
                     <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Create or update tasks</li>
                     <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Post messages</li>
                     <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit wiki pages</li>
-                    <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit module records</li>
+                    <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit app records</li>
                     <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Access private spaces you are not part of</li>
                   </>
                 )}

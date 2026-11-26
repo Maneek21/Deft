@@ -824,9 +824,9 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       kind,
       icon: 'module',
       eyebrow: isBulkRetry ? 'Module import retry' : isBulkCreate ? 'Module import draft' : isCreate ? 'Module record draft' : isArchive ? 'Module archive' : 'Module record update',
-      headline: `${proposerName} proposed a module ${operation}`,
+      headline: `${proposerName} proposed an app ${operation}`,
       title: isBulkCreate
-        ? `Import ${rowCount || ''} ${collectionName || 'module'} record${rowCount === 1 ? '' : 's'}`.replace(/\s+/g, ' ').trim()
+        ? `Import ${rowCount || ''} ${collectionName || 'app'} record${rowCount === 1 ? '' : 's'}`.replace(/\s+/g, ' ').trim()
         : recordTitle || `${operation[0].toUpperCase()}${operation.slice(1)} ${collectionName || 'record'}`,
       summary: isBulkRetry
         ? `Review this ${rowCount}-row batch again. Records already created will be reused; remaining records will be created after approval.`
@@ -834,12 +834,12 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
         ? truncateApprovalText(content, 150)
         : isBulkCreate
           ? `Review ${rowCount} validated row${rowCount === 1 ? '' : 's'}${sourceFileName ? ` from ${sourceFileName}` : ''} before import.`
-          : `Review this ${collectionName || 'module'} record change before it is applied.`,
+          : `Review this ${collectionName || 'app'} record change before it is applied.`,
       approveLabel: isBulkRetry ? 'Approve retry' : isBulkCreate ? 'Approve import' : isCreate ? 'Approve create' : isArchive ? 'Approve archive' : 'Approve update',
       doneLabel: isBulkCreate ? 'Records imported' : isCreate ? 'Record created' : isArchive ? 'Record archived' : 'Record updated',
       sourceLabel: age ? `Source: ${proposerName} - ${age}` : `Source: ${proposerName}`,
       detailsLabel: isBulkCreate ? 'Import details' : 'Record details',
-      emptyDetails: 'The module manifest validates this change before it is applied.',
+      emptyDetails: 'The app’s file checks this change before it is applied.',
       badge: isArchive ? 'Archive' : moduleName || undefined,
       badgeTone: isArchive ? 'danger' : 'neutral',
       chips,
@@ -850,16 +850,16 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
     const resourceId = getStringParam(params, ['resource_id']);
     const taskIdentifier = getStringParam(params, ['task_identifier', 'task_id']);
     const resourceLabel = resourceId.startsWith('module_record:')
-      ? `Module record ${resourceId.slice('module_record:'.length, 'module_record:'.length + 8)}`
-      : resourceId || 'selected module record';
+      ? `App record ${resourceId.slice('module_record:'.length, 'module_record:'.length + 8)}`
+      : resourceId || 'selected app record';
     const unlink = action.action === 'module_record_task_unlink';
     pushChip(chips, resourceLabel, 'book');
     pushChip(chips, taskIdentifier || 'selected task', 'task');
     return {
       kind: 'module',
       icon: 'module',
-      eyebrow: unlink ? 'Module task unlink' : 'Module task link',
-      headline: unlink ? 'A module record will be unlinked from a task' : 'A module record will be linked to a task',
+      eyebrow: unlink ? 'Unlink a record from a task' : 'Link a record to a task',
+      headline: unlink ? 'An app record will be unlinked from a task' : 'An app record will be linked to a task',
       title: unlink
         ? `Unlink ${resourceLabel} from ${taskIdentifier || 'selected task'}`
         : `Link ${resourceLabel} to ${taskIdentifier || 'selected task'}`,
