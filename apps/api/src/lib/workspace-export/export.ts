@@ -80,7 +80,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
       for (const dataset of DATASETS) {
         if (dataset.scopes && !dataset.scopes.includes(scope.kind)) continue;
         const file = await writer.jsonl(dataset.path);
-        for await (const row of snapshot.rows(dataset.query(ctx))) {
+        for await (const row of snapshot.rows(dataset.query(ctx), { fetchLimit: dataset.fetchLimit })) {
           await file.write(row);
           const omission = dataset.omission?.(row);
           if (omission) await writer.omit(omission);

@@ -13,20 +13,27 @@
 //   keeps only the shares of a person's own notes. A document's folder and
 //   parent page are named only when the person can see them, as GET
 //   /api/documents/:id shows them (viewerDocumentColumns). History (version
-//   bodies and authors, and the files only older content shows) only for
-//   the documents they can edit, and never for a guest, whatever their role
-//   (spec 5.6; the 25 Nov consult).
+//   bodies and authors, and the files only older content shows) and who
+//   wrote a document (its created_by and last_edited_by) only for the
+//   documents they can edit, and never for a guest, whatever their role
+//   (spec 5.6; the 25 Nov consult; F17 fix round 1).
 // Nothing deleted is in either: not a document in a drive's trash, a deleted
-// folder or drive, or a document in a deleted drive (a folder's documents
-// are deleted with it), as no deleted note is (NOT_INCLUDED). A note, note
+// folder or drive, or a document in a deleted drive. Deleting a folder moves
+// its documents up to its parent folder or the drive root (deleteFolder,
+// lib/documents.ts), so they are exported there; the ones it held in the
+// trash stay out, as no deleted note is (NOT_INCLUDED). A note, note
 // folder or canvas the notes move turned into a document or folder counts as
 // deleted once that is (legacySourceLiveSql): deleting the document reaches
 // its old row too.
 //
 // Planning memory (document-access-planning-db.test.ts): a statement holds at
-// most one copy of the document check and one of the drive check. The
-// documents and drives a statement keeps are a MATERIALIZED CTE, each checked
-// once, then matched by id.
+// most one copy of each check it needs (the document check at view, at edit
+// for history and authors, and the drive check). The documents and drives a
+// statement keeps are a MATERIALIZED CTE, each checked once, then matched by
+// id.
+//
+// Rows that hold a whole document (documents and versions, and the Markdown
+// copies in render.ts) are fetched BODY_FETCH_LIMIT at a time.
 //
 // Like the access check, this module imports no database module: the export
 // runs on its own snapshot (workspace-export-db.test.ts).
@@ -34,7 +41,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { visibleDocumentIdSql, visibleDriveIdSql, type DocRole } from '../document-access-sql.js';
 import { documentAttachmentReadableSql, fileReadableThroughDocumentSql, type DocumentAttachmentRefs } from '../document-attachment-access.js';
 import { isGuestRole } from '../people-visibility-sql.js';
-import { col, type Dataset } from './datasets.js';
+import { BODY_FETCH_LIMIT, col, type Dataset } from './datasets.js';
 import { memberId, userKnown, workspaceAuthor, workspaceUser, type ExportContext } from './scope.js';
 
 /** A guest never gets a document's history, whatever their role on it. */
@@ -90,6 +97,24 @@ function exportedDocumentIdsSql(ctx: ExportContext, min: DocRole = 'view'): SQL 
 /** The documents whose history the export holds: every one, or those the person can edit; none for a guest. */
 function historyDocumentIdsSql(ctx: ExportContext): SQL {
   return historyForbidden(ctx) ? sql`SELECT NULL::text AS id WHERE false` : exportedDocumentIdsSql(ctx, 'edit');
+}
+
+/**
+ * Who wrote a document (`userRef`, a column of the document `documentId`):
+ * for the whole workspace the author as workspaceAuthor names them; for a
+ * person, only on a document they can edit (the `history_documents` CTE,
+ * historyDocumentIdsSql, which the statement must define), and never for a
+ * guest. Otherwise null.
+ */
+function documentAuthor(ctx: ExportContext, documentId: SQL, userRef: SQL): SQL {
+  if (!memberId(ctx)) return workspaceAuthor(ctx, userRef);
+  if (historyForbidden(ctx)) return sql`NULL::text`;
+  return sql`CASE WHEN ${documentId} IN (SELECT history_documents.id FROM history_documents) THEN ${workspaceAuthor(ctx, userRef)} END`;
+}
+
+/** The `history_documents` CTE documentAuthor reads, where it reads one: a person's export that isn't a guest's. */
+function authorsCte(ctx: ExportContext): SQL {
+  return memberId(ctx) && !historyForbidden(ctx) ? sql`, history_documents AS MATERIALIZED (${historyDocumentIdsSql(ctx)})` : sql``;
 }
 
 /** The ids of the drives the export holds: every live drive, or those the person can view. */
@@ -193,9 +218,11 @@ export const DRIVES_DOCUMENTS: readonly Dataset[] = [
   },
   {
     // The stored content as editor JSON (documents/<id>.md has it as Markdown). Never the live-editing state.
+    // Who wrote it only for an editor who isn't a guest (documentAuthor).
     path: 'data/documents.jsonl',
+    fetchLimit: BODY_FETCH_LIMIT,
     query: (ctx) => sql`WITH exported_documents AS MATERIALIZED (${exportedDocumentIdsSql(ctx)}),
-        exported_drives AS MATERIALIZED (${exportedDriveIdsSql(ctx)})
+        exported_drives AS MATERIALIZED (${exportedDriveIdsSql(ctx)})${authorsCte(ctx)}
       SELECT export_document.id, export_document.drive_id,
         CASE WHEN export_document.drive_id IN (SELECT exported_drives.id FROM exported_drives)
             AND EXISTS (SELECT 1 FROM doc_folders document_folder WHERE document_folder.id = export_document.folder_id
@@ -204,8 +231,8 @@ export const DRIVES_DOCUMENTS: readonly Dataset[] = [
         CASE WHEN export_document.parent_document_id IN (SELECT exported_documents.id FROM exported_documents)
           THEN export_document.parent_document_id END AS parent_document_id,
         export_document.title, export_document.icon, export_document.position, export_document.content_json, export_document.is_template,
-        ${workspaceAuthor(ctx, col('export_document.created_by'))} AS created_by,
-        ${workspaceAuthor(ctx, col('export_document.last_edited_by'))} AS last_edited_by,
+        ${documentAuthor(ctx, col('export_document.id'), col('export_document.created_by'))} AS created_by,
+        ${documentAuthor(ctx, col('export_document.id'), col('export_document.last_edited_by'))} AS last_edited_by,
         export_document.last_edited_at, export_document.created_at, export_document.updated_at
       FROM documents export_document
       WHERE export_document.org_id = ${ctx.orgId} AND export_document.id IN (SELECT exported_documents.id FROM exported_documents)
@@ -223,8 +250,10 @@ export const DRIVES_DOCUMENTS: readonly Dataset[] = [
   },
   {
     // Saved versions with their content, as GET /api/documents/:id/versions/:vid gives them to an editor. A
-    // version whose content was removed from history keeps only its details.
+    // version whose content was removed from history keeps only its details. Its authors are history too: a row
+    // is here only for an editor who isn't a guest.
     path: 'data/document_versions.jsonl',
+    fetchLimit: BODY_FETCH_LIMIT,
     query: (ctx) => sql`WITH history_documents AS MATERIALIZED (${historyDocumentIdsSql(ctx)})
       SELECT export_version.id, export_version.document_id, export_version.kind, export_version.name, export_version.title,
         CASE WHEN export_version.content_removed_at IS NULL THEN export_version.content_json END AS content_json,

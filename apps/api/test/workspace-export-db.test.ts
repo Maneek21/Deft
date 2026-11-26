@@ -1552,3 +1552,240 @@ test('deleting per the deletion decisions reaches both the old note and its docu
     await r.remove();
   }
 });
+
+// ---------------------------------------------------------------------------
+// F17 fix round 1: authors only for editors, small fetches for document bodies,
+// reserved file names, and the document side of deletion.
+
+/** Every file of an export as text, so a test can say an id or a text is nowhere in it. */
+const archiveText = (exported: Exported) => [...exported.files.entries()].map(([path, bytes]) => [path, bytes.toString('utf8')] as const);
+
+test('a viewer\'s, a commenter\'s and a guest\'s export names no document author', { skip }, async () => {
+  const { a } = world;
+  const r = new DocumentRows();
+  try {
+    const drive = await r.drive('F17 Authors', 'private');
+    await r.member(drive, { user: a.member }, 'edit');
+    const documentId = await r.document(drive, 'Authored page', docOf('authored text'), { createdBy: a.member });
+    await client.query('UPDATE documents SET last_edited_by = $2 WHERE id = $1', [documentId, a.owner]);
+    const version = await r.version(documentId, 'named', docOf('authored text'), { name: 'v1', createdBy: a.member });
+    await r.share(documentId, { user: a.other }, 'view');
+    await r.share(documentId, { user: world.shared }, 'comment');
+    await r.share(documentId, { user: a.guest }, 'edit');
+    const documentRow = async (scope: ExportOptions['scope']) => {
+      const exported = await runExport({ scope });
+      return { exported, row: rows(exported, 'data/documents.jsonl').find((row) => row.id === documentId)! };
+    };
+
+    // The whole workspace and an editor are told who created and last edited it, and who saved each version.
+    for (const scope of [{ kind: 'workspace' as const }, { kind: 'member' as const, member: a.member }]) {
+      const { exported, row } = await documentRow(scope);
+      assert.equal(row.created_by, a.member, JSON.stringify(scope));
+      assert.equal(row.last_edited_by, a.owner, JSON.stringify(scope));
+      assert.equal(rows(exported, 'data/document_versions.jsonl').find((candidate) => candidate.id === version)?.created_by, a.member);
+    }
+    // Anyone below edit, and a guest even with edit, gets the document without its authors or versions.
+    for (const [name, member] of [['a viewer', a.other], ['a commenter', world.shared], ['a guest with edit', a.guest]] as const) {
+      const { exported, row } = await documentRow({ kind: 'member', member });
+      assert.ok(row, `${name} has the document`);
+      assert.equal(row.created_by, null, `${name}: created_by`);
+      assert.equal(row.last_edited_by, null, `${name}: last_edited_by`);
+      assert.equal(row.last_edited_at === null, false, `${name}: when it was edited is still there`);
+      assert.deepEqual(rows(exported, 'data/document_versions.jsonl').filter((candidate) => candidate.document_id === documentId), [], `${name}: no versions`);
+      for (const [path, content] of archiveText(exported)) assert.ok(!content.includes(version), `${name}: ${path} names the version`);
+    }
+  } finally {
+    await r.remove();
+  }
+});
+
+test('the documents, their versions and their Markdown copies are fetched at most 8 rows at a time', { skip }, async () => {
+  const { BODY_FETCH_LIMIT } = await import('../src/lib/workspace-export/datasets.js');
+  const { writeDocumentMarkdown } = await import('../src/lib/workspace-export/render.js');
+  const { ArchiveWriter } = await import('../src/lib/workspace-export/writer.js');
+  assert.equal(BODY_FETCH_LIMIT, 8);
+  // Exactly the datasets whose rows hold a whole document have the small limit; every other keeps the snapshot's 500.
+  assert.deepEqual(DATASETS.filter((dataset) => dataset.fetchLimit !== undefined).map((dataset) => [dataset.path, dataset.fetchLimit]),
+    [['data/documents.jsonl', 8], ['data/document_versions.jsonl', 8]]);
+
+  // The snapshot honours the limit, still reads every row, and never raises its own batch.
+  const seen: number[] = [];
+  const snapshot = await Snapshot.open({ databaseUrl: databaseUrl!, onFetch: (count) => seen.push(count) });
+  try {
+    const values: number[] = [];
+    for await (const row of snapshot.rows<{ g: number }>(sql`SELECT g FROM generate_series(1, 19) g`, { fetchLimit: BODY_FETCH_LIMIT })) values.push(row.g);
+    assert.equal(values.length, 19);
+    assert.deepEqual(seen, [8, 8, 3]);
+    seen.length = 0;
+    for await (const _row of snapshot.rows(sql`SELECT g FROM generate_series(1, 19) g`)) { /* the snapshot's own batch */ }
+    assert.deepEqual(seen, [19]);
+    await assert.rejects((async () => { for await (const _row of snapshot.rows(sql`SELECT 1`, { fetchLimit: 0 })) { /* refused */ } })(), /fetch limit/);
+  } finally {
+    await snapshot.close();
+  }
+
+  // In an export: twelve documents, each with a version and a share.
+  const { a } = world;
+  const r = new DocumentRows();
+  try {
+    const drive = await r.drive('F17 Batches', 'private');
+    await r.member(drive, { user: a.member }, 'edit');
+    for (let at = 0; at < 12; at += 1) {
+      const documentId = await r.document(drive, `Batch page ${at}`, docOf(`batch text ${at}`));
+      await r.version(documentId, 'auto', docOf(`batch version ${at}`));
+      await r.share(documentId, { user: a.other }, 'view');
+    }
+    const fetches = new Map<string, number[]>();
+    let current = 0;
+    await runExport({
+      scope: { kind: 'workspace' },
+      onFetch: (count) => {
+        const path = DATASETS[current]?.path ?? 'after the datasets';
+        fetches.set(path, [...(fetches.get(path) ?? []), count]);
+      },
+      afterDataset: async () => { current += 1; },
+    });
+    for (const path of ['data/documents.jsonl', 'data/document_versions.jsonl']) {
+      const batches = fetches.get(path) ?? [];
+      assert.ok(batches.every((count) => count <= 8), `${path}: ${batches.join(', ')}`);
+      assert.ok(batches.includes(8) && batches.reduce((sum, count) => sum + count, 0) >= 12, `${path} read in batches of 8: ${batches.join(', ')}`);
+    }
+    assert.ok((fetches.get('data/document_shares.jsonl') ?? []).some((count) => count >= 12), 'shares keep the large batch');
+  } finally {
+    await r.remove();
+  }
+
+  // The Markdown copies ask the snapshot for the same limit.
+  const asked: Array<number | undefined> = [];
+  const stub = { rows: async function* (_query: unknown, options?: { fetchLimit?: number }) { asked.push(options?.fetchLimit); } };
+  const writer = await ArchiveWriter.create(join(scratch, `markdown-limit-${++counter}`));
+  await writeDocumentMarkdown(stub as unknown as Snapshot, writer, { orgId: world.a.orgId, scope: { kind: 'workspace' } });
+  await writer.finish(async () => undefined);
+  assert.deepEqual(asked, [8]);
+});
+
+test('a document id the archive refuses as a file name is hashed, never an aborted export', async () => {
+  const { documentMarkdownPath, writeDocumentMarkdown } = await import('../src/lib/workspace-export/render.js');
+  const { ArchiveWriter, assertArchivePath } = await import('../src/lib/workspace-export/writer.js');
+  const plain = randomUUID();
+  assert.equal(documentMarkdownPath(plain), `documents/${plain}.md`);
+  const odd = ['con', 'NUL', 'COM1', 'lpt9', 'aux', '..', '../../etc/passwd', 'a/b', '.hidden', 'name.', 'x'.repeat(300), ''];
+  const paths = odd.map((id) => documentMarkdownPath(id));
+  for (const [index, path] of paths.entries()) {
+    assert.match(path, /^documents\/h\.[0-9a-f]{64}\.md$/, `${JSON.stringify(odd[index])} is hashed`);
+    assert.doesNotThrow(() => assertArchivePath(path));
+  }
+  assert.equal(new Set(paths).size, paths.length, 'each id has its own file');
+  // Written for real: the export goes on and every file is where documentMarkdownPath says.
+  const root = await mkdtemp(join(tmpdir(), 'deft-export-names-'));
+  try {
+    const writer = await ArchiveWriter.create(join(root, 'archive'));
+    const stub = { rows: async function* () {
+      for (const id of [plain, ...odd]) yield { id, title: `Page ${id.slice(0, 8)}`, content_json: docOf('odd id text') };
+    } };
+    assert.equal(await writeDocumentMarkdown(stub as unknown as Snapshot, writer, { orgId: 'org', scope: { kind: 'workspace' } }), odd.length + 1);
+    await writer.finish(async () => undefined);
+    for (const id of [plain, ...odd]) {
+      const text = await readFile(join(root, 'archive', ...documentMarkdownPath(id).split('/')), 'utf8');
+      assert.match(text, /^odd id text$/m, JSON.stringify(id));
+    }
+    const listed = await readdir(join(root, 'archive', 'documents'));
+    assert.equal(listed.length, odd.length + 1, 'nothing written outside documents/ or twice');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a deleted secondary page of a split document isn\'t exported, while its live main page is', { skip }, async () => {
+  const { softDeleteDocument } = await import('../src/lib/documents.js');
+  const { a } = world;
+  const r = new DocumentRows();
+  try {
+    // A long note as the move splits it: a main page and its parts as sub-pages.
+    const drive = await r.drive('F17 Split', 'private');
+    await r.member(drive, { user: a.member }, 'edit');
+    await r.member(drive, { user: a.other }, 'view');
+    const main = await r.document(drive, 'Long note', docOf('F17 main part'));
+    const second = await r.document(drive, 'Long note (part 2)', docOf('F17-SECOND-PART-TEXT'), { parent: main });
+    const third = await r.document(drive, 'Long note (part 3)', docOf('F17 third part'), { parent: main });
+    const secondVersion = await r.version(second, 'moved', docOf('F17-SECOND-PART-TEXT'));
+    const secondImage = await r.image(second, true);
+    await softDeleteDocument({ orgId: a.orgId, userId: a.member, documentId: second });
+    for (const scope of [{ kind: 'workspace' as const }, { kind: 'member' as const, member: a.member }, { kind: 'member' as const, member: a.other }]) {
+      const exported = await runExport({ scope });
+      const label = JSON.stringify(scope);
+      assert.deepEqual(idsIn(exported, 'data/documents.jsonl', [main, second, third]), [main, third].sort(), label);
+      assert.ok(exported.files.has(`documents/${main}.md`) && exported.files.has(`documents/${third}.md`), label);
+      assert.equal(rows(exported, 'data/documents.jsonl').find((row) => row.id === third)!.parent_document_id, main, label);
+      for (const [path, content] of archiveText(exported)) {
+        assert.ok(!content.includes('F17-SECOND-PART-TEXT'), `${label}: ${path} holds the deleted part`);
+        for (const id of [second, secondVersion, secondImage]) assert.ok(!content.includes(id), `${label}: ${path} names ${id}`);
+      }
+    }
+  } finally {
+    await r.remove();
+  }
+});
+
+test('a document in a deleted drive isn\'t exported', { skip }, async () => {
+  const { a } = world;
+  const r = new DocumentRows();
+  try {
+    const drive = await r.drive('F17 Drive to delete', 'private');
+    await r.member(drive, { user: a.member }, 'edit');
+    const folder = await r.folder(drive, 'In the drive');
+    const documentId = await r.document(drive, 'Page in the drive', docOf('F17-DELETED-DRIVE-TEXT'), { folder });
+    await r.share(documentId, { user: a.other }, 'view');
+    const version = await r.version(documentId, 'named', docOf('F17-DELETED-DRIVE-TEXT'), { name: 'v1' });
+    const image = await r.image(documentId, true);
+    const scopes = [{ kind: 'workspace' as const }, { kind: 'member' as const, member: a.member }, { kind: 'member' as const, member: a.other }];
+    for (const scope of scopes) {
+      assert.deepEqual(idsIn(await runExport({ scope }), 'data/documents.jsonl', [documentId]), [documentId], `before: ${JSON.stringify(scope)}`);
+    }
+    // As DELETE /api/drives/:id leaves it: the drive soft-deleted, its documents untouched.
+    await client.query('UPDATE drives SET is_deleted = true, deleted_at = now(), updated_at = now() WHERE id = $1', [drive]);
+    for (const scope of scopes) {
+      const exported = await runExport({ scope });
+      for (const [path, content] of archiveText(exported)) {
+        assert.ok(!content.includes('F17-DELETED-DRIVE-TEXT'), `${JSON.stringify(scope)}: ${path} holds the deleted drive's text`);
+        for (const id of [drive, folder, documentId, version, image]) assert.ok(!content.includes(id), `${JSON.stringify(scope)}: ${path} names ${id}`);
+      }
+    }
+  } finally {
+    await r.remove();
+  }
+});
+
+test('a deleted doc folder\'s documents aren\'t exported from it: those in its trash stay out, live ones where the delete moved them', { skip }, async () => {
+  const { deleteFolder, softDeleteDocument } = await import('../src/lib/documents.js');
+  const { a } = world;
+  const r = new DocumentRows();
+  try {
+    const drive = await r.drive('F17 Folders', 'private');
+    await r.member(drive, { user: a.member }, 'edit');
+    const folder = await r.folder(drive, 'Folder to delete');
+    const inner = randomUUID();
+    await client.query(`INSERT INTO doc_folders (id, org_id, drive_id, parent_folder_id, name, created_by) VALUES ($1, $2, $3, $4, 'Inner', $5)`,
+      [inner, a.orgId, drive, folder, a.member]);
+    const live = await r.document(drive, 'Live page in the folder', docOf('F17 live page'), { folder });
+    const trashed = await r.document(drive, 'Trashed page in the folder', docOf('F17-TRASHED-IN-FOLDER-TEXT'), { folder });
+    const trashedVersion = await r.version(trashed, 'auto', docOf('F17-TRASHED-IN-FOLDER-TEXT'));
+    await softDeleteDocument({ orgId: a.orgId, userId: a.member, documentId: trashed });
+    // The product's folder delete (DELETE /api/doc-folders/:id): the folder is soft-deleted, and what it held moves up.
+    await deleteFolder({ orgId: a.orgId, userId: a.member, folderId: folder });
+    for (const scope of [{ kind: 'workspace' as const }, { kind: 'member' as const, member: a.member }]) {
+      const exported = await runExport({ scope });
+      const label = JSON.stringify(scope);
+      assert.deepEqual(idsIn(exported, 'data/doc_folders.jsonl', [folder, inner]), [inner], `${label}: only the inner folder`);
+      assert.equal(rows(exported, 'data/doc_folders.jsonl').find((row) => row.id === inner)!.parent_folder_id, null, `${label}: moved to the root`);
+      assert.deepEqual(idsIn(exported, 'data/documents.jsonl', [live, trashed]), [live], label);
+      assert.equal(rows(exported, 'data/documents.jsonl').find((row) => row.id === live)!.folder_id, null, `${label}: the live page moved to the root`);
+      for (const [path, content] of archiveText(exported)) {
+        assert.ok(!content.includes('F17-TRASHED-IN-FOLDER-TEXT'), `${label}: ${path} holds the trashed page`);
+        for (const id of [folder, trashed, trashedVersion]) assert.ok(!content.includes(id), `${label}: ${path} names ${id}`);
+      }
+    }
+  } finally {
+    await r.remove();
+  }
+});

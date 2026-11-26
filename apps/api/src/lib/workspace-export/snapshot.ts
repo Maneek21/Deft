@@ -90,18 +90,26 @@ export class Snapshot {
     return (await this.client.query<T>(sql, params)).rows;
   }
 
-  /** Streams a query's rows in batches through a server-side cursor. */
-  async *rows<T extends Record<string, unknown>>(query: SQL): AsyncGenerator<T> {
+  /**
+   * Streams a query's rows in batches through a server-side cursor.
+   * `fetchLimit` lowers the batch for a query whose rows each hold a whole
+   * document (BODY_FETCH_LIMIT, datasets.ts), so only that many are held at
+   * once; it never raises it.
+   */
+  async *rows<T extends Record<string, unknown>>(query: SQL, options: Readonly<{ fetchLimit?: number }> = {}): AsyncGenerator<T> {
+    const { fetchLimit } = options;
+    if (fetchLimit !== undefined && (!Number.isSafeInteger(fetchLimit) || fetchLimit < 1)) throw new Error('Invalid fetch limit');
+    const perFetch = Math.min(this.batchSize, fetchLimit ?? this.batchSize);
     const { sql, params } = dialect.sqlToQuery(query);
     const cursor = `deft_export_${++this.cursorCounter}`;
     await this.client.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${sql}`, params);
     let failed = false;
     try {
       for (;;) {
-        const batch = await this.client.query<T>(`FETCH ${this.batchSize} FROM ${cursor}`);
+        const batch = await this.client.query<T>(`FETCH ${perFetch} FROM ${cursor}`);
         this.onFetch?.(batch.rows.length);
         for (const row of batch.rows) yield row;
-        if (batch.rows.length < this.batchSize) break;
+        if (batch.rows.length < perFetch) break;
       }
     } catch (error) {
       failed = true;

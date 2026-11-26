@@ -16,11 +16,21 @@ export type Dataset = Readonly<{
   /** Datasets that only make sense for one scope. */
   scopes?: readonly ('workspace' | 'member')[];
   query: (ctx: ExportContext) => SQL;
+  /** Rows fetched per round trip, below the snapshot's batch: BODY_FETCH_LIMIT for rows that each hold a whole document. */
+  fetchLimit?: number;
   /** Something in this row that could not be included, recorded in omissions.jsonl. */
   omission?: (row: Record<string, unknown>) => Omission | null;
 }>;
 
 export const col = (ref: string) => sql.raw(ref);
+
+/**
+ * Rows per fetch for datasets whose rows each hold a whole document body
+ * (documents and their saved versions, and the Markdown copies): a stored
+ * document may be up to 2 MB, so a batch of the snapshot's usual 500 could
+ * hold a gigabyte. Every other dataset keeps the snapshot's batch.
+ */
+export const BODY_FETCH_LIMIT = 8;
 
 export const PEOPLE_AND_SPACES: readonly Dataset[] = [
   {

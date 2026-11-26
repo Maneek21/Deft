@@ -201,8 +201,10 @@ An attachment is left out, with its reason in `omissions.jsonl` and
 - the documents they can open, the drives they can view and those drives'
   folders. A document's folder or parent page is named only when they can see
   it. Of drive members and shares, only the rows that name them;
-- the saved versions of the documents they can edit, and files that only
-  older versions show. Never for a guest, whatever their role;
+- the saved versions of the documents they can edit, files that only older
+  versions show, and who created and last edited a document (`created_by`
+  and `last_edited_by`, null otherwise). Never for a guest, whatever their
+  role;
 - their own calendar;
 - installed modules, which guests do not see and which nobody sees while
   disabled.

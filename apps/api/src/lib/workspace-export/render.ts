@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { jsonToMarkdown } from '@deft/doc-schema';
 import { archiveFileName, visibleFilesSql } from './attachments.js';
-import { col } from './datasets.js';
+import { BODY_FETCH_LIMIT, col } from './datasets.js';
 import { exportableMessage } from './datasets-content.js';
 import { documentMarkdownQuery } from './datasets-documents.js';
 import type { ExportManifest } from './format.js';
 import { spaceReadable, type ExportContext } from './scope.js';
 import type { Snapshot } from './snapshot.js';
-import type { ArchiveFile, ArchiveWriter } from './writer.js';
+import { assertArchivePath, type ArchiveFile, type ArchiveWriter } from './writer.js';
 
 /** Escapes text for HTML. Content is always shown as text, never as markup. */
 export function escapeHtml(value: unknown): string {
@@ -108,16 +108,30 @@ ${manifest.attachments.single_workspace_declared ? '' : `<p><strong>${escapeHtml
   ].join('\n'));
 }
 
-/** documents/<id>.md. An id that isn't a plain name is hashed (`h.`), as attachment folders are. */
+/**
+ * documents/<id>.md. An id that isn't a plain name, or whose file name the
+ * archive refuses (a name Windows reserves, such as `con.md` or `COM1.md`;
+ * assertArchivePath), is hashed instead (`h.`, which no plain id can start
+ * with), so one odd id never stops the export.
+ */
 export function documentMarkdownPath(id: string): string {
-  return `documents/${/^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : `h.${createHash('sha256').update(id).digest('hex')}`}.md`;
+  const plain = `documents/${id}.md`;
+  if (/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    try {
+      assertArchivePath(plain);
+      return plain;
+    } catch {
+      // A reserved name: hashed below.
+    }
+  }
+  return `documents/h.${createHash('sha256').update(id).digest('hex')}.md`;
 }
 
 type DocumentMarkdownRow = { id: string; title: string; content_json: Parameters<typeof jsonToMarkdown>[0] };
 
 /**
- * documents/<id>.md for every exported document, read from the snapshot as
- * it streams: its title as the first heading, then its content as Markdown
+ * documents/<id>.md for every exported document, read from the snapshot
+ * BODY_FETCH_LIMIT rows at a time: its title as the first heading, then its content as Markdown
  * (jsonToMarkdown, @deft/doc-schema). An image of a Deft file is written as
  * `deft-file:<file id>`, which files.jsonl lists. A document whose content
  * can't be written as Markdown is listed in omissions.jsonl; its JSON is in
@@ -125,7 +139,7 @@ type DocumentMarkdownRow = { id: string; title: string; content_json: Parameters
  */
 export async function writeDocumentMarkdown(snapshot: Snapshot, writer: ArchiveWriter, ctx: ExportContext): Promise<number> {
   let written = 0;
-  for await (const row of snapshot.rows<DocumentMarkdownRow>(documentMarkdownQuery(ctx))) {
+  for await (const row of snapshot.rows<DocumentMarkdownRow>(documentMarkdownQuery(ctx), { fetchLimit: BODY_FETCH_LIMIT })) {
     let body: string;
     try {
       body = jsonToMarkdown(row.content_json);
