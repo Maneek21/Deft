@@ -12,7 +12,7 @@ import { NewDriveDialog } from './new-drive-dialog';
 export { DRIVES_KEY, driveTreeKey };
 
 export function useDrives() {
-  return useSWR<{ drives: DriveListItem[] }>(DRIVES_KEY, fetchJson, { revalidateOnFocus: true });
+  return useSWR<{ drives: DriveListItem[]; notes_move_pending?: boolean }>(DRIVES_KEY, fetchJson, { revalidateOnFocus: true });
 }
 
 export function useDriveTree(driveId: string | null) {

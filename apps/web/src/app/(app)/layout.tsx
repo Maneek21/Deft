@@ -16,7 +16,7 @@ import { signedOutDestination } from '@/lib/two-step';
 import { getSocket } from '@/lib/socket';
 import { onMemberJoined } from '@/lib/public-spaces';
 import { applyPresenceSnapshot, applyPresenceUpdate } from '@/lib/presence-state';
-import { openDirectMessage } from '@/lib/quick-actions';
+import { createDocumentAndOpen, openDirectMessage } from '@/lib/quick-actions';
 import { useHuddle } from '@/hooks/use-huddle';
 import { useAudioLevels } from '@/hooks/use-audio-levels';
 import { HuddleOverlay } from '@/components/huddle-overlay';
@@ -368,7 +368,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               case 't': router.push('/tasks'); break;
               case 'a': router.push('/inbox?tab=approvals'); break;
               case 's': router.push('/settings'); break;
-              case 'n': router.push('/notes'); break;
+              case 'n': void createDocumentAndOpen(api, router); break;
               case 'l': router.push('/calendar'); break;
               case 'k': router.push('/knowledge'); break;
               case 'r': router.push('/reminders'); break;

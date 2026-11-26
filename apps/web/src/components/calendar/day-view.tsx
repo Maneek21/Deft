@@ -92,7 +92,7 @@ export function DayView({
           ))}
 
           {allNotes.map((n) => (
-            <Link key={n.id} href={`/notes?id=${n.id}`}
+            <Link key={n.id} href={`/d/${n.id}`}
               className="flex items-center gap-2 py-1 hover:opacity-80">
               <span className="text-[11px]">{n.icon || '\uD83D\uDCC4'}</span>
               <span className="text-[12px]" style={{ color: 'var(--text-primary)' }}>

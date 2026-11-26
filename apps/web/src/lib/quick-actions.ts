@@ -64,14 +64,30 @@ export function openCreateSpace() {
 }
 
 /**
- * Create a private daily-note and navigate to it. Returns true on success.
+ * Create a document in the caller's My drive and open it at /d/<id>. The one
+ * path the `g n` shortcut, the palette, quick actions and the chat `note`
+ * command share. Returns the new document's id, or null when it failed.
  */
-export async function createNoteAndOpen(api: Api, router: Router, title = 'Untitled'): Promise<boolean> {
-  const res = await api.post('/api/daily-notes', { title, content: '' });
-  if (!res.ok) return false;
-  const note = await res.json() as { id: string };
-  router.push(`/notes?id=${note.id}`);
-  return true;
+export async function createDocumentAndOpen(
+  api: Pick<Api, 'post'>,
+  router: Pick<Router, 'push'>,
+  title?: string,
+): Promise<string | null> {
+  try {
+    const mine = await api.post('/api/drives/mine');
+    if (!mine.ok) return null;
+    const drive = (await mine.json().catch(() => null) as { drive?: { id?: string } } | null)?.drive;
+    if (!drive?.id) return null;
+    const trimmed = title?.trim();
+    const res = await api.post('/api/documents', { drive_id: drive.id, ...(trimmed ? { title: trimmed } : {}) });
+    if (!res.ok) return null;
+    const id = (await res.json().catch(() => null) as { document?: { id?: string } } | null)?.document?.id;
+    if (!id) return null;
+    router.push(`/d/${id}`);
+    return id;
+  } catch {
+    return null;
+  }
 }
 
 /**

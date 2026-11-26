@@ -13,7 +13,7 @@ import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
-import { openDeftyDm } from '@/lib/quick-actions';
+import { createDocumentAndOpen, openDeftyDm } from '@/lib/quick-actions';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { ROOM_PENDING_APPROVALS_REFRESH_MS, roomPendingApprovalsRequest, useRoomPendingApprovalsRefresh } from '@/hooks/use-room-pending-approvals-refresh';
@@ -2593,15 +2593,10 @@ export function SpaceChat({
                 break;
 
               case 'note': {
-                const res = await api.post('/api/daily-notes', { title: args || 'Untitled', content: '' });
-                if (res.ok) {
-                  const note = await res.json();
-                  setCmdToast(`Note "${args || 'Untitled'}" created`);
-                  // Navigate to the newly created note
-                  setTimeout(() => router.push(`/notes?id=${note.id}`), 500);
-                } else {
-                  throw new Error(await apiErrorMessage(res, 'Failed to create note'));
-                }
+                // A document in My drive, opened at /d/<id> (F16).
+                const id = await createDocumentAndOpen(api, router, args || undefined);
+                if (!id) throw new Error('Failed to create document');
+                setCmdToast(`Document "${args || 'Untitled'}" created`);
                 break;
               }
             }

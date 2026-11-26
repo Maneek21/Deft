@@ -989,7 +989,7 @@ export function Sidebar({
     if (pathname.startsWith('/drive') || pathname.startsWith('/d/')) {
       return <DriveSidebarContent role={user?.role} pathname={pathname} onNav={handleNav} />;
     }
-    if (pathname.startsWith('/notes') || pathname.startsWith('/modules') || pathname.startsWith('/dashboard')) {
+    if (pathname.startsWith('/modules') || pathname.startsWith('/dashboard')) {
       return null;
     }
     if (pathname.startsWith('/settings')) {

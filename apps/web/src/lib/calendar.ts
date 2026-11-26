@@ -18,7 +18,8 @@ export type CalReminder = { id: string; message: string; remind_at: string; is_s
 
 export type DayBucket = { tasks: CalTask[]; events: CalEvent[]; notes: CalNote[]; reminders: CalReminder[] };
 
-export type CalendarData = { tasks: CalTask[]; events: CalEvent[]; notes: CalNote[]; reminders?: CalReminder[] };
+/** `documents` are the notes of the day (documents since the move, F16); `notes` stays for an older API. */
+export type CalendarData = { tasks: CalTask[]; events: CalEvent[]; documents?: CalNote[]; notes?: CalNote[]; reminders?: CalReminder[] };
 
 export type CalendarView = 'month' | 'week' | 'day';
 
@@ -91,7 +92,7 @@ export function bucketByDay(data: CalendarData): Map<string, DayBucket> {
   for (const e of data.events) {
     ensure(dateKeyInUserTimezone(e.timestamp)).events.push(e);
   }
-  for (const n of data.notes) {
+  for (const n of data.documents ?? data.notes ?? []) {
     ensure(dateKeyInUserTimezone(n.created_at)).notes.push(n);
   }
   for (const r of (data.reminders || [])) {

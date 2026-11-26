@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { legacyNotesHref } from '@/lib/legacy-notes-redirect';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Plus, X, Loader2, Tag as TagIcon, MessageSquare, CheckSquare, Mic,
@@ -19,7 +20,7 @@ type Tag = {
 
 type ResolvedEntity = {
   id: string;
-  entity_type: 'message' | 'task' | 'clip' | 'daily_note' | 'note';
+  entity_type: 'message' | 'task' | 'clip' | 'daily_note' | 'note' | 'document';
   entity_id: string;
   title: string;
   status?: string;
@@ -122,8 +123,10 @@ export default function TagsPage() {
       router.push(`/chat?space=${entity.space_id}&message=${entity.entity_id}`);
     } else if (entity.entity_type === 'message') {
       router.push('/chat');
+    } else if (entity.entity_type === 'document') {
+      router.push(`/d/${entity.entity_id}`);
     } else if (entity.entity_type === 'note' || entity.entity_type === 'daily_note') {
-      router.push(`/notes?id=${entity.entity_id}`);
+      router.push(legacyNotesHref(entity.entity_id));
     }
   };
 

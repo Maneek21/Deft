@@ -17,7 +17,7 @@ import { useTheme } from './theme-provider';
 import {
   openTaskQuickCreate,
   openCreateSpace,
-  createNoteAndOpen,
+  createDocumentAndOpen,
   toggleDnd,
   setStatusFromArgs,
   createReminderFromArgs,
@@ -122,9 +122,9 @@ export function CommandPalette() {
       action: () => { openTaskQuickCreate(router, pathname || ''); close(); },
     },
     {
-      label: 'New note',
+      label: 'New document',
       icon: FileText,
-      action: async () => { await createNoteAndOpen(api, router); close(); },
+      action: async () => { await createDocumentAndOpen(api, router); close(); },
     },
     {
       label: 'New space',
@@ -363,7 +363,7 @@ export function CommandPalette() {
           router.push(slug ? `/knowledge?slug=${slug}` : '/knowledge');
           close();
         } else if (selected.type === 'privateNote') {
-          router.push(`/notes?id=${selected.item.id}`);
+          router.push(`/d/${selected.item.id}`);
           close();
         }
       }
@@ -730,7 +730,7 @@ export function CommandPalette() {
                       color: 'var(--on-surface)',
                       transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
                     }}
-                    onClick={() => { router.push(`/notes?id=${item.id}`); close(); }}
+                    onClick={() => { router.push(`/d/${item.id}`); close(); }}
                   >
                     <FileText size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
                     <span className="text-[13px] flex-1 truncate">{item.title}</span>

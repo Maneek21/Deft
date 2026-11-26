@@ -191,7 +191,7 @@ export function DayDetailPanel({
               {notes.map((n) => (
                 <Link
                   key={n.id}
-                  href={`/notes?id=${n.id}`}
+                  href={`/d/${n.id}`}
                   className="flex items-center gap-2 rounded-2xl border p-3 transition-colors hover:opacity-90"
                   style={{ borderColor: 'var(--border-default)', background: 'var(--surface-container)' }}
                 >

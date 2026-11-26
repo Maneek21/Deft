@@ -14,7 +14,7 @@ function CalendarWidget(_props: WidgetProps) {
   const { widgetContext } = useDashboardData();
   const today = toDateKey(new Date());
   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const [calData, setCalData] = useState<{ tasks: CalTask[]; events: CalEvent[]; notes: CalNote[] } | null>(null);
+  const [calData, setCalData] = useState<{ tasks: CalTask[]; events: CalEvent[]; documents?: CalNote[]; notes?: CalNote[] } | null>(null);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
 
   const grid = buildMonthGrid(month);

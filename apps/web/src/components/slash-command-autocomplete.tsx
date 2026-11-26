@@ -21,7 +21,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'unmute', usage: '/unmute', description: 'Unmute this channel', icon: Bell, needsArgs: false },
   { name: 'dnd', usage: '/dnd', description: 'Toggle Do Not Disturb', icon: Moon, needsArgs: false },
   { name: 'search', usage: '/search [query]', description: 'Search everything', icon: Search, needsArgs: false },
-  { name: 'note', usage: '/note [title]', description: 'Create a new note', icon: FileText, needsArgs: true },
+  { name: 'note', usage: '/note [title]', description: 'Create a new document in My drive', icon: FileText, needsArgs: true },
 ];
 
 export function SlashCommandAutocomplete({

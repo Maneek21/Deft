@@ -41,6 +41,9 @@ export default function DrivePage() {
         ) : undefined}
       />
       <div className="px-4 pb-8 flex flex-col gap-6 max-w-3xl">
+        {data?.notes_move_pending ? (
+          <p role="status" className="text-[0.875rem]" style={{ color: "var(--on-surface-variant)" }}>Notes move when the workspace resumes.</p>
+        ) : null}
         {error ? (
           <p role="alert" className="text-[0.875rem]" style={{ color: 'var(--on-surface-variant)' }}>Could not load drives.</p>
         ) : isLoading ? (
