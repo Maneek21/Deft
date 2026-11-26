@@ -10,59 +10,6 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-### Note backlinks find tasks whose project key holds a digit
-
-- **Fixed.** A note or message that names a task by its key now links to that task when
-  the project's prefix holds a digit, such as `R9G-1` or `RC8-12`. Before, the key was
-  read from its last letters (`R9G-1` as `G-1`), so the task got no backlink, or a task in
-  another project whose prefix matched those letters got it instead.
-- **Same rule as task search.** A key is matched whole, the way task search matches it
-  since 153, so a zero-padded key (`R9G-01`) links nothing. A prefix may also start with
-  a digit (`9RC-1`). A key must stand as its own word (`preR9G-1` links nothing), and a
-  note links only the task whose key is written exactly, with its dash. A note still
-  links only tasks its author may see.
-
-### An unknown task priority or status is refused, not a server error
-
-- **Fixed.** Creating a task with a priority other than `p0`, `p1`, `p2` or `p3` (for
-  example `urgent`) through `POST /api/tasks`, `POST /api/projects/:id/tasks` or
-  `POST /api/tasks/project/:projectId` now answers 400 `VALIDATION_ERROR` and creates
-  nothing. Before, it answered 500. A missing or `null` priority is still `p2`.
-- **The same rule everywhere.** Editing a task, bulk edits, the MCP `task_create`,
-  `task_update` and `task_bulk_update` tools (personal and agent employee) and Defty's
-  task tools all check a priority the same way, on the task and on each subtask. An
-  unknown priority is refused with each tool's usual error. Before, MCP and Defty task
-  creation quietly used `p2` instead, an agent employee's `task_update` quietly skipped
-  it, and the personal MCP `task_update` failed with a database error.
-- **Status too.** An unknown `status` on those three create routes (for example `open`;
-  valid values are `backlog`, `todo`, `in_progress`, `in_review`, `done` and `cancelled`)
-  now answers 400 `VALIDATION_ERROR` instead of 500, and Defty's `update_task_status`
-  refuses it instead of failing with a database error. A missing or `null` status is
-  still `backlog`.
-
-### Images in a note load for everyone who can read the note
-
-- **Fixed.** An image in a note now loads for everyone who can open that note: people it
-  is shared with, members of its space, and, for a note visible to the whole workspace,
-  its owners, admins and members. Before, only the person who uploaded the image could
-  load it; everyone else saw "Image is unavailable".
-- **Nothing else widens.** Only images the note's author uploaded count. A file no note
-  you can read shows still answers as unknown, guests follow the note rule (they see the
-  images of notes shared with them and of notes in their spaces), and a deleted note's
-  images load only for the person who uploaded them.
-- **Removed images are deleted.** An image you take out of a note is deleted 24 hours
-  later, once no other note of yours shows it (later still if a scheduled message you
-  have not sent yet carries it). Before, it was kept for ever.
-- **Older notes.** When the server starts, it records the images that notes saved before
-  this release show, so their readers can load them too (and an image still waiting to
-  be cleaned up is kept). Only images the note's author uploaded count; an upload from
-  before Deft checked file types is not included and still loads only for its uploader.
-- **Database.** Upgrade `0.3.0-preview.154` adds one table, `note_files` (which note shows
-  which uploaded file). It only adds; `pnpm db:upgrade` applies it and `pnpm db:push-full`
-  creates it on a fresh install.
-- **Workspace export.** A person's export now includes the images of the notes they can
-  read, the same files the app lets them load.
-
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.
@@ -82,6 +29,79 @@ keep pinning alpha.43. Names and plan are listed in the Kit README and
   at 1,277 (it may only be lowered), each exception's `milestone` now starts with
   its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
   the counts per milestone. No finding changed.
+
+## [0.3.0-preview.154] — 2026-11-26 (prerelease)
+
+Changes since `v0.3.0-preview.153`: #603, #607 and #608. Release scope `core` (no Hermes
+compatibility claim). Built from the branch `release/v0.3.0-preview.154`; nothing merged
+into master after #608 is in this release.
+
+Upgrade notes:
+
+- **One migration, additive: `0.3.0-preview.154`.** It adds one table, `note_files` (which
+  note shows which uploaded file), with an index; it changes and deletes nothing.
+  Schema head moves from `0.3.0-preview.149` to `0.3.0-preview.154`. The release's
+  `upgrade` service (`pnpm db:upgrade` from a source checkout) applies it; a fresh install
+  (`pnpm db:push-full`) creates it. Stop Deft and back up the database and the uploads
+  volume first, as for every upgrade.
+- **Existing note images are covered.** The migration itself inserts no rows. When the
+  server starts, it records the images in notes saved before this release (see "Note
+  images" below). It runs on every start, does nothing twice, and the hourly clean-up of
+  unattached uploads waits until it has succeeded.
+- **Rolling back.** Upgrades are forward-only. To return to `.153`, stop Deft, restore the
+  pre-upgrade database and uploads backups, and run the previous image digest. `.153`'s
+  `upgrade` service refuses a database that already has `.154` ("newer than this Deft
+  build"). An image removed from a note on `.154` is deleted 24 hours later and is only
+  in a backup made before that.
+- No setting is added, changed or removed. Author Kit stays `0.1.0-alpha.43`.
+
+Note images (#603). On `.153` and earlier, an image in a note loaded only for the person
+who pasted it; everyone else saw "Image is unavailable".
+
+- **Now.** An image in a note loads for everyone who can open that note: people it is
+  shared with, members of its space, and, for a note visible to the whole workspace, its
+  owners, admins and members.
+- **Nobody else.** Only images the note's author uploaded count. A file that no note you
+  can read shows still answers as unknown. Guests follow the note rule: they see the images
+  of notes shared with them and of notes in their spaces. A deleted note's images load
+  only for the person who uploaded them.
+- **Notes saved before this release.** Their images are covered too: the server records
+  them when it starts (an image still waiting to be cleaned up is kept). As on a save, only
+  images the note's author uploaded count. An upload from before Deft checked file types
+  is not included and still loads only for its uploader.
+- **Removed images are deleted.** An image you take out of a note is deleted 24 hours
+  later, once no other note of yours shows it (later still if a scheduled message you have
+  not sent yet carries it). Before, it was kept for ever.
+- **Workspace export.** A person's export now includes the images of the notes they can
+  read, the same files the app lets them load.
+
+Tasks (#607). An unknown task priority or status is refused with a clear error instead of
+a server error, wherever a task is created or changed: the app and API, bulk changes, the
+MCP tools and Defty.
+
+- **Priority.** Valid values are `p0`, `p1`, `p2` and `p3`. Creating a task with another
+  value (for example `urgent`) through `POST /api/tasks`, `POST /api/projects/:id/tasks` or
+  `POST /api/tasks/project/:projectId` now answers 400 `VALIDATION_ERROR` and creates
+  nothing. Before, it answered 500. Editing a task, bulk edits, the MCP `task_create`,
+  `task_update` and `task_bulk_update` tools (personal and agent employee) and Defty's task
+  tools check it the same way, on the task and on each subtask, and refuse it with each
+  tool's usual error. Before, MCP and Defty task creation quietly used `p2` instead, an
+  agent employee's `task_update` quietly skipped it, and the personal MCP `task_update`
+  failed with a database error. A missing or `null` priority is still `p2`.
+- **Status.** Valid values are `backlog`, `todo`, `in_progress`, `in_review`, `done` and
+  `cancelled`. An unknown status (for example `open`) on those three create routes now
+  answers 400 `VALIDATION_ERROR` instead of 500, and Defty's `update_task_status` refuses it
+  instead of failing with a database error. A missing or `null` status is still `backlog`.
+
+Note backlinks (#608). A note or message that names a task by its key now links to that
+task when the project's prefix holds a digit, such as `R9G-1` or `RC8-12`. Before, the key
+was read from its last letters (`R9G-1` as `G-1`), so the task got no backlink, or a task
+in another project whose prefix matched those letters got it instead.
+
+- A key is matched whole, the way task search matches it since `.153`, so a zero-padded
+  key (`R9G-01`) links nothing. A prefix may also start with a digit (`9RC-1`). A key must
+  stand as its own word (`preR9G-1` links nothing), and a note links only the task whose
+  key is written exactly, with its dash. A note still links only tasks its author may see.
 
 ## [0.3.0-preview.153] — 2026-11-26 (prerelease)
 
