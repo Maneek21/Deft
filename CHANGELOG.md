@@ -26,8 +26,8 @@ Settings → Modules now opens this page.
 - **Start from a starter app.** Four are offered: Hiring pipeline, Vendor tracker, Light CRM
   and Content calendar. Name one, choose whether to add a few sample records, and install.
   No file is needed. The samples come with their links (a candidate linked to its role, a
-  deal to its company). The app is an ordinary uploaded app, yours to edit and update. If
-  the name is taken, or belongs to an app that ships with Deft, it installs as "<name> 2"
+  deal to its company). The app is an ordinary uploaded app, yours to edit and update, and
+  it opens on a board. If the name is taken, or belongs to an app that ships with Deft, it installs as "<name> 2"
   (web address ending in `-2`). If adding samples stops part-way, the app stays installed
   and the message says how many were added.
 - **A plain-words check before install.** Before an app file installs, the check step
@@ -39,10 +39,13 @@ Settings → Modules now opens this page.
 - **Edit, Check and Save.** **Edit** on an app built in the workspace opens its app file.
   **Check** reads it the way the server will: it must be valid, keep its id and slug, and
   raise its version. **Save** updates the app, and raises the version by one patch step if
-  you didn't. Every record is kept. A change that would break existing records is refused
-  and names them (see "Updates" below). Save applies only if nobody updated the app since
-  you opened it (`If-Match`); if someone did, you're told to load the newest version. Apps
-  that ship with Deft, or belong to an App Kit package, open read-only and say why.
+  you didn't. Every record is kept. A change that would break existing records is refused;
+  when it is their values that no longer fit, the message names them (see "Updates" below).
+  Save applies only if nobody updated the app since you opened it (`If-Match`); if someone
+  did, you're told to load the newest version. An app that ships with Deft shows **View
+  file** instead of **Edit**: its file opens read-only and says why. An app that belongs to
+  an App Kit package has no Edit or View file button; it changes only with a new version
+  of its package.
 - **Download** saves an app's file. It starts with a `$schema` line, so an editor checks the
   file as you type.
 - **Upload an app** takes any `.json` file, whatever it is called, and works out what it is.
@@ -99,22 +102,27 @@ Settings → Modules now opens this page.
 - **Upload errors are readable.** A refused app file or App package gets at most three plain
   lines that name where the problem is, such as
   `Candidates → fields: at most 64 fields (you have 500)`, instead of the validator's raw
-  JSON. A JSON syntax error names its line and column. This covers installing and updating
+  JSON. A JSON syntax error names its line and column when they can be found. This covers installing and updating
   an app, inspecting and staging an App package, and the check the browser runs before
   upload. The same lines are in `details.lines`.
 - **Updates name the records that block them.** When an update is refused because some
-  records would not fit the new version, the message names up to five of them by title,
-  with the field and the problem, such as
+  records' values would not fit the new version, the message names up to five of them by
+  title, with the field and the problem, such as
   `Candidates → Email: now required, but empty in "Dana Example" and "Sam Sample"`, or
   `… → Notes: removed, but still has a value in …`. Up to 20 of the records, each with its
   problems, are in `details.records`, and the total in `details.record_count`. The code is
-  still `MODULE_VALIDATION_ERROR`.
+  still `MODULE_VALIDATION_ERROR`. Other refusals are unchanged and name no records: links
+  that no longer fit (for example, a link field made single while some records link to
+  more than one) name the field and give the record's id in `details.source_record_id`, and
+  a member field that points to someone who is not an active member gives
+  `details.invalid_member_ids`.
 - **`"$schema"` is allowed in an app file.** Add
   `"$schema": "https://deft.ing/schemas/deft.module.v1.schema.json"` and an editor checks
   the file as you type. The line is dropped on upload, so it never changes the app's digest.
   The schema file is `docs/schemas/deft.module.v1.schema.json`, for the website to serve at
   that address. It describes what you write: `required`, `multiple` and `subtitle_fields`
-  are optional, because Deft fills them in, while a file missing something truly required
+  are optional, because Deft fills them in. (A first draft marked them required, so editors
+  flagged valid files and all four starter apps failed it.) A file missing something truly required
   (such as `id`, or a field's `label`) still fails. App Kit, which builds App packages and
   ships on its own, does not accept the line yet.
 
@@ -160,8 +168,9 @@ listed in the Kit README and
 `docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
 
 - App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count at
-  1,277 (it may only be lowered), each exception's `milestone` starts with its burn-down bucket, and
-  `node scripts/check-app-boundary.mjs --summary` prints the counts per milestone.
+  1,277 (it may only be lowered), each exception's `milestone` starts with its burn-down
+  bucket, and `node scripts/check-app-boundary.mjs --summary` prints the counts per
+  milestone. No finding changed.
 
 ## [0.3.0-preview.154] — 2026-11-26 (prerelease)
 
