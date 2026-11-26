@@ -8,7 +8,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { jsonToText } from '@deft/doc-schema';
-import { finishContent, fitsSizeCap, measureContent, splitToFit, type JSONContent } from '../src/lib/drives-move/convert-note.js';
+import {
+  canvasContentToJson, canvasHasContent, finishContent, fitsSizeCap, measureContent, splitToFit, type JSONContent,
+} from '../src/lib/drives-move/convert-note.js';
 
 type Run = { marks: string; text: string };
 
@@ -85,4 +87,25 @@ test('every line break of a huge paragraph stays a boundary, an empty line inclu
   const got = positions(out);
   for (const [at, count] of wanted) assert.ok((got.get(at) ?? 0) >= count, `the line break at ${at} is kept (${got.get(at) ?? 0} of ${count})`);
   assert.match(jsonToText(parts[parts.length - 1]!.json), /End$/);
+});
+
+test('the pieces of one over-long code line are joined without a line break (O-F11)', () => {
+  const minified = Array.from({ length: 60_000 }, (_, n) => `var v${n}=${n};`).join('');
+  assert.ok(minified.length > 600_000 && !minified.includes('\n'));
+  const code = `${minified.repeat(4)}\nlast();`;
+  const doc: JSONContent = { type: 'doc', content: [{ type: 'codeBlock', attrs: { language: 'js' }, content: [{ type: 'text', text: code }] }] };
+  const { parts } = splitToFit(finishContent(doc, 'code'), 'Code', 'code');
+  const texts = parts.flatMap((part) => part.json.content ?? []).map((block) => (block.content ?? []).map((inline) => inline.text ?? '').join(''));
+  assert.ok(texts.length >= 2, `split (${texts.length} code blocks)`);
+  // The one real line break is kept inside a block or becomes a block boundary; the long line itself gets no '\n'.
+  const joined = texts.join('');
+  assert.ok(joined === code || joined === code.replace('\n', ''), 'every character kept, in order, with no line break added');
+  assert.ok(texts.join('').split('\n').length <= 2);
+});
+
+test('a canvas holding a document that keeps no block is empty, not refused (O-F1)', () => {
+  assert.deepEqual(canvasContentToJson({ type: 'doc', content: [] }), { json: null, flattenedBlocks: 0 });
+  assert.equal(canvasHasContent({ type: 'doc', content: [] }), false);
+  assert.equal(canvasHasContent({ type: 'doc' }), false);
+  assert.equal(canvasHasContent({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Kept.' }] }] }), true);
 });

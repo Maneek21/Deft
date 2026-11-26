@@ -447,21 +447,36 @@ export function beforeRestoreVersionName(at: Date): string {
  * header), as `userId`, who needs edit, with its history in the same
  * transaction. 404 when the caller can't open the document, 403 below edit,
  * 404 VERSION_NOT_FOUND for a version that isn't the document's, 409
- * VERSION_CONTENT_REMOVED for one whose content was removed. The writer may
+ * VERSION_CONTENT_REMOVED for one whose content was removed, 409
+ * SPLIT_HISTORY for a moved version of a note split into pages (F14). The writer may
  * refuse (DocumentWriteRefused): FORBIDDEN, TOO_LARGE, BUSY or
  * INVALID_CONTENT. A refusal or any other failure changes nothing: no
  * content, title or version. Returns the new `restore` version.
  */
+/** True for a document made from a split note (F14): its map row records more than one part. */
+async function isSplitNoteDocument(orgId: string, documentId: string): Promise<boolean> {
+  const [row] = (await db.execute(sql`SELECT EXISTS (SELECT 1 FROM note_document_map split_map
+    WHERE split_map.org_id = ${orgId} AND split_map.target_type = 'document' AND split_map.target_id = ${documentId}
+      AND jsonb_typeof(split_map.details->'parts') = 'array' AND jsonb_array_length(split_map.details->'parts') > 1) AS split`))
+    .rows as Array<{ split: boolean }>;
+  return row?.split === true;
+}
+
 export async function restoreVersion(i: { orgId: string; documentId: string; versionId: string; userId: string }): Promise<{ versionId: string }> {
   await assertHistoryAccess(db, i.orgId, i.userId, i.documentId);
   const [version] = await db.select({
     id: documentVersions.id, content_json: documentVersions.content_json, title: documentVersions.title,
-    created_at: documentVersions.created_at, content_removed_at: documentVersions.content_removed_at,
+    created_at: documentVersions.created_at, content_removed_at: documentVersions.content_removed_at, kind: documentVersions.kind,
   }).from(documentVersions).where(and(
     eq(documentVersions.org_id, i.orgId), eq(documentVersions.document_id, i.documentId), eq(documentVersions.id, i.versionId),
   )).limit(1);
   if (!version) throw versionNotFound();
   if (version.content_removed_at) throw new DocumentRefusal(409, 'VERSION_CONTENT_REMOVED', 'This version’s content was removed from history');
+  // A note too large for live editing was split into pages when it moved (F14), and its whole-note history sits on
+  // the first page: restoring one of those versions would rewrite only that page, so it can be viewed, not restored.
+  if (version.kind === 'moved' && await isSplitNoteDocument(i.orgId, i.documentId)) {
+    throw new DocumentRefusal(409, 'SPLIT_HISTORY', 'This note was split into pages when it moved. Earlier versions can be viewed and copied, not restored.');
+  }
   const json = version.content_json as JSONContent;
 
   const outcome: { versionId: string | null; titleChanged: boolean } = { versionId: null, titleChanged: false };

@@ -50,35 +50,31 @@ const unfinished = sql`(
 
 const onlyOrgs = (orgIds?: readonly string[]): SQL => (orgIds ? sql`pending_org.id = ANY(${sql.param([...orgIds])}::text[])` : sql`true`);
 
-/** The workspaces (all, or those of `orgIds`) with something still to move, in a stable order. */
-export async function orgsNeedingMove(orgIds?: readonly string[]): Promise<string[]> {
-  const only = onlyOrgs(orgIds);
-  const found = new Set(rowsOf<{ id: string }>(await db.execute(sql`SELECT pending_org.id FROM orgs pending_org
-    WHERE ${only} AND ${unfinished}`)).map((row) => row.id));
+/** True while the workspace `orgId` has something still to move (one workspace only, consult O-F8). */
+export async function orgNeedsMove(orgId: string): Promise<boolean> {
+  const [found] = rowsOf<{ found: boolean }>(await db.execute(sql`SELECT EXISTS (SELECT 1 FROM orgs pending_org
+    WHERE pending_org.id = ${orgId} AND ${unfinished}) AS found`));
+  if (found?.found) return true;
   // A canvas counts only when it has content, which is decided in code (convert-note.ts): read a page at a time.
-  let after = '';
-  for (;;) {
-    const page = rowsOf<{ id: string; org_id: string; content: unknown }>(await db.execute(sql`
-      SELECT pending_canvas.id, pending_canvas.org_id, pending_canvas.content
-      FROM canvases pending_canvas JOIN orgs pending_org ON pending_org.id = pending_canvas.org_id
-      WHERE ${only} AND pending_canvas.id > ${after} AND pending_canvas.content IS NOT NULL
+  for (let after = ''; ;) {
+    const page = rowsOf<{ id: string; content: unknown }>(await db.execute(sql`
+      SELECT pending_canvas.id, pending_canvas.content FROM canvases pending_canvas
+      WHERE pending_canvas.org_id = ${orgId} AND pending_canvas.id > ${after} AND pending_canvas.content IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = pending_canvas.org_id AND m.source_type = 'canvas'
           AND m.source_id = pending_canvas.id)
       ORDER BY pending_canvas.id
       LIMIT ${CANVAS_PAGE}`));
-    for (const canvas of page) if (!found.has(canvas.org_id) && canvasHasContent(canvas.content)) found.add(canvas.org_id);
-    if (page.length < CANVAS_PAGE) break;
+    if (page.some((canvas) => canvasHasContent(canvas.content))) return true;
+    if (page.length < CANVAS_PAGE) return false;
     after = page[page.length - 1]!.id;
   }
-  return [...found].sort();
 }
 
-/** True while `orgId` still has notes or canvases to move. */
-export async function orgNeedsMove(orgId: string): Promise<boolean> {
-  return (await orgsNeedingMove([orgId])).length > 0;
-}
-
-/** The workspaces (all, or those of `orgIds`) without an ok move run for this release, in a stable order. */
+/**
+ * The workspaces (all, or those of `orgIds`) without an ok move run for this
+ * release, in a stable order. The one read here that lists every workspace:
+ * the API start and the script move each of them in turn.
+ */
 export async function orgsWithoutFinishedMove(orgIds?: readonly string[]): Promise<string[]> {
   return rowsOf<{ id: string }>(await db.execute(sql`SELECT pending_org.id FROM orgs pending_org
     WHERE ${onlyOrgs(orgIds)}

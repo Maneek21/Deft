@@ -54,13 +54,49 @@
 // current content placed that image.
 import { sql } from 'drizzle-orm';
 import { db } from '../db.js';
+import { noteFileIds } from '../note-file-claims.js';
 import { finishContent, imageFileIds, MoveError, noteHtmlToJson, replaceUnlinkedImages, splitToFit } from './convert-note.js';
 import {
-  authorFolderInTx, decideFilesInTx, failureMessage, insertDocumentInTx, insertMapRow, insertMovedVersionInTx, insertSharesInTx,
+  authorFolderInTx, failureMessage, fileFactsInTx, imageAllowed, insertDocumentInTx, insertMapRow, insertMovedVersionInTx, insertSharesInTx,
   linkFilesInTx, lockOrgInTx, mappedTarget, nextRootPosition, outcomeOf, personalDriveInTx, rowsOf, ShareSet, sharedNotesDriveInTx,
-  spaceInOrg, VersionTimes, type FileDecision, type OrgContext, type TimestampText, type Tx,
+  spaceInOrg, VersionTimes, type FileRefusal, type OrgContext, type TimestampText, type Tx,
 } from './placement.js';
 import type { MoveReport } from './move-org.js';
+
+/**
+ * Which note holds each file when several name it (O-F7): the earliest-created
+ * live note whose current content shows the file and whose author uploaded it.
+ * It takes the file whatever order the notes move in; a note that names the
+ * file only in its history, its note_files rows or while deleted, or a later
+ * live note, gets "Image not available" (the "no other document link" rule
+ * stays). Read with master's own image reader (note-file-claims.ts), one
+ * note's content at a time; only ids are kept.
+ */
+export async function currentContentHolders(orgId: string): Promise<Map<string, string>> {
+  const candidates = new Map<string, Array<{ noteId: string; author: string }>>();
+  const ids = rowsOf<{ id: string }>(await db.execute(sql`SELECT id FROM notes
+    WHERE org_id = ${orgId} AND is_deleted = false AND strpos(lower(coalesce(content, '')), '<img') > 0
+    ORDER BY created_at, id`)).map((row) => row.id);
+  for (const id of ids) {
+    const [note] = rowsOf<{ user_id: string; content: string | null }>(await db.execute(sql`SELECT user_id, content FROM notes
+      WHERE id = ${id} AND org_id = ${orgId}`));
+    if (!note) continue;
+    for (const fileId of noteFileIds(note.content)) {
+      candidates.set(fileId, [...(candidates.get(fileId) ?? []), { noteId: id, author: note.user_id }]);
+    }
+  }
+  const holders = new Map<string, string>();
+  const fileIds = [...candidates.keys()];
+  for (let start = 0; start < fileIds.length; start += 500) {
+    const uploaders = rowsOf<{ id: string; uploaded_by: string }>(await db.execute(sql`SELECT id, uploaded_by FROM files
+      WHERE org_id = ${orgId} AND id = ANY(${sql.param(fileIds.slice(start, start + 500))}::text[])`));
+    for (const file of uploaders) {
+      const holder = candidates.get(file.id)!.find((candidate) => candidate.author === file.uploaded_by);
+      if (holder) holders.set(file.id, holder.noteId);
+    }
+  }
+  return holders;
+}
 
 type FolderRow = {
   id: string; user_id: string; name: string; parent_folder_id: string | null; sort_order: number; is_deleted: boolean;
@@ -165,6 +201,7 @@ export async function moveNotes(ctx: OrgContext, report: MoveReport): Promise<vo
     WHERE moved_note.org_id = ${orgId}
       AND NOT EXISTS (SELECT 1 FROM note_document_map m WHERE m.org_id = moved_note.org_id AND m.source_type = 'note' AND m.source_id = moved_note.id)
     ORDER BY moved_note.created_at, moved_note.id`));
+  if (pending.length > 0) ctx.currentHolders = await currentContentHolders(orgId);
   for (const { id } of pending) {
     try {
       const counts = await db.transaction((tx) => moveNoteInTx(tx, ctx, id));
@@ -180,7 +217,7 @@ export async function moveNotes(ctx: OrgContext, report: MoveReport): Promise<vo
 /** The counts a note adds to the report, applied once its transaction commits. */
 type NoteCounts = Partial<Record<'notes' | 'versions' | 'shares' | 'favourites' | 'unsafeDropped' | 'missingImages' | 'versionUnsafeDropped'
   | 'versionMissingImages' | 'splitNotes' | 'subPages' | 'splitBlocks' | 'spaceNotesMadePrivate' | 'frozenDrives' | 'unplacedImages'
-  | 'workspaceNotes', number>>;
+  | 'missingImageBytes' | 'agentsKeptOnSharedNotes' | 'workspaceNotes', number>>;
 
 function addCounts(report: MoveReport, counts: NoteCounts): void {
   for (const [key, value] of Object.entries(counts) as Array<[keyof NoteCounts, number]>) {
@@ -221,11 +258,22 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   let driveId: string;
   let folderId: string | null = null;
   if (note.visibility === 'org') {
-    driveId = await sharedNotesDriveInTx(tx, ctx, author);
-    folderId = await authorFolderInTx(tx, orgId, driveId, author);
+    if (!note.is_deleted || ctx.sharedNotesWanted) {
+      const shared = await sharedNotesDriveInTx(tx, ctx, author);
+      add('agentsKeptOnSharedNotes', shared.agentsAdded);
+      driveId = shared.id;
+      // A live note goes in its author's folder; a deleted one at the root, in the trash (O-F10).
+      if (!note.is_deleted) folderId = await authorFolderInTx(tx, orgId, driveId, author);
+      details.shared_notes = true;
+    } else {
+      // Only deleted workspace notes: no Shared notes drive is made for them; the author's drive holds them, in the trash.
+      const drive = await personalDriveInTx(tx, ctx, author);
+      if (drive.frozenCreated) add('frozenDrives');
+      driveId = drive.id;
+      details.deleted_workspace_note = 'personal_drive';
+    }
     if (authorIsMember) shareSet.add({ type: 'user', id: author }, 'edit');
     else details.author_share_skipped = 'not_a_member';
-    details.shared_notes = true;
     if (!note.is_deleted) add('workspaceNotes');
   } else {
     const drive = await personalDriveInTx(tx, ctx, author);
@@ -249,27 +297,25 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   }
   if (skippedShares.length > 0) details.skipped_shares = skippedShares;
 
-  // Which images may be linked: those the current content, note_files and each old version name. The
-  // history is read and converted one version at a time and let go (memory stays one version deep);
-  // its images are kept as ids only.
+  // The images: every file the current content, note_files and each old version name is looked up once
+  // (fileFactsInTx). Each snapshot then shows only the images its own writer uploaded (S-F1): the current
+  // content and note_files its author's, each old version its editor's (the author's when no editor is
+  // recorded), never one snapshot's uploader for another. The history is read and converted one version
+  // at a time and let go (memory stays one version deep); its images are kept as ids only.
   const current = noteHtmlToJson(note.content);
-  const allowed = new Map<string, Set<string>>();
-  const allow = (fileId: string, ...uploaders: Array<string | null>) => {
-    const set = allowed.get(fileId) ?? new Set<string>();
-    for (const uploader of uploaders) if (uploader) set.add(uploader);
-    allowed.set(fileId, set);
-  };
-  for (const fileId of imageFileIds(current.json)) allow(fileId, author);
-  for (const fileId of noteFiles) allow(fileId, author);
+  const candidates = new Set<string>([...imageFileIds(current.json), ...noteFiles]);
   for (const version of versions) {
-    for (const fileId of imageFileIds(noteHtmlToJson(await versionContent(tx, orgId, noteId, version.id)).json)) allow(fileId, author, version.edited_by);
+    for (const fileId of imageFileIds(noteHtmlToJson(await versionContent(tx, orgId, noteId, version.id)).json)) candidates.add(fileId);
   }
-  const decisions = await decideFilesInTx(tx, orgId, allowed);
-  const linked = new Set([...decisions].filter(([, decision]) => decision === 'linked').map(([fileId]) => fileId));
-  const refused = [...decisions].filter(([, decision]) => decision !== 'linked');
-  if (refused.length > 0) details.image_refusals = Object.fromEntries(refused) as Record<string, FileDecision>;
+  const facts = await fileFactsInTx(tx, orgId, candidates, (fileId) => {
+    const holder = ctx.currentHolders.get(fileId);
+    return holder !== undefined && holder !== noteId;
+  });
+  const authorUploads = new Set([author]);
+  const currentShows = new Set(imageFileIds(current.json).filter((fileId) => imageAllowed(facts, fileId, authorUploads)));
+  const linked = new Set([...currentShows, ...noteFiles.filter((fileId) => imageAllowed(facts, fileId, authorUploads))]);
 
-  const shown = replaceUnlinkedImages(current.json, linked);
+  const shown = replaceUnlinkedImages(current.json, currentShows);
   const { parts, splitBlocks } = splitToFit(finishContent(shown.json, noteId), note.title, noteId);
 
   // The document, and its sub-pages when it had to be split.
@@ -300,23 +346,34 @@ async function moveNoteInTx(tx: Tx, ctx: OrgContext, noteId: string): Promise<No
   }
 
   // The history, one version at a time, on the first part. A version is kept whole, even over the live
-  // size cap: it can be viewed, and restoring one over the cap is refused with 413 TOO_LARGE (writeDocument).
-  // Versions that share one time keep their order (VersionTimes).
+  // size cap: it can be viewed. Restoring one over the cap is refused with 413 TOO_LARGE (writeDocument),
+  // and restoring any moved version of a split note with 409 SPLIT_HISTORY (document-versions.ts, S-F2).
+  // Times are strictly increasing in version order (VersionTimes).
   const times = new VersionTimes();
   const historyFileIds = new Set<string>();
   for (const version of versions) {
     const converted = noteHtmlToJson(await versionContent(tx, orgId, noteId, version.id));
-    const replaced = replaceUnlinkedImages(converted.json, linked);
+    const editorUploads = new Set([version.edited_by ?? author]);
+    const versionShows = new Set(imageFileIds(converted.json).filter((fileId) => imageAllowed(facts, fileId, editorUploads)));
+    const replaced = replaceUnlinkedImages(converted.json, versionShows);
     const json = finishContent(replaced.json, noteId);
-    for (const fileId of imageFileIds(json)) historyFileIds.add(fileId);
+    for (const fileId of versionShows) {
+      historyFileIds.add(fileId);
+      linked.add(fileId);
+    }
     add('versionUnsafeDropped', converted.unsafeDropped);
     add('versionMissingImages', replaced.missing);
     await insertMovedVersionInTx(tx, {
-      orgId, documentId: mainId, title: version.title, json, createdBy: version.edited_by, createdAt: version.created_at,
-      tie: times.tie(version.created_at), editDetails: { note_version: version.version },
+      orgId, documentId: mainId, title: version.title, json, createdBy: version.edited_by,
+      createdAt: await times.next(tx, version.created_at), editDetails: { note_version: version.version },
     });
   }
   add('versions', versions.length);
+  const refused = [...facts].filter(([fileId]) => !linked.has(fileId))
+    .map(([fileId, fact]) => [fileId, fact.refusal ?? 'uploaded_by_someone_else'] as [string, FileRefusal]);
+  if (refused.length > 0) details.image_refusals = Object.fromEntries(refused);
+  const lostBytes = refused.filter(([, refusal]) => refusal === 'bytes_missing').length;
+  if (lostBytes > 0) add('missingImageBytes', lostBytes);
   const linkedIds = [...linked].sort();
   await linkFilesInTx(tx, orgId, linkedIds, docs, historyFileIds);
   const shownAnywhere = new Set([...docs.flatMap((doc) => [...doc.fileIds]), ...historyFileIds]);

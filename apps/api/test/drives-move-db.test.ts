@@ -22,7 +22,9 @@ import test, { after, before } from 'node:test';
 import { jsonToText } from '@deft/doc-schema';
 import { closeDb } from '../src/lib/db.js';
 import { documentRoleFor } from '../src/lib/document-access.js';
-import { localFileStore } from '../src/lib/file-store.js';
+import { LocalFileStore, localFileStore } from '../src/lib/file-store.js';
+import * as placementModule from '../src/lib/drives-move/placement.js';
+import * as runsModule from '../src/lib/drives-move/runs.js';
 import { _setPausedStartForTest } from '../src/lib/paused-start.js';
 import { postMoveCheck } from '../src/lib/drives-move/check.js';
 import { moveOrg, type MoveReport } from '../src/lib/drives-move/move-org.js';
@@ -54,7 +56,10 @@ const bareUser = randomUUID();
 type SeedId = 'folderA' | 'folderB' | 'folderC' | 'nested' | 'workspace' | 'space' | 'spaceless' | 'shared' | 'versioned' | 'template'
   | 'pinned' | 'deleted' | 'imageA' | 'imageB' | 'imaged' | 'hostile' | 'foreignImage' | 'messageImage' | 'borrowed' | 'inactiveNote'
   | 'agentNote' | 'canvasOther' | 'canvasGuest' | 'emptySpace1' | 'emptySpace2' | 'canvasEmpty' | 'canvasBlank' | 'huge' | 'tagged' | 'tag'
-  | 'crossTask' | 'team' | 'bareNote' | 'historyImage' | 'historySplit' | 'longHistory' | 'tied';
+  | 'crossTask' | 'team' | 'bareNote' | 'historyImage' | 'historySplit' | 'longHistory' | 'tied'
+  | 'tiedMicro' | 'bigHistory' | 'lostFile' | 'lostBytes' | 'heldImage' | 'holderHistory' | 'holderTemplate' | 'holderCopy' | 'editorsFile'
+  | 'foreignVersion' | 'deletedWorkspace' | 'bareDeletedWorkspace' | 'emptyDocSpace' | 'canvasEmptyDoc' | 'leftSpace' | 'canvasLeft' | 'ownersFile'
+  | 'ownerFileSpace' | 'canvasOwnersFile';
 /** Every id the tests need, filled by `before`. */
 const s = {} as Record<SeedId, string>;
 /** The 3 MB note's text, built from the same pieces as its HTML (no tag stripping). */
@@ -108,6 +113,12 @@ async function insertSpace(name: string, createdBy: string, members: string[]): 
   const id = randomUUID();
   await q(`INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, $3, 'public', $4)`, [id, fx.orgId, `${name}-${run}`, createdBy]);
   for (const member of members) await q('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), id, member]);
+  return id;
+}
+
+async function insertPrivateSpace(name: string, createdBy: string, members: string[]): Promise<string> {
+  const id = await insertSpace(name, createdBy, members);
+  await q(`UPDATE spaces SET type = 'private' WHERE id = $1`, [id]);
   return id;
 }
 
@@ -267,6 +278,49 @@ before(async () => {
     await insertVersion(s.tied, v, { title: `Same time ${v}`, content: `<p>Version ${v}.</p>`, editedBy: member, createdAt: at('2026-02-01T09:30:00Z') });
   }
 
+  // Consult fixes.
+  // S-F6: versions at T, T and T+1 µs.
+  s.tiedMicro = await insertNote({ user: member, title: 'Tied to the microsecond', content: '<p>Now.</p>' });
+  for (const [v, time] of [[1, '2026-02-02 10:00:00'], [2, '2026-02-02 10:00:00'], [3, '2026-02-02 10:00:00.000001']] as const) {
+    await q(`INSERT INTO note_versions (id, note_id, version, title, content, edited_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7::timestamp)`,
+      [randomUUID(), s.tiedMicro, v, `Micro ${v}`, `<p>Micro ${v}.</p>`, member, time]);
+  }
+  // S-F2: a note too small to split whose old version is over the cap.
+  s.bigHistory = await insertNote({ user: member, title: 'Small now, big before', content: '<p>Small.</p>' });
+  await insertVersion(s.bigHistory, 1, { title: 'Big draft', content: filler('Big', 9000), editedBy: member, createdAt: at('2026-01-12T08:00:00Z') });
+  // O-F2: an image whose row exists but whose bytes are gone.
+  s.lostFile = randomUUID();
+  await q(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, processing_status, attachment_kind, staged_expires_at)
+    VALUES ($1, $2, $3, 'lost.png', 'image/png', 20, $4, 'ready', 'image', now() + interval '24 hours')`, [s.lostFile, fx.orgId, member, `drives-move-lost-${run}`]);
+  s.lostBytes = await insertNote({ user: member, title: 'Lost bytes', content: `<p>Before.</p><img data-file-id="${s.lostFile}">` });
+  // O-F7: a history-only claim (oldest), a template showing the image, and a later copy showing it too.
+  s.heldImage = await upload(member);
+  s.holderHistory = await insertNote({ user: member, title: 'Had it once', content: '<p>No picture now.</p>', createdAt: at('2026-01-01T08:00:00Z') });
+  await insertVersion(s.holderHistory, 1, { title: 'With picture', content: `<img data-file-id="${s.heldImage}">`, editedBy: member,
+    createdAt: at('2026-01-02T08:00:00Z') });
+  s.holderTemplate = await insertNote({ user: member, title: 'Template with picture', template: true, createdAt: at('2026-01-05T08:00:00Z'),
+    content: `<p>Template.</p><img data-file-id="${s.heldImage}">` });
+  s.holderCopy = await insertNote({ user: member, title: 'Copy with picture', createdAt: at('2026-01-06T08:00:00Z'),
+    content: `<p>Copy.</p><img data-file-id="${s.heldImage}">` });
+  // S-F1: the current content names a file only a version's editor uploaded.
+  s.editorsFile = await upload(member2);
+  s.foreignVersion = await insertNote({ user: member, title: 'Someone else\'s picture', content: `<p>Now.</p><img data-file-id="${s.editorsFile}">` });
+  await insertVersion(s.foreignVersion, 1, { title: 'Their edit', content: `<p>Then.</p><img data-file-id="${s.editorsFile}">`, editedBy: member2,
+    createdAt: at('2026-01-03T08:00:00Z') });
+  // O-F10: a deleted workspace note by someone with no live one.
+  s.deletedWorkspace = await insertNote({ user: member2, title: 'Gone from everyone', visibility: 'org', deleted: true });
+  // O-F1: a canvas holding a document that keeps no block.
+  s.emptyDocSpace = await insertSpace('empty-doc', owner, [member]);
+  s.canvasEmptyDoc = await insertCanvas(s.emptyDocSpace, 'Canvas', { type: 'doc', content: [] }, member);
+  // O-F5: a private chat whose last editor and creator are no longer in it; its earliest eligible member owns the canvas.
+  s.leftSpace = await insertPrivateSpace('left', owner, [member, guest]);
+  s.canvasLeft = await insertCanvas(s.leftSpace, 'Left behind board', paragraphDoc('Still here.'), member2);
+  // O-F6: a private chat's canvas naming its owner's file, written by a guest.
+  s.ownersFile = await upload(member);
+  s.ownerFileSpace = await insertPrivateSpace('owner-file', member, [member, guest]);
+  s.canvasOwnersFile = await insertCanvas(s.ownerFileSpace, 'Board with a borrowed picture',
+    { type: 'doc', content: [{ type: 'image', attrs: { fileId: s.ownersFile } }, { type: 'paragraph', content: [{ type: 'text', text: 'Look.' }] }] }, guest);
+
   // References: tags (one note tagged twice, as note and daily_note), a cross reference, a team link and an attention item.
   s.tagged = await insertNote({ user: member, title: 'Tagged' });
   s.tag = randomUUID();
@@ -288,6 +342,8 @@ before(async () => {
   await q(`INSERT INTO users (id, email, name, kind) VALUES ($1, $2, 'Bare', 'human')`, [bareUser, `bare-${run}@drives.test`]);
   await q(`INSERT INTO org_members (id, org_id, user_id, role) VALUES ($1, $2, $3, 'owner')`, [randomUUID(), bareOrg, bareUser]);
   s.bareNote = await insertNote({ user: bareUser, orgId: bareOrg, title: 'Bare note' });
+  // O-F10: its only workspace note is deleted, so it gets no Shared notes drive.
+  s.bareDeletedWorkspace = await insertNote({ user: bareUser, orgId: bareOrg, title: 'Deleted for everyone', visibility: 'org', deleted: true });
 
   report = await moveOrg(fx.orgId);
 });
@@ -362,6 +418,12 @@ test('a workspace note lands in Shared notes in its author\'s folder; members ca
   assert.equal(await roleOf(fx.people.member2, doc.id), 'view');
   assert.equal(await roleOf(fx.people.owner, doc.id), 'full');
   assert.equal(await roleOf(fx.people.guest, doc.id), null);
+  // O-F3: agents who could read workspace notes on master keep reading them.
+  assert.equal(await roleOf(fx.people.agentUser, doc.id), 'view', 'an agent who could see the note on master still can');
+  assert.equal(await roleOf(people.agentAuthor, doc.id), 'view');
+  assert.ok(await one(`SELECT 1 FROM drive_members WHERE drive_id = $1 AND principal_type = 'user' AND principal_id = $2 AND role = 'view'`,
+    [drive.id, fx.people.agentUser]));
+  assert.ok(report.agentsKeptOnSharedNotes >= 2);
   assert.ok(report.guestsPotentiallyAffected.guests >= 1, 'the report counts the guests potentially affected');
   assert.ok(report.guestsPotentiallyAffected.workspaceNotes >= 1, 'and the workspace notes involved');
 });
@@ -431,8 +493,10 @@ test('a canvas with content becomes a document shared with its chat as edit; an 
   assert.equal(await roleOf(fx.people.member2, doc.id), 'full');
   assert.equal(await mapOf('canvas', s.canvasEmpty), undefined);
   assert.equal(await mapOf('canvas', s.canvasBlank), undefined);
-  assert.equal(report.emptyCanvases, 2);
-  assert.equal(report.canvases, 2);
+  assert.equal(await mapOf('canvas', s.canvasEmptyDoc), undefined, 'a document keeping no block is empty too (O-F1)');
+  assert.equal(report.emptyCanvases, 3);
+  assert.equal(report.canvases, 4);
+  assert.ok(!report.errors.some((error) => error.sourceId === s.canvasEmptyDoc), 'and never refused');
 });
 
 test('an image whose file exists is linked and loses its staged expiry', { skip: SKIP }, async () => {
@@ -503,13 +567,94 @@ test('a deactivated author\'s notes land in a frozen personal drive', { skip: SK
   }
 });
 
-test('a guest-edited canvas lands with the chat\'s creator', { skip: SKIP }, async () => {
+test('a guest-edited public canvas goes to Shared notes, credited to an eligible member of the chat', { skip: SKIP }, async () => {
   const doc = await documentOf(s.canvasGuest, 'canvas');
   const drive = await driveOf(doc.drive_id);
-  assert.equal(drive.owner_user_id, fx.people.owner, 'the chat was created by the owner');
-  assert.equal(drive.kind, 'personal');
+  assert.equal(drive.system_key, 'shared_notes', 'a public chat\'s canvas stays readable by the workspace (O-F4)');
+  const folder = (await one('SELECT name, created_by FROM doc_folders WHERE id = $1', [doc.folder_id]))!;
+  assert.deepEqual(folder, { name: 'Chat canvases', created_by: null });
+  // The guest isn't eligible and the chat's creator (the owner) has no seat in it: the earliest eligible member is credited (O-F5).
+  assert.equal(doc.created_by, fx.people.member);
+  assert.equal((await mapOf('canvas', s.canvasGuest))!.details.owner_rule, 'earliest_member');
   assert.deepEqual(await sharesOf(doc.id), [{ principal_type: 'space', principal_id: fx.spaces.team, role: 'edit' }]);
   assert.equal(await roleOf(fx.people.guest, doc.id), 'edit', 'the guest can still write it through the chat');
+});
+
+test('a member who never joined a public chat can view its canvas but not edit it; a chat member can edit (O-F4)', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.canvasGuest, 'canvas');
+  const outsiderMember = await fx.addPerson();
+  const outsiderGuest = await fx.addPerson({ role: 'guest' });
+  assert.equal(await roleOf(outsiderMember, doc.id), 'view', 'readable before joining, as canReadSpace allowed');
+  assert.equal(await roleOf(fx.people.member, doc.id), 'edit', 'a member of the chat writes it');
+  assert.equal(await roleOf(outsiderGuest, doc.id), null, 'a guest outside the chat still can\'t read it');
+  // A private chat's canvas keeps its owner's My drive and the chat's edit share.
+  const other = await documentOf(s.canvasOther, 'canvas');
+  assert.equal((await driveOf(other.drive_id)).kind, 'personal');
+  assert.equal(await roleOf(outsiderMember, other.id), null);
+});
+
+test('a last editor who has left a private chat doesn\'t own its canvas (O-F5)', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.canvasLeft, 'canvas');
+  const drive = await driveOf(doc.drive_id);
+  assert.equal(drive.owner_user_id, fx.people.member, 'the earliest eligible member of the chat, not the last editor or the absent creator');
+  assert.equal(drive.frozen_at, null);
+  assert.equal(await roleOf(fx.people.member2, doc.id), null, 'the former member gains nothing');
+  assert.equal(await roleOf(fx.people.guest, doc.id), 'edit', 'the chat still writes it');
+});
+
+test('a canvas naming its owner\'s file, written by someone else, shows the placeholder and the file isn\'t linked (O-F6)', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.canvasOwnersFile, 'canvas');
+  assert.equal((await driveOf(doc.drive_id)).owner_user_id, fx.people.member, 'the chat\'s creator owns it');
+  assert.deepEqual(imagesIn(doc.content_json), []);
+  assert.match(jsonToText(doc.content_json), /Image not available/);
+  assert.equal((await q('SELECT 1 FROM document_attachments WHERE file_id = $1', [s.ownersFile])).rowCount, 0);
+  assert.notEqual((await one('SELECT staged_expires_at FROM files WHERE id = $1', [s.ownersFile]))!.staged_expires_at, null);
+});
+
+test('the first-owner fallback never picks a frozen drive (O-F5)', { skip: SKIP }, async () => {
+  // A workspace whose only owner is deactivated: a private chat's canvas with no eligible member has nobody to own it.
+  const org = randomUUID();
+  const gone = randomUUID();
+  const admin = randomUUID();
+  const chat = randomUUID();
+  await q('INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)', [org, `Gone owner ${run}`, `gone-owner-${run}`]);
+  await q(`INSERT INTO users (id, email, name, kind) VALUES ($1, $2, 'Gone', 'human'), ($3, $4, 'Admin', 'human')`,
+    [gone, `gone-${run}@drives.test`, admin, `gone-admin-${run}@drives.test`]);
+  await q(`INSERT INTO org_members (id, org_id, user_id, role, is_active) VALUES ($1, $2, $3, 'owner', false), ($4, $2, $5, 'admin', true)`,
+    [randomUUID(), org, gone, randomUUID(), admin]);
+  await q(`INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, 'quiet', 'private', $3)`, [chat, org, gone]);
+  await q('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), chat, gone]);
+  const canvas = randomUUID();
+  await q(`INSERT INTO canvases (id, org_id, space_id, title, content, last_edited_by) VALUES ($1, $2, $3, 'Quiet', $4::jsonb, $5)`,
+    [canvas, org, chat, JSON.stringify(paragraphDoc('Nobody to hold it.')), gone]);
+  try {
+    const moved = await moveOrg(org);
+    assert.equal((await q(`SELECT 1 FROM drives WHERE org_id = $1 AND frozen_at IS NOT NULL`, [org])).rowCount, 0, 'no frozen drive takes it');
+    assert.ok(moved.errors.some((error) => error.sourceId === canvas), 'without an active human owner it is refused, not frozen');
+    assert.equal(await mapOf('canvas', canvas), undefined);
+  } finally {
+    for (const table of ['document_attachments', 'note_document_map', 'document_shares', 'document_versions', 'documents', 'doc_folders', 'drive_members', 'drives']) {
+      await q(`DELETE FROM ${table} WHERE org_id = $1`, [org]);
+    }
+    await q('DELETE FROM canvases WHERE org_id = $1', [org]);
+    await q('DELETE FROM space_members WHERE space_id = $1', [chat]);
+    await q('DELETE FROM spaces WHERE org_id = $1', [org]);
+    await q('DELETE FROM org_members WHERE org_id = $1', [org]);
+    await q('DELETE FROM orgs WHERE id = $1', [org]);
+    await q('DELETE FROM users WHERE id = ANY($1::text[])', [[gone, admin]]);
+  }
+});
+
+test('the workspace\'s first owner holds a private canvas no chat member can (O-F5)', { skip: SKIP }, async () => {
+  const lonely = await insertPrivateSpace('lonely', people.inactive, [people.inactive]);
+  const canvas = await insertCanvas(lonely, 'Lonely board', paragraphDoc('Only the departed were here.'), people.inactive);
+  const moved = await moveOrg(fx.orgId);
+  assert.deepEqual(moved.errors, []);
+  const doc = await documentOf(canvas, 'canvas');
+  const drive = await driveOf(doc.drive_id);
+  assert.equal(drive.owner_user_id, fx.people.owner, 'the earliest active human owner');
+  assert.equal(drive.frozen_at, null, 'never a frozen drive');
+  assert.equal(moved.canvasesPlacedWithWorkspaceOwner, 1);
 });
 
 test('a 3 MB note is split into sub-pages with nothing lost', { skip: SKIP }, async () => {
@@ -540,8 +685,10 @@ test('team links and note attention items point at documents', { skip: SKIP }, a
 
 test('running the move twice changes nothing', { skip: SKIP }, async () => {
   assert.deepEqual(report.errors, []);
-  // 19 notes, 3 folders and 2 canvases were mapped by the first run.
-  assert.equal(Number((await one('SELECT count(*)::int AS n FROM note_document_map WHERE org_id = $1', [fx.orgId]))!.n), 24);
+  // Every note and note folder, and the 5 canvases with content, were mapped (the first run, and the owner-fallback test's).
+  const expected = await one(`SELECT (SELECT count(*) FROM notes WHERE org_id = $1) + (SELECT count(*) FROM note_folders WHERE org_id = $1) + 5 AS n`,
+    [fx.orgId]);
+  assert.equal(Number((await one('SELECT count(*)::int AS n FROM note_document_map WHERE org_id = $1', [fx.orgId]))!.n), Number(expected!.n));
   const before = await snapshot(fx.orgId);
   const again = await moveOrg(fx.orgId);
   assert.deepEqual(await snapshot(fx.orgId), before);
@@ -585,7 +732,51 @@ test('the Workspace drive exists for every org after the move', { skip: SKIP }, 
   }
   assert.ok(await mapOf('note', s.bareNote));
   assert.equal((await q(`SELECT 1 FROM drives WHERE org_id = $1 AND system_key = 'shared_notes'`, [bareOrg])).rowCount, 0,
-    'Shared notes only where workspace notes exist');
+    'Shared notes only where live workspace notes exist: a deleted one alone makes none (O-F10)');
+  const deleted = await documentOf(s.bareDeletedWorkspace);
+  assert.equal(deleted.is_deleted, true);
+  assert.equal((await driveOf(deleted.drive_id)).owner_user_id, bareUser, 'in its author\'s drive, in the trash');
+});
+
+test('a deleted workspace note goes to the root of Shared notes, in the trash, with no author folder (O-F10)', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.deletedWorkspace);
+  assert.equal(doc.is_deleted, true);
+  assert.equal((await driveOf(doc.drive_id)).system_key, 'shared_notes');
+  assert.equal(doc.folder_id, null);
+  assert.equal((await q(`SELECT 1 FROM doc_folders WHERE drive_id = $1 AND created_by = $2`, [doc.drive_id, fx.people.member2])).rowCount, 0,
+    'no empty folder named after its author');
+});
+
+test('an image whose bytes are gone shows the placeholder and is counted; the check still passes (O-F2)', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.lostBytes);
+  assert.deepEqual(imagesIn(doc.content_json), []);
+  assert.match(jsonToText(doc.content_json), /Image not available/);
+  assert.equal((await mapOf('note', s.lostBytes))!.details.image_refusals[s.lostFile], 'bytes_missing');
+  assert.equal(report.missingImageBytes, 1);
+  assert.equal((await q('SELECT 1 FROM document_attachments WHERE file_id = $1', [s.lostFile])).rowCount, 0);
+  assert.equal((await postMoveCheck(fx.orgId, 0)).ok, true);
+});
+
+test('a live note showing an image in its current content holds it over a history-only claim (O-F7)', { skip: SKIP }, async () => {
+  const template = await documentOf(s.holderTemplate);
+  const history = await documentOf(s.holderHistory);
+  const copy = await documentOf(s.holderCopy);
+  assert.deepEqual((await q('SELECT document_id, in_current FROM document_attachments WHERE file_id = $1', [s.heldImage])).rows,
+    [{ document_id: template.id, in_current: true }], 'the earliest live note showing it links it');
+  assert.deepEqual(imagesIn(template.content_json).map((attrs) => attrs.fileId), [s.heldImage]);
+  assert.deepEqual(imagesIn(copy.content_json), [], 'a later copy shows the placeholder (one file, one document)');
+  const [old] = (await q(`SELECT content_json FROM document_versions WHERE document_id = $1 AND kind = 'moved'`, [history.id])).rows;
+  assert.deepEqual(imagesIn(old.content_json), [], 'the older history-only claim doesn\'t take it');
+  assert.equal((await mapOf('note', s.holderHistory))!.details.image_refusals[s.heldImage], 'held_by_another_note');
+});
+
+test('a version edited by another person can\'t authorize a file in the current content (S-F1)', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.foreignVersion);
+  assert.deepEqual(imagesIn(doc.content_json), [], 'the author didn\'t upload it: the current content shows the placeholder');
+  const [version] = (await q(`SELECT content_json FROM document_versions WHERE document_id = $1 AND kind = 'moved'`, [doc.id])).rows;
+  assert.deepEqual(imagesIn(version.content_json).map((attrs) => attrs.fileId), [s.editorsFile], 'the version its uploader edited keeps it');
+  assert.deepEqual((await q('SELECT in_current FROM document_attachments WHERE document_id = $1 AND file_id = $2', [doc.id, s.editorsFile])).rows,
+    [{ in_current: false }], 'linked for the history only');
 });
 
 test('a split note keeps an oversized old version viewable but not restorable, and links its history images to the main page', { skip: SKIP }, async () => {
@@ -605,9 +796,21 @@ test('a split note keeps an oversized old version viewable but not restorable, a
   const viewed = await fx.request(fx.people.member, 'GET', `/api/documents/${main.id}/versions/${long.id}`);
   assert.equal(viewed.status, 200, 'it can be viewed');
   assert.equal(((await viewed.json()) as { version: { id: string } }).version.id, long.id);
-  const restored = await fx.request(fx.people.member, 'POST', `/api/documents/${main.id}/versions/${long.id}/restore`);
-  assert.equal(restored.status, 413, 'restoring it is refused');
-  assert.equal(((await restored.json()) as { code: string }).code, 'TOO_LARGE');
+  // S-F2: the history of a split note can be viewed and copied, not restored (it would rewrite only the first page).
+  for (const version of versions) {
+    const restored = await fx.request(fx.people.member, 'POST', `/api/documents/${main.id}/versions/${version.id}/restore`);
+    assert.equal(restored.status, 409, `restoring "${version.title}" is refused`);
+    assert.deepEqual(await restored.json(), {
+      error: 'This note was split into pages when it moved. Earlier versions can be viewed and copied, not restored.', code: 'SPLIT_HISTORY',
+    });
+  }
+  // A note that wasn't split: restoring a version over the cap is refused by the writer, 413 TOO_LARGE.
+  const small = await documentOf(s.bigHistory);
+  const [big] = (await q(`SELECT id, size_bytes FROM document_versions WHERE document_id = $1 AND kind = 'moved'`, [small.id])).rows;
+  assert.ok(big.size_bytes > 2_097_152);
+  const tooLarge = await fx.request(fx.people.member, 'POST', `/api/documents/${small.id}/versions/${big.id}/restore`);
+  assert.equal(tooLarge.status, 413);
+  assert.equal(((await tooLarge.json()) as { code: string }).code, 'TOO_LARGE');
 });
 
 test('a note with 200 versions moves them all, in order, one version at a time', { skip: SKIP }, async () => {
@@ -647,6 +850,35 @@ async function checkWith(corrupt: () => Promise<void>, undo: () => Promise<void>
     await undo();
   }
 }
+
+test('versions at T, T and T+1 µs are stored strictly increasing, in version order (S-F6)', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.tiedMicro);
+  const rows = (await q(`SELECT (edit_details->>'note_version')::int AS v, created_at::text AS at FROM document_versions
+    WHERE document_id = $1 AND kind = 'moved' ORDER BY created_at, id`, [doc.id])).rows;
+  assert.deepEqual(rows, [
+    { v: 1, at: '2026-02-02 10:00:00' }, { v: 2, at: '2026-02-02 10:00:00.000001' }, { v: 3, at: '2026-02-02 10:00:00.000002' },
+  ]);
+});
+
+test('postMoveCheck finds a document in the wrong drive (O-F9)', { skip: SKIP }, async () => {
+  const doc = await documentOf(s.pinned);
+  const check = await checkWith(
+    () => q('UPDATE documents SET drive_id = $1 WHERE id = $2', [fx.workspaceDriveId, doc.id]).then(() => undefined),
+    () => q('UPDATE documents SET drive_id = $1 WHERE id = $2', [doc.drive_id, doc.id]).then(() => undefined));
+  assert.equal(check.ok, false);
+  assert.ok(check.mismatches.includes(`note ${s.pinned}: its document is in the wrong drive`), check.mismatches.join('\n'));
+});
+
+test('postMoveCheck finds an agent without its view on Shared notes (O-F3)', { skip: SKIP }, async () => {
+  const [row] = (await q(`SELECT member.* FROM drive_members member JOIN drives shared ON shared.id = member.drive_id AND shared.system_key = 'shared_notes'
+    WHERE member.org_id = $1 AND member.principal_id = $2`, [fx.orgId, fx.people.agentUser])).rows;
+  assert.ok(row, 'the agent holds view on Shared notes');
+  const check = await checkWith(
+    () => q('DELETE FROM drive_members WHERE id = $1', [row.id]).then(() => undefined),
+    () => q(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role, added_by) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [row.id, row.org_id, row.drive_id, row.principal_type, row.principal_id, row.role, row.added_by]).then(() => undefined));
+  assert.ok(check.mismatches.includes(`agent ${fx.people.agentUser} has no view on Shared notes`), check.mismatches.join('\n'));
+});
 
 test('postMoveCheck finds an extra share', { skip: SKIP }, async () => {
   const doc = await documentOf(s.shared);
@@ -751,6 +983,29 @@ test('a reference rewrite that would repeat another workspace\'s row is reported
   } finally {
     await q('DELETE FROM cross_references WHERE id = ANY($1::text[])', [[ours, theirs]]);
   }
+});
+
+test('an unreachable file store refuses the note without mapping it, and a run with the store back links its image (O-F2)', { skip: SKIP }, async () => {
+  const file = await upload(fx.people.member);
+  const note = await insertNote({ user: fx.people.member, title: 'Picture behind a missing mount', content: `<img data-file-id="${file}">` });
+  const seam = placementModule as { _setMoveFileStoreForTest?: (store: unknown) => void };
+  seam._setMoveFileStoreForTest?.(new LocalFileStore(resolve(import.meta.dirname, `../.no-such-uploads-${run}`)));
+  let refused: MoveReport;
+  try {
+    refused = await moveOrg(fx.orgId);
+  } finally {
+    seam._setMoveFileStoreForTest?.(null);
+  }
+  assert.ok(refused.errors.some((error) => error.sourceId === note && /storage is unreachable or empty/.test(error.message)),
+    'the note is refused, with the reason');
+  assert.equal(await mapOf('note', note), undefined, 'and not mapped, so a later run decides again');
+  assert.equal((await q('SELECT 1 FROM document_attachments WHERE file_id = $1', [file])).rowCount, 0);
+  const again = await moveOrg(fx.orgId);
+  assert.deepEqual(again.errors, []);
+  const doc = await documentOf(note);
+  assert.deepEqual(imagesIn(doc.content_json).map((attrs) => attrs.fileId), [file]);
+  assert.deepEqual((await q('SELECT in_current FROM document_attachments WHERE document_id = $1 AND file_id = $2', [doc.id, file])).rows,
+    [{ in_current: true }]);
 });
 
 test('the API refuses to listen until the move completes, and skips the move while paused', { skip: SKIP }, async () => {
@@ -924,6 +1179,26 @@ test('a routine drives:move rerun skips a workspace whose run was ok, and --chec
     await moveNotesBeforeListen({ orgIds: [fx.orgId] }).then(() => { listened = true; });
     assert.equal(listened, true, 'and the API still listens');
   } finally {
+    await undo();
+  }
+});
+
+test('a mover whose check fails after another mover recorded the workspace ok reports ok (S-F3)', { skip: SKIP }, async () => {
+  await q('DELETE FROM drives_move_runs WHERE org_id = $1', [fx.orgId]);
+  const undo = await addExtraShare();
+  const seam = runsModule as { _setBeforeFailureReportForTest?: (hook: (() => Promise<void>) | null) => void };
+  // The other mover finishes while this one is still checking (and meets an edit made after it started serving).
+  seam._setBeforeFailureReportForTest?.(async () => {
+    await q(`UPDATE drives_move_runs SET completed_at = coalesce(completed_at, now()), check_ok = true WHERE org_id = $1 AND release_version = $2`,
+      [fx.orgId, DRIVES_MOVE_RELEASE]);
+  });
+  try {
+    const run = await runsModule.runOrgMove(fx.orgId);
+    assert.equal(run.ok, true, 'the workspace is done: the other mover recorded it');
+    const row = (await runRow())!;
+    assert.equal(row.check_ok, true, 'and its ok run stands');
+  } finally {
+    seam._setBeforeFailureReportForTest?.(null);
     await undo();
   }
 });

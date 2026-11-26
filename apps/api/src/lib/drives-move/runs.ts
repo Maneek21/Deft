@@ -16,7 +16,9 @@
 //   and the next run moves nothing new and checks again;
 // - the check's result is then recorded: check_ok and the report (the move's
 //   and the check's, ids and counts only).
-// `--check-only` only checks; it never writes a run row.
+// `--check-only` only checks; it never writes a run row. A failure is
+// reported only after the run row is read again: if another mover recorded
+// this workspace as done meanwhile, it is done (consult S-F3).
 import { sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import { postMoveCheck, type PostMoveCheck } from './check.js';
@@ -37,15 +39,40 @@ async function recordRun(orgId: string, completed: boolean, checkOk: boolean, re
     WHERE NOT (drives_move_runs.check_ok AND drives_move_runs.completed_at IS NOT NULL)`);
 }
 
+/** True when this workspace already has an ok run for this release. */
+const finished = async (orgId: string) => (await orgsWithoutFinishedMove([orgId])).length === 0;
+
+let beforeFailureReport: (() => Promise<void>) | null = null;
+
+/** Test seam: runs just before a failure is reported (where a concurrent mover's ok run can land). */
+export function _setBeforeFailureReportForTest(hook: (() => Promise<void>) | null): void {
+  beforeFailureReport = hook;
+}
+
+/**
+ * Before reporting a failure, the run row is read again (consult S-F3): if
+ * another mover recorded this workspace's run as ok meanwhile, it is done,
+ * whatever this mover saw (its own failed check may have met edits made
+ * after the other mover finished and the API started serving).
+ */
+async function failedUnlessFinishedElsewhere(orgId: string, failed: OrgMoveRun): Promise<OrgMoveRun> {
+  if (beforeFailureReport) await beforeFailureReport();
+  return (await finished(orgId)) ? { orgId, ok: true, skipped: 'already_done', move: failed.move, check: failed.check } : failed;
+}
+
 export async function runOrgMove(orgId: string): Promise<OrgMoveRun> {
-  if ((await orgsWithoutFinishedMove([orgId])).length === 0) return { orgId, ok: true, skipped: 'already_done', move: null, check: null };
+  if (await finished(orgId)) return { orgId, ok: true, skipped: 'already_done', move: null, check: null };
   const move = await moveOrg(orgId);
   if (move.errors.length > 0) {
     await recordRun(orgId, false, false, { move });
-    return { orgId, ok: false, skipped: null, move, check: null };
+    return failedUnlessFinishedElsewhere(orgId, { orgId, ok: false, skipped: null, move, check: null });
   }
   await recordRun(orgId, true, false, { move });
   const check = await postMoveCheck(orgId);
+  if (!check.ok) {
+    const run = await failedUnlessFinishedElsewhere(orgId, { orgId, ok: false, skipped: null, move, check });
+    if (run.ok) return run;
+  }
   await recordRun(orgId, true, check.ok, { move, check });
   return { orgId, ok: check.ok, skipped: null, move, check };
 }

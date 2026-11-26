@@ -48,6 +48,12 @@ export type MoveReport = {
   spaceNotesMadePrivate: number;
   /** Personal drives made frozen, for deactivated, agent and system authors. */
   frozenDrives: number;
+  /** Linked-looking images whose bytes were gone while the storage answered: shown as "Image not available" (O-F2). */
+  missingImageBytes: number;
+  /** Agents given a `view` member row on Shared notes, so they keep reading workspace notes (O-F3). */
+  agentsKeptOnSharedNotes: number;
+  /** Private chats' canvases that no eligible chat member could own, placed with the workspace's first owner (O-F5). */
+  canvasesPlacedWithWorkspaceOwner: number;
   guestsPotentiallyAffected: { guests: number; workspaceNotes: number };
   references: ReferenceRewrite;
 };
@@ -56,7 +62,8 @@ export function emptyMoveReport(orgId: string): MoveReport {
   return {
     orgId, notes: 0, folders: 0, canvases: 0, versions: 0, shares: 0, favourites: 0, unsafeDropped: 0, missingImages: 0,
     skippedAlreadyMoved: 0, errors: [], emptyCanvases: 0, splitNotes: 0, subPages: 0, splitBlocks: 0, versionUnsafeDropped: 0,
-    versionMissingImages: 0, unplacedImages: 0, spaceNotesMadePrivate: 0, frozenDrives: 0, guestsPotentiallyAffected: { guests: 0, workspaceNotes: 0 },
+    versionMissingImages: 0, unplacedImages: 0, spaceNotesMadePrivate: 0, frozenDrives: 0, missingImageBytes: 0,
+    agentsKeptOnSharedNotes: 0, canvasesPlacedWithWorkspaceOwner: 0, guestsPotentiallyAffected: { guests: 0, workspaceNotes: 0 },
     references: emptyReferenceRewrite(),
   };
 }

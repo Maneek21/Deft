@@ -266,27 +266,37 @@ function splitTextblock(node: JSONContent, target: number): JSONContent[] {
   });
 }
 
-/** A code block cut at its lines into code blocks of about `target` bytes (a longer line anywhere). */
+/**
+ * A code block cut into code blocks of about `target` bytes: at its line
+ * breaks, and a line longer than that anywhere. Only a real line break puts a
+ * `\n` between two pieces in one block; the pieces of one long line are joined
+ * as they were.
+ */
 function splitCodeBlock(node: JSONContent, target: number): JSONContent[] {
   const text = (node.content ?? []).map((inline) => inline.text ?? '').join('');
   const max = Math.max(1, Math.floor(target / 3));
   const chunks: string[] = [];
-  let current: string[] = [];
+  let current = '';
   let currentSize = 0;
-  for (const line of text.split('\n')) {
+  let started = false;
+  text.split('\n').forEach((line, lineIndex) => {
     const pieces = line.length > max ? cutText(line, max) : [line];
-    for (const piece of pieces) {
-      const size = Buffer.byteLength(piece, 'utf8') + 1;
-      if (current.length > 0 && currentSize + size > target) {
-        chunks.push(current.join('\n'));
-        current = [];
-        currentSize = 0;
+    pieces.forEach((piece, pieceIndex) => {
+      const joint = started && pieceIndex === 0 && lineIndex > 0 ? '\n' : '';
+      const size = Buffer.byteLength(joint + piece, 'utf8');
+      if (started && currentSize + size > target) {
+        // A boundary between blocks: a real line break there is the boundary itself.
+        chunks.push(current);
+        current = piece;
+        currentSize = Buffer.byteLength(piece, 'utf8');
+        return;
       }
-      current.push(piece);
+      current += joint + piece;
       currentSize += size;
-    }
-  }
-  if (current.length > 0) chunks.push(current.join('\n'));
+      started = true;
+    });
+  });
+  chunks.push(current);
   return chunks.map((chunk) => ({ type: 'codeBlock', attrs: withoutId(node.attrs), ...(chunk ? { content: [{ type: 'text', text: chunk }] } : {}) }));
 }
 
@@ -517,6 +527,11 @@ export function canvasContentToJson(content: unknown): { json: JSONContent | nul
       }
       json = { type: 'doc', content: kept };
     }
+  }
+  // Empty is decided before the content is made canonical: a document that keeps no block (`{"type":"doc","content":[]}`,
+  // which an agent's write_canvas can store) isn't a valid document, and an empty canvas is dropped, never refused (O-F1).
+  if (!(json.content ?? []).some((block) => block.type !== 'paragraph' || looseText(block).trim() !== '')) {
+    return { json: null, flattenedBlocks };
   }
   const normalized = normalizeImages(canonical(json));
   return { json: isEmptyDocument(normalized) ? null : normalized, flattenedBlocks };

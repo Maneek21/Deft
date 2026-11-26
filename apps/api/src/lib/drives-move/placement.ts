@@ -31,15 +31,69 @@
 //   live size cap: it can be viewed; restoring one over the cap is refused
 //   with 413 TOO_LARGE by the writer (writeDocument).
 import { randomUUID } from 'node:crypto';
+import { readdir } from 'node:fs/promises';
 import { sql } from 'drizzle-orm';
 import { type NoteMoveOutcome, type NoteMoveSourceType, type NoteMoveTargetType } from '@deft/db/documents';
 import { db } from '../db.js';
 import { createVersionInTx } from '../document-versions.js';
 import { DocumentRefusal, systemCreateDocumentInTx, type TimestampText } from '../documents.js';
 import { ensurePersonalDrive, ensureSharedNotesDrive, PrincipalCannotHoldAccessError } from '../drives.js';
-import { MoveError, type JSONContent } from './convert-note.js';
+import { LocalFileStore, localFileStore, type FileStore } from '../file-store.js';
+import { canvasHasContent, MoveError, type JSONContent } from './convert-note.js';
 
 export type { TimestampText };
+
+// ---------------------------------------------------------------------------
+// File storage: where the move and its check look for a linked image's bytes.
+
+let moveStore: FileStore = localFileStore;
+
+/** The file store the move and the post-move check read: the uploads store (localFileStore) unless a test replaces it. */
+export function moveFileStore(): FileStore {
+  return moveStore;
+}
+
+/** Test seam: the store the move reads, or null for the uploads store. */
+export function _setMoveFileStoreForTest(store: FileStore | null): void {
+  moveStore = store ?? localFileStore;
+}
+
+/**
+ * True when the storage root answers and holds something (O-F2): for the
+ * local store, its uploads folder exists and has an entry; for any other
+ * store (an object store), one of this workspace's files resolves. Asked only
+ * when a file's bytes are missing, to tell a lost file from a missing or
+ * misconfigured mount.
+ */
+export async function storageRootReachable(tx: Tx, orgId: string): Promise<boolean> {
+  const store = moveFileStore();
+  if (store instanceof LocalFileStore) {
+    try {
+      return (await readdir(store.rootDir)).length > 0;
+    } catch {
+      return false;
+    }
+  }
+  const keys = rowsOf<{ storage_key: string }>(await tx.execute(sql`SELECT storage_key FROM files
+    WHERE org_id = ${orgId} ORDER BY created_at DESC, id LIMIT 20`)).map((row) => row.storage_key);
+  for (const key of keys) {
+    try {
+      if (await store.stat(key)) return true;
+    } catch {
+      // Unreadable: not an answer.
+    }
+  }
+  return false;
+}
+
+/** The bytes of a stored file are there (the store answers for the key). */
+export async function bytesExist(storageKey: string): Promise<boolean> {
+  try {
+    return (await moveFileStore().stat(storageKey)) !== null;
+  } catch {
+    return false;
+  }
+}
 
 export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -57,8 +111,19 @@ export type Member = { userId: string; role: string; active: boolean; kind: stri
 export type OrgContext = {
   orgId: string;
   members: Map<string, Member>;
-  /** The workspace's first owner: the earliest active human owner, else the earliest owner. */
+  /**
+   * The workspace's first owner: the earliest-joined active human owner, never an
+   * inactive or agent owner (their drive would be frozen). Null when there is none.
+   */
   firstOwnerId: string | null;
+  /**
+   * The workspace gets a Shared notes drive: it has a live note visible to the whole
+   * workspace, or a public chat's canvas with content (O-F10: deleted workspace notes
+   * alone don't make one).
+   */
+  sharedNotesWanted: boolean;
+  /** Which note holds each file several notes name (move-notes.ts currentContentHolders, O-F7); filled before notes move. */
+  currentHolders: Map<string, string>;
 };
 
 export async function loadOrgContext(orgId: string): Promise<OrgContext> {
@@ -72,8 +137,24 @@ export async function loadOrgContext(orgId: string): Promise<OrgContext> {
   for (const row of rows) {
     members.set(row.user_id, { userId: row.user_id, role: row.role, active: row.is_active, kind: row.kind, name: row.name });
   }
-  const first = rows[0];
-  return { orgId, members, firstOwnerId: first && first.role === 'owner' ? first.user_id : null };
+  const first = rows.find((row) => row.role === 'owner' && row.is_active && row.kind === 'human');
+  return { orgId, members, firstOwnerId: first?.user_id ?? null, sharedNotesWanted: await sharedNotesWanted(orgId), currentHolders: new Map() };
+}
+
+/** OrgContext.sharedNotesWanted: a live workspace note, or a public chat's canvas with content (read a page at a time). */
+async function sharedNotesWanted(orgId: string): Promise<boolean> {
+  const [live] = rowsOf<{ found: boolean }>(await db.execute(sql`SELECT EXISTS (SELECT 1 FROM notes
+    WHERE org_id = ${orgId} AND visibility = 'org' AND is_deleted = false) AS found`));
+  if (live?.found) return true;
+  for (let after = ''; ;) {
+    const page = rowsOf<{ id: string; content: unknown }>(await db.execute(sql`SELECT public_canvas.id, public_canvas.content
+      FROM canvases public_canvas JOIN spaces chat ON chat.id = public_canvas.space_id AND chat.org_id = public_canvas.org_id
+      WHERE public_canvas.org_id = ${orgId} AND chat.type = 'public' AND public_canvas.content IS NOT NULL AND public_canvas.id > ${after}
+      ORDER BY public_canvas.id LIMIT 100`));
+    if (page.some((canvas) => canvasHasContent(canvas.content))) return true;
+    if (page.length < 100) return false;
+    after = page[page.length - 1]!.id;
+  }
 }
 
 /** An active human member who is not a guest: who may own a canvas. */
@@ -147,9 +228,50 @@ export async function personalDriveInTx(tx: Tx, ctx: OrgContext, userId: string)
   return { id, frozen: true, frozenCreated: true };
 }
 
-/** The Shared notes drive, made on first use (F4's ensureSharedNotesDrive), created by the first owner. */
-export async function sharedNotesDriveInTx(tx: Tx, ctx: OrgContext, authorId: string): Promise<string> {
-  return (await ensureSharedNotesDrive(ctx.orgId, ctx.firstOwnerId ?? authorId, tx)).id;
+/**
+ * The agents who could read workspace notes on master and can hold access
+ * now (O-F3): users of kind `agent` with an active owner, admin or member
+ * row in the workspace and their own active, undeleted employee there (the
+ * access check's actor rule). Open drives give agents nothing, so these keep
+ * reading Shared notes through a `view` member row each.
+ */
+export const ELIGIBLE_AGENTS_SQL = (orgId: string) => sql`SELECT member.user_id FROM org_members member
+  JOIN users person ON person.id = member.user_id
+  JOIN agent_employees employee ON employee.id = person.agent_employee_id AND employee.org_id = member.org_id
+    AND employee.user_id = member.user_id
+  WHERE member.org_id = ${orgId} AND member.is_active = true AND member.role IN ('owner', 'admin', 'member')
+    AND person.kind = 'agent' AND employee.is_active = true AND employee.is_deleted = false`;
+
+/**
+ * The Shared notes drive, made on first use (F4's ensureSharedNotesDrive),
+ * created by the first owner, with every eligible agent as a `view` member
+ * (ELIGIBLE_AGENTS_SQL; agents who join later follow the open-drive rule).
+ * `agentsAdded` counts the member rows this call wrote.
+ */
+export async function sharedNotesDriveInTx(tx: Tx, ctx: OrgContext, authorId: string): Promise<{ id: string; agentsAdded: number }> {
+  const { id } = await ensureSharedNotesDrive(ctx.orgId, ctx.firstOwnerId ?? authorId, tx);
+  const added = rowsOf<{ id: string }>(await tx.execute(sql`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role)
+    SELECT gen_random_uuid()::text, ${ctx.orgId}, ${id}, 'user', eligible.user_id, 'view' FROM (${ELIGIBLE_AGENTS_SQL(ctx.orgId)}) eligible
+    ON CONFLICT (drive_id, principal_type, principal_id) DO NOTHING
+    RETURNING id`));
+  return { id, agentsAdded: added.length };
+}
+
+/** The "Chat canvases" folder at the root of Shared notes, where public chats' canvases go (O-F4): made by the move (no author). */
+export async function chatCanvasesFolderInTx(tx: Tx, orgId: string, driveId: string): Promise<string> {
+  const [existing] = rowsOf<{ id: string }>(await tx.execute(sql`
+    SELECT id FROM doc_folders
+    WHERE org_id = ${orgId} AND drive_id = ${driveId} AND parent_folder_id IS NULL AND created_by IS NULL AND name = 'Chat canvases'
+      AND is_deleted = false
+    ORDER BY created_at, id LIMIT 1`));
+  if (existing) return existing.id;
+  const id = randomUUID();
+  await tx.execute(sql`INSERT INTO doc_folders (id, org_id, drive_id, parent_folder_id, name, position, created_by)
+    VALUES (${id}, ${orgId}, ${driveId}, NULL, 'Chat canvases',
+      (SELECT coalesce(max(position), 0) + 1 FROM doc_folders WHERE org_id = ${orgId} AND drive_id = ${driveId}
+        AND parent_folder_id IS NULL AND is_deleted = false),
+      NULL)`);
+  return id;
 }
 
 /** The author's folder at the root of Shared notes: found by its author (created_by), made on first use. */
@@ -204,28 +326,35 @@ export async function insertDocumentInTx(tx: Tx, d: MovedDocument): Promise<stri
 }
 
 /**
- * Old versions that share one time keep their order: within a document, the
- * n-th version (in version order) at a time already used is stored n
- * microseconds later. Every other time is kept as it was.
+ * Old versions keep their order, so the history lists them as they were
+ * (S-F6): within a document, in version order, each stored time is its own
+ * time or 1 microsecond after the time stored before it, whichever is later
+ * (t'ᵢ = max(tᵢ, t'ᵢ₋₁ + 1 µs)). A history already in order keeps its times.
+ * Worked out in SQL, so microseconds are kept exactly.
  */
 export class VersionTimes {
-  private readonly used = new Map<TimestampText, number>();
-  /** How many microseconds to add to this version's time. */
-  tie(createdAt: TimestampText): number {
-    const n = this.used.get(createdAt) ?? 0;
-    this.used.set(createdAt, n + 1);
-    return n;
+  private last: TimestampText | null = null;
+  /** The time to store for the next version (in version order), as Postgres text. */
+  async next(tx: Tx, createdAt: TimestampText): Promise<TimestampText> {
+    if (this.last === null) {
+      this.last = createdAt;
+      return createdAt;
+    }
+    const [row] = rowsOf<{ at: string }>(await tx.execute(sql`
+      SELECT greatest(${createdAt}::timestamp, ${this.last}::timestamp + interval '1 microsecond')::text AS at`));
+    this.last = row!.at;
+    return row!.at;
   }
 }
 
-/** A `moved` version, through F8's version primitive in the source's transaction, with its own title and time (plus its tie). */
+/** A `moved` version, through F8's version primitive in the source's transaction, with its own title, at the time VersionTimes gave it. */
 export async function insertMovedVersionInTx(tx: Tx, v: {
   orgId: string; documentId: string; title: string | null; json: JSONContent; createdBy: string | null; createdAt: TimestampText;
-  tie: number; editDetails: Record<string, unknown>;
+  editDetails: Record<string, unknown>;
 }): Promise<void> {
   await createVersionInTx(tx, {
     orgId: v.orgId, documentId: v.documentId, kind: 'moved', title: v.title, json: v.json, createdBy: v.createdBy,
-    editDetails: v.editDetails, createdAt: sql`${v.createdAt}::timestamp + ${v.tie}::int * interval '1 microsecond'`,
+    editDetails: v.editDetails, createdAt: sql`${v.createdAt}::timestamp`,
   });
 }
 
@@ -260,35 +389,64 @@ export async function insertSharesInTx(tx: Tx, orgId: string, documentIds: strin
   return written;
 }
 
-export type FileDecision = 'linked' | 'not_found' | 'uploaded_by_someone_else' | 'on_message_or_task' | 'in_another_document';
+export type FileRefusal = 'not_found' | 'uploaded_by_someone_else' | 'on_message_or_task' | 'in_another_document'
+  | 'held_by_another_note' | 'bytes_missing';
+
+/** What the move knows about one file a source's images name: who uploaded it, and why no document may take it, if so. */
+export type FileFacts = { uploadedBy: string | null; refusal: FileRefusal | null };
 
 /**
- * Which of the files a source's images name it may link (the consult's
- * rule): the file is in the workspace, `allowed` (its author, or the editor
- * of a version the image appears in) uploaded it, it is on no message or task
- * (column or link table), and no other document links it. `files` has no
- * soft delete, so a file that exists is a row that exists. The files are
- * locked FOR UPDATE in id order first, so a message or task that takes one
- * meanwhile waits for this transaction, then is checked in a fresh statement.
+ * The files a source's images name, as the consult's rule needs them, apart
+ * from who may have uploaded them (that is per snapshot: imageAllowed). A
+ * file is refused when it isn't in the workspace (`files` has no soft delete:
+ * a file that exists is a row that exists), is on a message or task (column
+ * or link table), is already in another document, is held by another note
+ * that shows it in its live content (`heldElsewhere`, O-F7), or its bytes are
+ * gone (O-F2). The files are locked FOR UPDATE in id order first, so a
+ * message or task that takes one meanwhile waits for this transaction, then
+ * is checked in a fresh statement.
+ *
+ * Missing bytes: when the storage root answers and holds something
+ * (storageRootReachable), only that file is lost: it is refused
+ * (`bytes_missing`) and becomes a placeholder. When the root doesn't answer,
+ * or is empty (a missing or misconfigured mount), this throws: the source is
+ * refused without being mapped, so a run after the mount is fixed decides
+ * again.
  */
-export async function decideFilesInTx(tx: Tx, orgId: string, allowed: Map<string, Set<string>>): Promise<Map<string, FileDecision>> {
-  const ids = [...allowed.keys()].sort();
-  const decisions = new Map<string, FileDecision>(ids.map((id) => [id, 'not_found' as FileDecision]));
-  if (ids.length === 0) return decisions;
+export async function fileFactsInTx(tx: Tx, orgId: string, fileIds: Iterable<string>, heldElsewhere: (fileId: string) => boolean):
+  Promise<Map<string, FileFacts>> {
+  const ids = [...new Set(fileIds)].sort();
+  const facts = new Map<string, FileFacts>(ids.map((id) => [id, { uploadedBy: null, refusal: 'not_found' as FileRefusal }]));
+  if (ids.length === 0) return facts;
   await tx.execute(sql`SELECT id FROM files WHERE org_id = ${orgId} AND id = ANY(${sql.param(ids)}::text[]) ORDER BY id FOR UPDATE`);
-  const rows = rowsOf<{ id: string; uploaded_by: string; attached: boolean; in_document: boolean }>(await tx.execute(sql`
-    SELECT moved_file.id, moved_file.uploaded_by,
+  const rows = rowsOf<{ id: string; uploaded_by: string; storage_key: string; attached: boolean; in_document: boolean }>(await tx.execute(sql`
+    SELECT moved_file.id, moved_file.uploaded_by, moved_file.storage_key,
       (moved_file.message_id IS NOT NULL OR moved_file.task_id IS NOT NULL
         OR EXISTS (SELECT 1 FROM message_attachments link WHERE link.org_id = moved_file.org_id AND link.file_id = moved_file.id)
         OR EXISTS (SELECT 1 FROM task_attachments link WHERE link.org_id = moved_file.org_id AND link.file_id = moved_file.id)) AS attached,
       EXISTS (SELECT 1 FROM document_attachments link WHERE link.org_id = moved_file.org_id AND link.file_id = moved_file.id) AS in_document
     FROM files moved_file
     WHERE moved_file.org_id = ${orgId} AND moved_file.id = ANY(${sql.param(ids)}::text[])`));
+  let rootReachable: boolean | null = null;
   for (const row of rows) {
-    decisions.set(row.id, !allowed.get(row.id)!.has(row.uploaded_by) ? 'uploaded_by_someone_else'
-      : row.attached ? 'on_message_or_task' : row.in_document ? 'in_another_document' : 'linked');
+    let refusal: FileRefusal | null = row.attached ? 'on_message_or_task' : row.in_document ? 'in_another_document'
+      : heldElsewhere(row.id) ? 'held_by_another_note' : null;
+    if (refusal === null && !(await bytesExist(row.storage_key))) {
+      rootReachable ??= await storageRootReachable(tx, orgId);
+      if (!rootReachable) {
+        throw new MoveError('storage_unreachable', 'The file storage is unreachable or empty: fix the uploads mount, then run the move again');
+      }
+      refusal = 'bytes_missing';
+    }
+    facts.set(row.id, { uploadedBy: row.uploaded_by, refusal });
   }
-  return decisions;
+  return facts;
+}
+
+/** True when a snapshot whose images `allowed` may have uploaded can show this file: no refusal, and one of them uploaded it. */
+export function imageAllowed(facts: Map<string, FileFacts>, fileId: string, allowed: ReadonlySet<string>): boolean {
+  const fact = facts.get(fileId);
+  return Boolean(fact && fact.refusal === null && fact.uploadedBy !== null && allowed.has(fact.uploadedBy));
 }
 
 /**

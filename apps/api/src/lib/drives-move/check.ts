@@ -30,9 +30,8 @@ import { sql } from 'drizzle-orm';
 import * as Y from 'yjs';
 import { getDocumentSchema, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
 import { db } from '../db.js';
-import { localFileStore } from '../file-store.js';
 import { canvasHasContent, fitsSizeCap, measureContent, type JSONContent } from './convert-note.js';
-import { rowsOf } from './placement.js';
+import { bytesExist, ELIGIBLE_AGENTS_SQL, rowsOf } from './placement.js';
 
 export type PostMoveCheck = { orgId: string; ok: boolean; notesExpected: number; documentsMapped: number; mismatches: string[];
   sampleOpened: number; sampleFailed: string[] };
@@ -138,6 +137,47 @@ export async function postMoveCheck(orgId: string, sampleSize = 20): Promise<Pos
     const what = row.want === null ? 'has an extra share for' : row.have === null ? 'lacks the share for' : 'has the wrong role for';
     mismatches.push(`source ${row.source_id}: document ${row.document_id} ${what} ${row.principal}`);
   }
+
+  // Drives: each source sits where the move's rules put it (O-F9).
+  const notePlaces = rowsOf<{ id: string; visibility: string; is_deleted: boolean; user_id: string; kind: string; system_key: string | null;
+    owner_user_id: string | null }>(await db.execute(sql`
+    SELECT n.id, n.visibility, n.is_deleted, n.user_id, placed_drive.kind, placed_drive.system_key, placed_drive.owner_user_id
+    FROM notes n
+    JOIN note_document_map m ON m.org_id = n.org_id AND m.source_type = 'note' AND m.source_id = n.id
+    JOIN documents placed_doc ON placed_doc.id = m.target_id AND placed_doc.org_id = n.org_id
+    JOIN drives placed_drive ON placed_drive.id = placed_doc.drive_id AND placed_drive.org_id = n.org_id
+    WHERE n.org_id = ${orgId}`));
+  for (const row of notePlaces) {
+    const ownDrive = row.kind === 'personal' && row.owner_user_id === row.user_id;
+    const shared = row.system_key === 'shared_notes';
+    const expected = row.visibility === 'org' ? (row.is_deleted ? shared || ownDrive : shared) : ownDrive;
+    if (!expected) mismatches.push(`note ${row.id}: its document is in the wrong drive`);
+  }
+  const canvasPlaces = rowsOf<{ id: string; chat_type: string | null; kind: string; system_key: string | null; owner_user_id: string | null;
+    owner_id: string | null; owner_seated: boolean; owner_is_owner: boolean }>(await db.execute(sql`
+    SELECT c.id, chat.type::text AS chat_type, placed_drive.kind, placed_drive.system_key, placed_drive.owner_user_id, m.details->>'owner_id' AS owner_id,
+      EXISTS (SELECT 1 FROM space_members seat WHERE seat.space_id = chat.id AND seat.user_id = placed_drive.owner_user_id) AS owner_seated,
+      EXISTS (SELECT 1 FROM org_members owner_row WHERE owner_row.org_id = c.org_id AND owner_row.user_id = placed_drive.owner_user_id
+        AND owner_row.role = 'owner' AND owner_row.is_active) AS owner_is_owner
+    FROM canvases c
+    JOIN note_document_map m ON m.org_id = c.org_id AND m.source_type = 'canvas' AND m.source_id = c.id
+    JOIN documents placed_doc ON placed_doc.id = m.target_id AND placed_doc.org_id = c.org_id
+    JOIN drives placed_drive ON placed_drive.id = placed_doc.drive_id AND placed_drive.org_id = c.org_id
+    LEFT JOIN spaces chat ON chat.id = c.space_id AND chat.org_id = c.org_id
+    WHERE c.org_id = ${orgId}`));
+  for (const row of canvasPlaces) {
+    const expected = row.chat_type === 'public' ? row.system_key === 'shared_notes'
+      : row.kind === 'personal' && row.owner_user_id === row.owner_id && (row.owner_seated || row.owner_is_owner);
+    if (!expected) mismatches.push(`canvas ${row.id}: its document is in the wrong drive`);
+  }
+  // Agents keep reading Shared notes through a view member row each (O-F3).
+  const agentGaps = rowsOf<{ user_id: string }>(await db.execute(sql`
+    SELECT eligible.user_id FROM (${ELIGIBLE_AGENTS_SQL(orgId)}) eligible
+    JOIN drives shared_drive ON shared_drive.org_id = ${orgId} AND shared_drive.system_key = 'shared_notes' AND shared_drive.is_deleted = false
+    WHERE NOT EXISTS (SELECT 1 FROM drive_members agent_row WHERE agent_row.org_id = ${orgId} AND agent_row.drive_id = shared_drive.id
+      AND agent_row.principal_type = 'user' AND agent_row.principal_id = eligible.user_id)
+    ORDER BY 1`));
+  for (const row of agentGaps) mismatches.push(`agent ${row.user_id} has no view on Shared notes`);
 
   // Versions.
   const versionGaps = rowsOf<{ id: string; expected: number; moved: number }>(await db.execute(sql`
@@ -248,14 +288,6 @@ export async function postMoveCheck(orgId: string, sampleSize = 20): Promise<Pos
     else sampleOpened += 1;
   }
   return { orgId, ok: mismatches.length === 0 && sampleFailed.length === 0, notesExpected, documentsMapped, mismatches, sampleOpened, sampleFailed };
-}
-
-async function bytesExist(storageKey: string): Promise<boolean> {
-  try {
-    return (await localFileStore.stat(storageKey)) !== null;
-  } catch {
-    return false;
-  }
 }
 
 /** True when `json` is a valid document that reads back from its Yjs state as exactly itself. */
