@@ -359,19 +359,26 @@ test('a guest sharer sees only people they share a chat with', async (t) => {
   await share(member, document, { user: member2 }, 'view');
   await share(member, document, { user: stranger }, 'view');
   await share(member, document, { space: fx.spaces.team }, 'view');
-  // member2 shared it with their private chat (member isn't in it, so can't).
+  // member2 shared it with their private chat (member isn't in it, so can't); the fixture records the owner as sharer.
   await fx.share(document, { space: fx.spaces.other }, 'view');
-  const byPrincipal = async (viewer: string) => new Map(((await call(viewer, 'GET', `/api/documents/${document}/shares`, undefined, 200)).shares as any[])
-    .map((row) => [row.principal_id, row.name]));
-  const asGuest = await byPrincipal(guest);
-  assert.equal(asGuest.get(member2), 'member2', 'someone in a chat with the guest');
-  assert.equal(asGuest.get(guest), 'guest', 'themselves');
-  assert.equal(asGuest.get(stranger), null, 'nobody the guest shares a chat with');
-  assert.ok(asGuest.get(fx.spaces.team)?.startsWith('team-'), 'a chat the guest is in');
-  assert.equal(asGuest.get(fx.spaces.other), null, 'a private chat the guest is not in');
-  const asMember = await byPrincipal(member);
-  assert.equal(asMember.get(stranger), 'Stranger Name', 'a member sees everyone');
-  assert.equal(asMember.get(fx.spaces.other), null, 'the member is not in the other private chat either');
+  const ids = {
+    guest: await shareIdOf(document, guest), member2: await shareIdOf(document, member2), stranger: await shareIdOf(document, stranger),
+    team: await shareIdOf(document, fx.spaces.team), other: await shareIdOf(document, fx.spaces.other),
+  };
+  /** The share list as `viewer` sees it, by share id: [principal_id, name, shared_by]. */
+  const listAs = async (viewer: string) => new Map(((await call(viewer, 'GET', `/api/documents/${document}/shares`, undefined, 200)).shares as any[])
+    .map((row) => [row.id, [row.principal_id, row.name, row.shared_by]]));
+  const asGuest = await listAs(guest);
+  assert.deepEqual(asGuest.get(ids.member2), [member2, 'member2', member], 'someone in a chat with the guest, shared by someone in one too');
+  assert.deepEqual(asGuest.get(ids.guest), [guest, 'guest', member], 'themselves');
+  // Minor 4 (fix round 1): someone hidden from the guest is hidden whole: no name, no id.
+  assert.deepEqual(asGuest.get(ids.stranger), [null, null, member], 'nobody the guest shares a chat with');
+  assert.equal(asGuest.get(ids.team)?.[0], fx.spaces.team);
+  assert.ok(String(asGuest.get(ids.team)?.[1]).startsWith('team-'), 'a chat the guest is in');
+  assert.deepEqual(asGuest.get(ids.other), [null, null, null], 'a private chat the guest is not in, shared by someone they can’t see');
+  const asMember = await listAs(member);
+  assert.deepEqual(asMember.get(ids.stranger), [stranger, 'Stranger Name', member], 'a member sees everyone');
+  assert.deepEqual(asMember.get(ids.other), [null, null, fx.people.owner], 'the member is not in the other private chat either');
   // A guest can't share with someone they can't see: the same answer as someone who doesn't exist.
   assert.equal((await share(guest, document, { user: await fx.addPerson() }, 'view', 400)).code, 'PRINCIPAL_CANNOT_HOLD_ACCESS');
   assert.equal((await share(guest, document, { user: randomUUID() }, 'view', 400)).code, 'PRINCIPAL_CANNOT_HOLD_ACCESS');
@@ -610,7 +617,8 @@ test('include sub-pages skips the sub-pages the sharer can’t edit and counts t
   const target = await fx.addPerson();
   const body = await share(member2, document, { user: target }, 'view');
   assert.equal(body.shared_subpages, 1);
-  assert.equal(body.skipped_subpages, 2);
+  // Minor 1 (fix round 1): only the sub-page member2 can view is counted; the unseen one isn't revealed.
+  assert.equal(body.skipped_subpages, 1);
   assert.equal(await roleOf(target, document), 'view');
   assert.equal(await roleOf(target, editable), 'view');
   assert.equal(await roleOf(target, readOnly), null, 'a sub-page the sharer can only view');
@@ -624,7 +632,7 @@ test('include sub-pages skips the sub-pages the sharer can’t edit and counts t
   // A sub-page that already gives at least the role keeps it; a lower one is raised.
   await fx.share(editable, { user: other }, 'edit');
   await fx.share(readOnly, { user: other }, 'view');
-  await call(member, 'DELETE', `/api/documents/${document}/shares/${await shareIdOf(document, other)}`, undefined, 200);
+  await call(member, 'DELETE', `/api/documents/${document}/shares/${await shareIdOf(document, other)}`, { include_subpages: false }, 200);
   const again = await share(member, document, { user: other }, 'comment');
   assert.equal(again.shared_subpages, 2, 'the view share raised, and the unseen grandchild shared');
   assert.equal(again.skipped_subpages, 0);
@@ -653,10 +661,6 @@ test('a direct share tells the named person, an agent included; a chat share tel
   } finally {
     await sockets.close();
   }
-  // The sharer sharing with themselves tells nobody.
-  const selfDocument = (await documentOf(member, 'Self')).document;
-  await share(member, selfDocument, { user: member }, 'view');
-  assert.deepEqual(await toldAbout(selfDocument), []);
 });
 
 test('document:shared reaches only the new recipients, not the document’s other viewers', async (t) => {
@@ -705,4 +709,174 @@ test('the share routes answer a document of another workspace with 404', async (
   assert.equal((await call(outsider, 'PATCH', `/api/documents/${document}/shares/${row}`, { role: 'edit' }, 404)).code, 'NOT_FOUND');
   assert.equal((await call(outsider, 'DELETE', `/api/documents/${document}/shares/${row}`, undefined, 404)).code, 'NOT_FOUND');
   assert.equal((await call(outsider, 'GET', `/api/documents/${document}/audience?space_id=${fx.spaces.team}`, undefined, 404)).code, 'NOT_FOUND');
+});
+
+// ── Fix round 1 ─────────────────────────────────────────────────────────────
+
+test('removing or lowering a page’s share does the same on the sub-pages the actor can edit, in one access loss; the rest are skipped and keep theirs', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const { drive, document } = await documentOf(member, 'Unshared tree');
+  const child = await fx.insertDocument({ driveId: drive, parentDocumentId: document, title: 'Child' });
+  const grandchild = await fx.insertDocument({ driveId: drive, parentDocumentId: child, title: 'Grandchild' });
+  const guarded = await fx.insertDocument({ driveId: drive, parentDocumentId: document, title: 'View-only for member2' });
+  const hidden = await fx.insertDocument({ driveId: drive, parentDocumentId: child, title: 'Hidden from member2' });
+  // member2's edit comes only from shares: edit on the page, child and grandchild; view on `guarded`; nothing on `hidden`.
+  for (const page of [document, child, grandchild]) await fx.share(page, { user: member2 }, 'edit');
+  await fx.share(guarded, { user: member2 }, 'view');
+  const person = await fx.addPerson();
+  const shared = await share(member, document, { user: person }, 'edit');
+  assert.equal(shared.shared_subpages, 4);
+  const tree = [document, child, grandchild, guarded, hidden];
+  const roles = () => Promise.all(tree.map((page) => roleOf(person, page)));
+  assert.deepEqual(await roles(), ['edit', 'edit', 'edit', 'edit', 'edit']);
+  const row = shared.share.id as string;
+  const affected = [document, ...[child, grandchild].sort()];
+
+  resetEvents();
+  let generation = currentAccessGeneration();
+  const lowered = await call(member2, 'PATCH', `/api/documents/${document}/shares/${row}`, { role: 'view' }, 200);
+  assert.equal(lowered.share.role, 'view');
+  assert.equal(lowered.lowered_subpages, 2);
+  assert.equal(lowered.skipped_subpages, 1, 'the view-only sub-page; the hidden one is not counted');
+  assert.deepEqual(await roles(), ['view', 'view', 'view', 'edit', 'edit'], 'lowered where member2 can edit, kept elsewhere');
+  assertOneLoss({ orgId: fx.orgId, documentIds: affected, userIds: [person] }, generation);
+
+  resetEvents();
+  generation = currentAccessGeneration();
+  const removed = await call(member2, 'DELETE', `/api/documents/${document}/shares/${row}`, undefined, 200);
+  assert.equal(removed.removed_subpages, 2);
+  assert.equal(removed.skipped_subpages, 1);
+  assert.deepEqual(await roles(), [null, null, null, 'edit', 'edit'], 'removed where member2 can edit, kept elsewhere');
+  assertOneLoss({ orgId: fx.orgId, documentIds: affected, userIds: [person] }, generation);
+});
+
+test('unsharing a page shared with its sub-pages takes every sub-page away; include_subpages false touches the page only; a raise touches the page only', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, guest } = fx.people;
+  const { drive, document } = await documentOf(member, 'Chat tree');
+  const child = await fx.insertDocument({ driveId: drive, parentDocumentId: document, title: 'Child' });
+  const grandchild = await fx.insertDocument({ driveId: drive, parentDocumentId: child, title: 'Grandchild' });
+  const pages = [document, child, grandchild];
+  const roles = () => Promise.all(pages.map((page) => roleOf(guest, page)));
+  const team = { space: fx.spaces.team };
+  await share(member, document, team, 'comment');
+  assert.deepEqual(await roles(), ['comment', 'comment', 'comment']);
+  const removed = await call(member, 'DELETE', `/api/documents/${document}/shares/${await shareIdOf(document, fx.spaces.team)}`, undefined, 200);
+  assert.deepEqual([removed.removed_subpages, removed.skipped_subpages], [2, 0]);
+  assert.deepEqual(await roles(), [null, null, null], 'every sub-page is unshared too');
+  for (const page of pages) assert.deepEqual(await shareRows(page), []);
+
+  // Off: only the page.
+  await share(member, document, team, 'edit');
+  let row = await shareIdOf(document, fx.spaces.team);
+  const lowered = await call(member, 'PATCH', `/api/documents/${document}/shares/${row}`, { role: 'view', include_subpages: false }, 200);
+  assert.deepEqual([lowered.lowered_subpages, lowered.skipped_subpages], [0, 0]);
+  assert.deepEqual(await roles(), ['view', 'edit', 'edit']);
+  const kept = await call(member, 'DELETE', `/api/documents/${document}/shares/${row}`, { include_subpages: false }, 200);
+  assert.deepEqual([kept.removed_subpages, kept.skipped_subpages], [0, 0]);
+  assert.deepEqual(await roles(), [null, 'edit', 'edit']);
+
+  // A raise changes the page only: raising across the tree is POST's job.
+  await share(member, document, team, 'view', 201, { include_subpages: false });
+  row = await shareIdOf(document, fx.spaces.team);
+  await call(member, 'DELETE', `/api/documents/${child}/shares/${await shareIdOf(child, fx.spaces.team)}`, { include_subpages: false }, 200);
+  await share(member, child, team, 'view', 201, { include_subpages: false });
+  const raised = await call(member, 'PATCH', `/api/documents/${document}/shares/${row}`, { role: 'comment' }, 200);
+  assert.deepEqual([raised.share.role, raised.lowered_subpages, raised.skipped_subpages], ['comment', 0, 0]);
+  assert.deepEqual(await roles(), ['comment', 'view', 'edit']);
+});
+
+test('a refused share takes no locks first: a viewer gets 403 and a stranger 404 while the recipient and the pages are locked; the refusal order holds', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { admin, member, member2 } = fx.people;
+  const { drive, document } = await documentOf(member, 'Refused early');
+  const child = await fx.insertDocument({ driveId: drive, parentDocumentId: document, title: 'Child' });
+  await fx.addDriveMember(drive, { user: member2 }, 'view');
+  const person = await fx.addPerson();
+  await fx.share(document, { user: person }, 'view');
+  const row = await shareIdOf(document, person);
+  const path = `/api/documents/${document}/shares`;
+  const pending: Array<Promise<Response>> = [];
+  /** The answer if it comes within 3 s; null when the request waited on a lock. */
+  const prompt = (userId: string, method: string, at: string, body?: unknown) => {
+    const request = fx!.request(userId, method, at, body);
+    pending.push(request);
+    return Promise.race([
+      request.then(async (res) => ({ status: res.status, code: (await json(res.clone())).code })),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000)),
+    ]);
+  };
+  const holder = await lockHolder();
+  try {
+    await holder.query('BEGIN');
+    await holder.query('SELECT 1 FROM org_members WHERE org_id = $1 AND user_id = $2 FOR UPDATE', [fx.orgId, person]);
+    await holder.query('SELECT 1 FROM documents WHERE id = ANY($1::text[]) FOR UPDATE', [[document, child]]);
+    const body = { principal_type: 'user', principal_id: person, role: 'edit' };
+    assert.deepEqual(await prompt(member2, 'POST', path, body), { status: 403, code: 'FORBIDDEN_ROLE' }, 'a viewer, at once');
+    assert.deepEqual(await prompt(member2, 'PATCH', `${path}/${row}`, { role: 'edit' }), { status: 403, code: 'FORBIDDEN_ROLE' });
+    assert.deepEqual(await prompt(member2, 'DELETE', `${path}/${row}`), { status: 403, code: 'FORBIDDEN_ROLE' });
+    assert.deepEqual(await prompt(admin, 'POST', path, body), { status: 404, code: 'NOT_FOUND' }, 'someone who can’t see it, at once');
+  } finally {
+    await holder.query('ROLLBACK').catch(() => undefined);
+    await holder.end();
+    await Promise.allSettled(pending);
+  }
+  // 404, then 403, then 400 and 409.
+  const cannotHold = await fx.addPerson({ kind: 'agent' });
+  const to = (principal: string) => ({ principal_type: 'user', principal_id: principal, role: 'view' });
+  assert.equal((await call(admin, 'POST', path, to(cannotHold), 404)).code, 'NOT_FOUND');
+  assert.equal((await call(admin, 'POST', path, to(admin), 404)).code, 'NOT_FOUND', 'a self-share by someone who can’t see it');
+  assert.equal((await call(member2, 'POST', path, to(cannotHold), 403)).code, 'FORBIDDEN_ROLE');
+  assert.equal((await call(member2, 'POST', path, to(member2), 403)).code, 'FORBIDDEN_ROLE');
+  assert.equal((await call(member, 'POST', path, to(cannotHold), 400)).code, 'PRINCIPAL_CANNOT_HOLD_ACCESS');
+  assert.equal((await call(member, 'POST', path, to(person), 409)).code, 'ALREADY_SHARED');
+  assert.equal((await call(admin, 'DELETE', `${path}/${row}`, undefined, 404)).code, 'NOT_FOUND');
+});
+
+test('a share tells, and sends document:shared to, only the people whose role on the page was below the share’s', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { agentUser, guest, member, member2 } = fx.people;
+  // member2 can already edit `first` (a drive member): a comment share to the chat newly reaches the guest only.
+  const first = await documentOf(member, 'Already editing');
+  await fx.addDriveMember(first.drive, { user: member2 }, 'edit');
+  const second = await documentOf(member, 'Only viewing');
+  await fx.addDriveMember(second.drive, { user: member2 }, 'view');
+  const sockets = await socketHarness(fx.orgId, [member, member2, guest, agentUser]);
+  try {
+    await share(member, first.document, { space: fx.spaces.team }, 'comment');
+    assert.deepEqual(await toldAbout(first.document), [guest], 'member2 could already edit it');
+    await waitFor(() => sockets.received(guest, 'document:shared').length > 0, 'document:shared for the guest');
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(sockets.received(member2, 'document:shared'), [], 'nor is member2 sent the event');
+    // member2 can only view `second`: an edit share to the chat raises them, so they are told.
+    await share(member, second.document, { space: fx.spaces.team }, 'edit');
+    assert.deepEqual(await toldAbout(second.document), [member2, guest].sort());
+    await waitFor(() => sockets.received(member2, 'document:shared').some((event) => event.document_id === second.document),
+      'document:shared for member2');
+  } finally {
+    await sockets.close();
+  }
+  // A person who could already open it at that role is not told.
+  const third = await documentOf(member, 'Person already in');
+  await fx.addDriveMember(third.drive, { user: member2 }, 'comment');
+  await share(member, third.document, { user: member2 }, 'view');
+  assert.deepEqual(await toldAbout(third.document), []);
+});
+
+test('a share naming the sharer is refused with 400 SELF_SHARE, and so is raising one; a chat the sharer is in is fine', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const { drive, document } = await documentOf(member, 'Self');
+  assert.equal((await share(member, document, { user: member }, 'view', 400)).code, 'SELF_SHARE');
+  assert.deepEqual(await shareRows(document), []);
+  await share(member, document, { space: fx.spaces.team }, 'view');
+  // A share to member2 that already exists: member2 (a drive editor) may lower or remove it, never raise it.
+  await fx.addDriveMember(drive, { user: member2 }, 'edit');
+  await fx.share(document, { user: member2 }, 'comment');
+  const row = await shareIdOf(document, member2);
+  assert.equal((await call(member2, 'PATCH', `/api/documents/${document}/shares/${row}`, { role: 'edit' }, 400)).code, 'SELF_SHARE');
+  assert.equal((await call(member2, 'PATCH', `/api/documents/${document}/shares/${row}`, { role: 'view' }, 200)).share.role, 'view');
+  await call(member2, 'DELETE', `/api/documents/${document}/shares/${row}`, undefined, 200);
+  assert.deepEqual((await shareRows(document)).map(([type]) => type), ['space']);
 });

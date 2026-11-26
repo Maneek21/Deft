@@ -17,15 +17,18 @@
 // `?content=1` asks for it. A document over the size cap is refused with 413
 // TOO_LARGE.
 //
-// Routes that take no body (delete, restore, star and unstar, removing a
-// share) accept none, one of only JSON whitespace, or well-formed JSON, and
-// answer anything else with 400 before changing anything.
+// Routes that take no body (delete, restore, star and unstar) accept none,
+// one of only JSON whitespace, or well-formed JSON, and answer anything else
+// with 400 before changing anything. Removing a share takes an optional body
+// on the same terms: none, or `{ include_subpages }`; any other JSON value
+// (null aside) is 400 too.
 //
 // Sharing (F9; the rules, the lock order and who is told are in
 // lib/document-shares.ts): GET /:id/shares needs edit; POST /:id/shares,
 // PATCH and DELETE /:id/shares/:shareId need edit, and a share gives at most
 // edit (400 ROLE_TOO_HIGH); GET /:id/audience?space_id= needs view and a seat
-// in the chat.
+// in the chat. POST, DELETE and a lowering PATCH reach the sub-pages too
+// unless `include_subpages` is false (DELETE takes it as an optional body).
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
@@ -74,7 +77,9 @@ const shareSchema = z.object({
   role: shareRoleSchema,
   include_subpages: z.boolean().optional(),
 });
-const shareRoleChangeSchema = z.object({ role: shareRoleSchema });
+const shareRoleChangeSchema = z.object({ role: shareRoleSchema, include_subpages: z.boolean().optional() });
+/** DELETE's optional body. */
+const shareRemoveSchema = z.object({ include_subpages: z.boolean().optional() });
 
 /** One snapshot for GET /:id's role, document, drive and breadcrumb. */
 const READ_SNAPSHOT: PgTransactionConfig = { isolationLevel: 'repeatable read', accessMode: 'read only' };
@@ -265,7 +270,8 @@ documentRoutes.post('/:id/shares', async (c) => {
   }
 });
 
-// PATCH /api/documents/:id/shares/:shareId { role } (needs edit).
+// PATCH /api/documents/:id/shares/:shareId { role, include_subpages? } (needs edit). Lowering also
+// lowers the sub-pages' shares by default; raising changes this page only.
 documentRoutes.patch('/:id/shares/:shareId', async (c) => {
   try {
     const user = c.get('user');
@@ -273,22 +279,29 @@ documentRoutes.patch('/:id/shares/:shareId', async (c) => {
     if (!parsed.success) return invalid(c);
     const { role } = parsed.data;
     if (role === 'full') throw roleTooHigh();
-    const share = await changeShareRole({
+    const changed = await changeShareRole({
       orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), shareId: c.req.param('shareId'), role,
+      includeSubpages: parsed.data.include_subpages ?? true,
     });
-    return c.json({ share: shareShape(share) });
+    return c.json({ share: changed.share, lowered_subpages: changed.loweredSubpages, skipped_subpages: changed.skippedSubpages });
   } catch (error) {
     return failed(c, error, 'change the share');
   }
 });
 
-// DELETE /api/documents/:id/shares/:shareId (needs edit).
+// DELETE /api/documents/:id/shares/:shareId [{ include_subpages? }] (needs edit). The body is optional;
+// by default the sub-pages' shares go too.
 documentRoutes.delete('/:id/shares/:shareId', async (c) => {
   try {
     const user = c.get('user');
     if (!(await noBodyOrJson(c))) return invalid(c);
-    await removeShare({ orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), shareId: c.req.param('shareId') });
-    return c.json({ success: true });
+    const parsed = shareRemoveSchema.safeParse((await jsonBody(c)) ?? {});
+    if (!parsed.success) return invalid(c);
+    const removed = await removeShare({
+      orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), shareId: c.req.param('shareId'),
+      includeSubpages: parsed.data.include_subpages ?? true,
+    });
+    return c.json({ success: true, removed_subpages: removed.removedSubpages, skipped_subpages: removed.skippedSubpages });
   } catch (error) {
     return failed(c, error, 'remove the share');
   }
