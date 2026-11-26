@@ -218,6 +218,22 @@ function emptyParagraphsFrame(draft: Y.Doc, bytes: number): Uint8Array {
   return Y.encodeStateAsUpdate(draft, vector);
 }
 
+/**
+ * Appends one paragraph that already carries a valid block id, holding text,
+ * to `draft` until the update since the previous frame reaches `bytes`;
+ * returns that update. Normalizing it adds nothing (no id to write back).
+ */
+function paragraphWithIdFrame(draft: Y.Doc, bytes: number): Uint8Array {
+  const vector = Y.encodeStateVector(draft);
+  draft.transact(() => {
+    const paragraph = new Y.XmlElement('paragraph');
+    paragraph.setAttribute('id', randomUUID());
+    paragraph.insert(0, [new Y.XmlText(bigText(bytes))]);
+    draft.getXmlFragment('default').push([paragraph]);
+  });
+  return Y.encodeStateAsUpdate(draft, vector);
+}
+
 /** The encoded size `doc` has once the server has normalized it (block ids written back, the size warning). */
 function normalizedSize(doc: Y.Doc): number {
   const scratch = new Y.Doc();
@@ -264,6 +280,20 @@ async function sendEmptyParagraphFrames(documentId: string, editor: CollabTestCl
   } finally {
     draft.destroy();
   }
+}
+
+/**
+ * Sends `frames` on `editor`'s socket, then waits until the server has
+ * handled them: `observer` sees a later awareness probe from `editor` (one
+ * socket's frames are handled in order, and document updates go out no later
+ * than awareness), or the socket closed.
+ */
+async function sendHandled(documentId: string, editor: CollabTestClient, observer: CollabTestClient, frames: Uint8Array[], label: string): Promise<void> {
+  for (const frame of frames) editor.socket.send(collabFrames.update(`doc:${documentId}`, frame));
+  const probe = randomUUID();
+  editor.provider.setAwarenessField('probe', probe);
+  await pollUntil(() => editor.closes.length > 0
+    || (observer.provider.awareness!.getStates().get(editor.ydoc.clientID) as { probe?: string } | undefined)?.probe === probe, label);
 }
 
 // ---------------------------------------------------------------------------
@@ -1420,6 +1450,154 @@ test('a write to a document that loaded but never became live is refused BUSY af
   assert.ok(!reader.text().includes('Never applied'));
 });
 
+// ---------------------------------------------------------------------------
+// Fix round 4: one accounting invariant for the size cap
+
+test('frames Yjs holds back count when admitted, so the tiny frame that completes them is refused', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Held back' });
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  // Another client's edits whose first struct is withheld: Yjs holds every later one back.
+  const ghost = new Y.Doc();
+  t.after(() => ghost.destroy());
+  Y.applyUpdate(ghost, Y.encodeStateAsUpdate(editor.ydoc));
+  const start = Y.encodeStateVector(ghost);
+  appendParagraph(ghost, 'The withheld first struct');
+  const completing = Y.encodeStateAsUpdate(ghost, start);
+  const held: Uint8Array[] = [];
+  for (let k = 0; k < 5; k += 1) held.push(emptyParagraphsFrame(ghost, 10_000));
+  const completed = normalizedSize(ghost);
+  assert.ok(completed > 65_536, `completed, the state would normalize to ${completed} bytes`);
+  assert.ok(completing.byteLength < 200, 'the completing frame is tiny');
+  const blocks = observer.ydoc.getXmlFragment('default').length;
+
+  await sendHandled(doc, editor, observer, held, 'the held-back frames are handled');
+  assert.equal(editor.closes.length, 0, 'the held-back frames were admitted');
+  assert.equal(observer.ydoc.getXmlFragment('default').length, blocks, 'held back: nobody sees them yet');
+
+  await sendHandled(doc, editor, observer, [completing], 'the completing frame is handled');
+  assert.equal(editor.closes[0]?.code, 4413,
+    `the completing frame was applied: ${observer.ydoc.getXmlFragment('default').length} blocks, normalizing to ${completed} bytes`);
+  editor.destroy();
+  observer.destroy();
+  await allUnloaded();
+  const state = new Y.Doc();
+  Y.applyUpdate(state, new Uint8Array((await stored(doc)).ydoc_state!));
+  const size = normalizedSize(state);
+  const text = ydocText(state);
+  state.destroy();
+  assert.ok(!text.includes('The withheld first struct'), 'the completing frame never landed');
+  assert.ok(size <= 65_536, `the stored state normalizes to ${size} bytes, within the cap`);
+});
+
+test('a frame measured while a store is writing keeps its measurement when the store finishes, so the next crossing frame is refused', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Store and measure' });
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  const draft = new Y.Doc();
+  t.after(() => draft.destroy());
+  Y.applyUpdate(draft, Y.encodeStateAsUpdate(editor.ydoc));
+  // 1. Fast frames of text in blocks that already carry ids: nothing to grow,
+  //    but each counts at four times its size.
+  for (let k = 1; k <= 4; k += 1) await sendHandled(doc, editor, observer, [paragraphWithIdFrame(draft, 3_300)], `fast frame ${k}`);
+  assert.equal(editor.closes.length, 0);
+  const state = collabStateForTest();
+  assert.ok(state.approxBytes(doc)! > 50_000, `the fast frames counted with their growth (${state.approxBytes(doc)})`);
+  // 2. The debounced store, derived (the first since the load), encodes now and waits on the row.
+  const row = await holdRow(doc);
+  t.after(row.release);
+  await pollUntil(row.waiterBlocked, 'a store waits for the row', 10_000);
+  const revision = Number((await stored(doc)).revision);
+  // 3. During its write, a frame of empty paragraphs without ids is measured and admitted.
+  await sendHandled(doc, editor, observer, [emptyParagraphsFrame(draft, 13_000)], 'the measured frame is handled');
+  assert.equal(editor.closes.length, 0, 'admitted on its measurement');
+  // 4. The store finishes.
+  await row.release();
+  await pollUntil(async () => Number((await stored(doc)).revision) > revision, 'the store finishes', 10_000);
+  // Two scratch copies normalize under different client ids, a few bytes apart.
+  const truth = normalizedSize(observer.ydoc);
+  assert.ok(state.approxBytes(doc)! >= truth - 64, `estimate ${state.approxBytes(doc)} is below the true normalized size ${truth}`);
+  // 5. The next frame that would cross the cap is measured, and refused.
+  const crossing = emptyParagraphsFrame(draft, 9_000);
+  assert.ok(normalizedSize(draft) > 65_536, `with it the state would normalize to ${normalizedSize(draft)} bytes`);
+  await sendHandled(doc, editor, observer, [crossing], 'the crossing frame is handled');
+  assert.equal(editor.closes[0]?.code, 4413, `the crossing frame was applied (${normalizedSize(observer.ydoc)} bytes normalized)`);
+});
+
+test('a block outside the schema can\'t hide id growth: removing it is refused when the ids it held back would pass the cap', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Unknown block' });
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  const lines = captureConsole(t);
+  const draft = new Y.Doc();
+  t.after(() => draft.destroy());
+  Y.applyUpdate(draft, Y.encodeStateAsUpdate(editor.ydoc));
+  const fragment = draft.getXmlFragment('default');
+  // 1. A block the schema doesn't know: no derive can run while it is there.
+  let vector = Y.encodeStateVector(draft);
+  fragment.insert(0, [new Y.XmlElement('notInTheSchema')]);
+  await sendHandled(doc, editor, observer, [Y.encodeStateAsUpdate(draft, vector)], 'the unknown block is handled');
+  // 2. Paragraphs without ids, measured as they are (they can't be normalized).
+  for (let k = 1; k <= 5; k += 1) {
+    await sendHandled(doc, editor, observer, [emptyParagraphsFrame(draft, 10_000)], `paragraph frame ${k} is handled`);
+    assert.equal(editor.closes.length, 0, `paragraph frame ${k} was admitted`);
+  }
+  const raw = Y.encodeStateAsUpdate(draft).byteLength;
+  assert.ok(raw <= 65_536, `as it is, the state is within the cap (${raw})`);
+  // 3. Removing the unknown block would let the next derive write every id back.
+  vector = Y.encodeStateVector(draft);
+  fragment.delete(0, 1);
+  const removal = Y.encodeStateAsUpdate(draft, vector);
+  const normalized = normalizedSize(draft);
+  assert.ok(normalized > 65_536, `without it the state normalizes to ${normalized} bytes`);
+  await sendHandled(doc, editor, observer, [removal], 'the removal is handled');
+  assert.equal(editor.closes[0]?.code, 4413, 'the removal was applied');
+  editor.destroy();
+  observer.destroy();
+  await allUnloaded();
+  const row = await stored(doc);
+  const state = new Y.Doc();
+  Y.applyUpdate(state, new Uint8Array(row.ydoc_state!));
+  const stillThere = state.getXmlFragment('default').toArray().some((node) => node instanceof Y.XmlElement && node.nodeName === 'notInTheSchema');
+  state.destroy();
+  assert.ok(stillThere, 'the unknown block is still there, so nothing could write the ids back');
+  assert.ok(row.state_bytes! <= 65_536, `the stored state is within the cap (${row.state_bytes})`);
+  assert.ok(lines.every((line) => !line.includes('notInTheSchema')), 'nothing from the document is logged');
+});
+
+test('a write made by work a listener started, after its run has finished, waits for its own listeners', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Work started by a listener' });
+  const system = {
+    orgId: fx!.orgId, documentId: doc, actor: { kind: 'system' as const, userId: 'system' }, requiredRole: null, reason: 'import' as const,
+  };
+  const work: { laterListenerDone: boolean; later: Promise<string> | null } = { laterListenerDone: false, later: null };
+  t.after(onDocumentStored(async (e) => {
+    if (e.documentId !== doc) return;
+    const text = jsonToText(e.json);
+    if (text.includes('Written later')) {
+      await delay(300);
+      work.laterListenerDone = true;
+      return;
+    }
+    if (text.includes('First write') && !work.later) {
+      // Fire and forget: it writes after this run has finished.
+      work.later = new Promise<string>((resolve) => {
+        setTimeout(() => {
+          writeDocument({ ...system, mutate: (d) => appendParagraph(d, 'Written later') })
+            .then(() => resolve(work.laterListenerDone ? 'waited for its listeners' : 'returned before its listeners ran'), () => resolve('refused'));
+        }, 200);
+      });
+    }
+  }));
+  await writeDocument({ ...system, mutate: (d) => appendParagraph(d, 'First write') });
+  await pollUntil(() => work.later !== null, 'the listener started its work');
+  const outcome = await Promise.race([work.later!, delay(5_000).then(() => 'still waiting')]);
+  assert.equal(outcome, 'waited for its listeners');
+});
+
 test('shutdown flushes pending stores', { skip: !url && SKIP }, async (t) => {
   const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Shutdown' });
   const editor = await open(t, doc, fx!.people.member);
@@ -1505,4 +1683,29 @@ test('shutdown waits for a connection mid-load and stores the frames buffered be
   await dropSlow();
   await stopping;
   assert.ok(storedStateText(await stored(loading)).includes('Buffered behind the load'), 'an acknowledged edit was stored before shutdown ended');
+});
+
+test('shutdown with a stored listener that hangs completes by its deadline and reports it', { skip: !url && SKIP }, async (t) => {
+  srv!.renew();
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Hung listener' });
+  const editor = await open(t, doc, fx!.people.member);
+  // Hangs for the whole shutdown; let go afterwards so nothing outlives the test.
+  let letGo!: () => void;
+  const hung = new Promise<void>((resolve) => { letGo = resolve; });
+  t.after(() => letGo());
+  t.after(onDocumentStored(async (e) => { if (e.documentId === doc) await hung; }));
+  editor.typeText('Stored before the hung listener');
+  await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'the edit was acknowledged');
+  const lines = captureConsole(t);
+  const started = Date.now();
+  const outcome = await Promise.race([
+    srv!.collab.destroy({ retryUntil: started + 1_500 }).then(() => 'resolved', (e: unknown) => e),
+    delay(6_000).then(() => 'still running'),
+  ]);
+  const took = Date.now() - started;
+  assert.ok(outcome instanceof Error && /listener/.test(outcome.message), `shutdown reports the hung listener (${String(outcome)})`);
+  assert.ok(took < 3_000, `shutdown finished by its deadline (${took} ms)`);
+  assert.ok(lines.some((line) => line.includes('[collab] shutdown abandoned a stored listener that did not finish')), lines.join(' | '));
+  assert.ok(lines.every((line) => !line.includes('Stored before the hung listener')), 'nothing a person wrote is logged');
+  assert.ok(storedStateText(await stored(doc)).includes('Stored before the hung listener'), 'the document itself was stored');
 });

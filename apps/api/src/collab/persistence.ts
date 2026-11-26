@@ -82,8 +82,10 @@ const storedListeners = new Set<StoredListener>();
  * - A store of ydoc_state alone bumps `revision` and runs no listener.
  * - Runs for one document go one at a time, in the order of their stores.
  *   They run with no lock held, so a listener may call writeDocument, even on
- *   the same document: that write returns once applied, and its own run
- *   comes after the current one.
+ *   the same document: while the run is still in progress, that write
+ *   returns once applied, and its own run comes after the current one. Work
+ *   a listener starts that writes after the run has ended waits for that
+ *   write's listeners, as any write does.
  */
 export function onDocumentStored(fn: (e: DocumentStoredEvent) => Promise<void>): () => void {
   storedListeners.add(fn);
