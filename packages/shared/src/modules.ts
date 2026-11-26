@@ -953,6 +953,9 @@ export function getDeftModuleManifestV1JsonSchema(): Record<string, unknown> {
     ...z.toJSONSchema(DeftModuleManifestV1Schema, {
       target: 'draft-2020-12',
       unrepresentable: 'any',
+      // The authoring shape: properties Deft fills in (required, multiple,
+      // subtitle_fields, ...) are optional here, as they are when parsing.
+      io: 'input',
     }),
   } as Record<string, unknown>);
 }
@@ -973,6 +976,9 @@ export function getDeftModuleManifestV2JsonSchema(): Record<string, unknown> {
     ...z.toJSONSchema(DeftModuleManifestV2Schema, {
       target: 'draft-2020-12',
       unrepresentable: 'any',
+      // The authoring shape: properties Deft fills in (required, multiple,
+      // subtitle_fields, ...) are optional here, as they are when parsing.
+      io: 'input',
     }),
   } as Record<string, unknown>);
 }

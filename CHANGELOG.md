@@ -10,6 +10,16 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### The app file schema no longer flags valid files
+
+- **Fixed.** The published JSON Schema for app files
+  (`docs/schemas/deft.module.v1.schema.json`) marked `required`, `multiple` and
+  `subtitle_fields` as required, though Deft fills them in. Editors therefore
+  flagged valid files, and all four starter apps failed it. The schema now
+  describes what you write, so those properties are optional, while a file
+  missing something truly required (such as `id`, or a field's `label`) still
+  fails.
+
 ### Start from a template, check before installing, and edit apps in the browser
 
 - **Start from a template.** Settings → Apps offers four starters: Hiring pipeline, Vendor

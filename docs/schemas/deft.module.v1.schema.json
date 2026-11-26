@@ -113,7 +113,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type"
                   ],
                   "additionalProperties": false
@@ -152,7 +151,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type"
                   ],
                   "additionalProperties": false
@@ -191,7 +189,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type"
                   ],
                   "additionalProperties": false
@@ -230,7 +227,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type"
                   ],
                   "additionalProperties": false
@@ -269,7 +265,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type"
                   ],
                   "additionalProperties": false
@@ -308,7 +303,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type"
                   ],
                   "additionalProperties": false
@@ -347,7 +341,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type"
                   ],
                   "additionalProperties": false
@@ -386,7 +379,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type"
                   ],
                   "additionalProperties": false
@@ -454,7 +446,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type",
                     "options"
                   ],
@@ -527,7 +518,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type",
                     "options"
                   ],
@@ -568,9 +558,7 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
-                    "type",
-                    "multiple"
+                    "type"
                   ],
                   "additionalProperties": false
                 },
@@ -605,7 +593,6 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type"
                   ],
                   "additionalProperties": false
@@ -651,10 +638,8 @@
                   "required": [
                     "key",
                     "label",
-                    "required",
                     "type",
-                    "target_collection",
-                    "multiple"
+                    "target_collection"
                   ],
                   "additionalProperties": false
                 }
@@ -695,7 +680,6 @@
             },
             "required": [
               "title_field",
-              "subtitle_fields",
               "fields"
             ],
             "additionalProperties": false

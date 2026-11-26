@@ -1,0 +1,70 @@
+{
+  "$schema": "https://deft.ing/schemas/deft.module.v1.schema.json",
+  "schema_version": "1",
+  "id": "workspace.equipment-loans",
+  "slug": "equipment-loans",
+  "version": "1.0.0",
+  "name": "Equipment loans",
+  "description": "Laptops, cameras and other kit, and who has borrowed them.",
+  "icon": "package",
+  "collections": [
+    {
+      "key": "loans",
+      "name": "Loans",
+      "singular_name": "Loan",
+      "fields": [
+        { "key": "title", "label": "Title", "type": "text", "required": true },
+        { "key": "item_id", "label": "Item", "type": "relation", "target_collection": "items", "required": false, "multiple": false },
+        { "key": "borrower", "label": "Borrower", "type": "member", "required": false, "multiple": false },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "single_select",
+          "required": true,
+          "default": "requested",
+          "options": [
+            { "value": "requested", "label": "Requested" },
+            { "value": "out", "label": "Out" },
+            { "value": "returned", "label": "Returned" }
+          ]
+        },
+        { "key": "due_on", "label": "Due on", "type": "date", "required": false },
+        { "key": "notes", "label": "Notes", "type": "long_text", "required": false }
+      ],
+      "search": { "title_field": "title", "subtitle_fields": [], "fields": ["title", "notes"] },
+      "views": [
+        { "key": "board", "name": "By status", "type": "board", "group_by": "status", "fields": ["title", "item_id", "borrower", "due_on"] },
+        { "key": "all", "name": "All loans", "type": "table", "fields": ["title", "item_id", "borrower", "status", "due_on"] },
+        { "key": "form", "name": "Lend something", "type": "form", "fields": ["title", "item_id", "borrower", "status", "due_on", "notes"] },
+        { "key": "detail", "name": "Loan", "type": "detail", "fields": ["title", "item_id", "borrower", "status", "due_on", "notes"] }
+      ]
+    },
+    {
+      "key": "items",
+      "name": "Items",
+      "singular_name": "Item",
+      "fields": [
+        { "key": "name", "label": "Name", "type": "text", "required": true },
+        {
+          "key": "kind",
+          "label": "Kind",
+          "type": "single_select",
+          "required": false,
+          "options": [
+            { "value": "laptop", "label": "Laptop" },
+            { "value": "camera", "label": "Camera" },
+            { "value": "other", "label": "Other" }
+          ]
+        },
+        { "key": "serial_number", "label": "Serial number", "type": "text", "required": false }
+      ],
+      "search": { "title_field": "name", "subtitle_fields": [], "fields": ["name", "serial_number"] },
+      "views": [
+        { "key": "all", "name": "All items", "type": "table", "fields": ["name", "kind", "serial_number"] },
+        { "key": "form", "name": "Add an item", "type": "form", "fields": ["name", "kind", "serial_number"] },
+        { "key": "detail", "name": "Item", "type": "detail", "fields": ["name", "kind", "serial_number"] }
+      ]
+    }
+  ],
+  "navigation": { "default_collection": "loans", "default_view": "board" }
+}
