@@ -208,3 +208,26 @@ test('an install answer without a digest keeps the app and says the samples were
   assert.equal(result.seeded, 0);
   assert.match(result.seedError ?? '', /sample records were not added/);
 });
+
+test('a dropped connection or a null answer while seeding keeps the app and reports it', async () => {
+  const template = getAppTemplate('hiring-pipeline')!;
+  for (const failure of ['throw', 'null'] as const) {
+    let records = 0;
+    const fetch = async (path: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      if (path === '/api/modules/sideload') {
+        return new Response(JSON.stringify({ module: { slug: body.slug, module_id: body.id, manifest_digest: `sha256:${'a'.repeat(64)}` } }), { status: 201 });
+      }
+      records += 1;
+      if (records === 2) {
+        if (failure === 'throw') throw new TypeError('Failed to fetch');
+        return new Response('null', { status: 201 });
+      }
+      return new Response(JSON.stringify({ record: { id: `record-${records}` } }), { status: 201 });
+    };
+    const result = await installAppTemplate({ template, name: 'Hiring', withSamples: true, fetch });
+    assert.equal(result.slug, 'hiring');
+    assert.ok(result.seedError, failure);
+    assert.ok(result.seeded <= 2, failure);
+  }
+});

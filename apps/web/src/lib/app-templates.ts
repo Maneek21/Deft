@@ -158,22 +158,29 @@ async function seedSamples(
         .filter((id): id is string => Boolean(id));
       if (recordIds.length > 0) relations[field] = recordIds;
     }
-    const response = await fetcher(`/api/modules/${encodeURIComponent(slug)}/records`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        collection_key: sample.collection,
-        data: sample.data,
-        relations,
-        expected_manifest_digest: manifestDigest,
-        idempotency_key: `template:${runKey}:${index}`,
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetcher(`/api/modules/${encodeURIComponent(slug)}/records`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collection_key: sample.collection,
+          data: sample.data,
+          relations,
+          expected_manifest_digest: manifestDigest,
+          idempotency_key: `template:${runKey}:${index}`,
+        }),
+      });
+    } catch {
+      // The app is already installed: a dropped connection only stops the samples.
+      return { seeded, seedError: partialSeedError(seeded, template.samples.length, 'The connection dropped.') };
+    }
     if (!response.ok) {
       const reason = await moduleApiError(response, 'A sample record could not be created.');
       return { seeded, seedError: partialSeedError(seeded, template.samples.length, reason) };
     }
-    const body = await response.json().catch(() => ({})) as {
+    const parsed = await response.json().catch(() => null) as unknown;
+    const body = (parsed && typeof parsed === 'object' ? parsed : {}) as {
       record?: { id?: unknown } | null;
       mutation?: { record_id?: unknown } | null;
       record_id?: unknown;
