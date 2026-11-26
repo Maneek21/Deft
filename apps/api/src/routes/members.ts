@@ -266,41 +266,72 @@ type Reassigned = { replacement_user_id: string | null; primary_open_tasks: numb
 /** The membership was gone or already inactive under the removal's locks (a removal that raced another). */
 class MemberAlreadyRemovedError extends Error {}
 
+/** How many times a removal transaction runs when PostgreSQL picks it as a deadlock victim. */
+const REMOVAL_ATTEMPTS = 3;
+
+/** SQLSTATE 40P01 (deadlock_detected), on the error or a cause drizzle wraps it in. */
+function isDeadlock(error: unknown): boolean {
+  for (let current = error, depth = 0; current && typeof current === 'object' && depth < 4; depth += 1) {
+    if ((current as { code?: unknown }).code === '40P01') return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /**
  * Removes a member: the one locked path, the owner-only rule, then (under the
  * same locks) the reassignment of their open work and the end of every
  * access. A refusal changes nothing. The active status is checked again under
  * the locks, so a removal that waited for another one finds the member gone
  * (MemberAlreadyRemovedError) and hands nothing over.
+ *
+ * Two removals that name each other as replacement lock each other's
+ * membership in opposite orders (each member's row first, the replacement's
+ * second, after the room-access lock), and PostgreSQL rolls one back with
+ * 40P01. That transaction runs again, from the room-access lock, up to
+ * REMOVAL_ATTEMPTS times after a short jittered pause: by then the other
+ * removal has committed, and the retry answers as it would have done had it
+ * come second (its replacement is no longer active). Each attempt collects
+ * afresh, so the steps after commit run once, for the attempt that committed.
  */
 async function revokeMemberWorkspaceAccess(
   orgId: string, memberId: string, actor: MembershipActor, replacementUserId: string | null = null, handOverPersonalDrive = true,
 ): Promise<Reassigned> {
-  const revokedAt = new Date();
-  let reassigned: Reassigned = { replacement_user_id: replacementUserId, primary_open_tasks: 0, led_projects: 0, led_teams: 0 };
-  const closedActions: string[] = [];
-  const documentLosses: PendingAccessLoss[] = [];
-  const handovers: DriveHandover[] = [];
-  const revokedSessionIds = await db.transaction(async (tx) => {
-    // DFX2: the person's room-access lock first (lib/room-access-lock.ts).
-    await lockRoomAccessChange(tx, orgId, memberId);
-    const locked = await lockMembership(tx, { orgId, targetUserId: memberId });
-    if (!locked.account || !locked.membership?.is_active) throw new MemberAlreadyRemovedError();
-    const refusal = await authorizeMembershipOperation(tx, { orgId, actor, locked });
-    if (refusal) throw new MembershipGuardError(refusal);
-    if (replacementUserId) {
-      reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId, {
-        actorId: actor === 'operator' ? 'operator' : actor.userId, handOver: handOverPersonalDrive, handovers,
+  for (let attempt = 1; ; attempt += 1) {
+    const revokedAt = new Date();
+    let reassigned: Reassigned = { replacement_user_id: replacementUserId, primary_open_tasks: 0, led_projects: 0, led_teams: 0 };
+    const closedActions: string[] = [];
+    const documentLosses: PendingAccessLoss[] = [];
+    const handovers: DriveHandover[] = [];
+    let revokedSessionIds: string[];
+    try {
+      revokedSessionIds = await db.transaction(async (tx) => {
+        // DFX2: the person's room-access lock first (lib/room-access-lock.ts).
+        await lockRoomAccessChange(tx, orgId, memberId);
+        const locked = await lockMembership(tx, { orgId, targetUserId: memberId });
+        if (!locked.account || !locked.membership?.is_active) throw new MemberAlreadyRemovedError();
+        const refusal = await authorizeMembershipOperation(tx, { orgId, actor, locked });
+        if (refusal) throw new MembershipGuardError(refusal);
+        if (replacementUserId) {
+          reassigned = await reassignMemberOwnership(tx, orgId, memberId, replacementUserId, {
+            actorId: actor === 'operator' ? 'operator' : actor.userId, handOver: handOverPersonalDrive, handovers,
+          });
+        }
+        await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
+        await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, locked.membership.id));
+        return endWorkspaceAccess(tx, orgId, memberId, revokedAt, closedActions, documentLosses);
       });
+    } catch (error) {
+      if (attempt >= REMOVAL_ATTEMPTS || !isDeadlock(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 20 * attempt + Math.floor(Math.random() * 40)));
+      continue;
     }
-    await recordMembershipChange(tx, { orgId, targetUserId: memberId, locked, change: { isActive: false } });
-    await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, locked.membership.id));
-    return endWorkspaceAccess(tx, orgId, memberId, revokedAt, closedActions, documentLosses);
-  });
-  await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds, closedActions, documentLosses);
-  // The handed-on drive: its access change, then the new holder's notice.
-  for (const handover of handovers) await finishDriveHandover(handover);
-  return reassigned;
+    // Committed: these run once, outside the retry.
+    await afterWorkspaceAccessEnded(orgId, memberId, revokedSessionIds, closedActions, documentLosses);
+    // The handed-on drive: its access change, then the new holder's notice.
+    for (const handover of handovers) await finishDriveHandover(handover);
+    return reassigned;
+  }
 }
 
 class ReassignmentError extends Error {}

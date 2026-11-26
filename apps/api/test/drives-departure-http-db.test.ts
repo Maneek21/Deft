@@ -645,6 +645,61 @@ test('a returning member’s frozen drive stays frozen when an admin removes the
   assert.equal(await driveRoleFor(member2, fx.orgId, drive), 'full');
 });
 
+test('two removals naming each other as replacement never answer 500: one commits, the other is retried and refused', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { admin, owner } = fx.people;
+  const x = await person('Reciprocal X');
+  const y = await person('Reciprocal Y');
+  const xDrive = await fx.insertDrive({ kind: 'personal', ownerUserId: x, name: 'My drive' });
+  const yDrive = await fx.insertDrive({ kind: 'personal', ownerUserId: y, name: 'My drive' });
+  const xDoc = await fx.insertDocument({ driveId: xDrive, title: 'X work' });
+  const yDoc = await fx.insertDocument({ driveId: yDrive, title: 'Y work' });
+  const holder = await lockHolder();
+  let responses: Response[] = [];
+  try {
+    // Hold both drives: each removal stops there holding its own member's
+    // row, so when they are let go each asks for the other's row while
+    // holding its own, and PostgreSQL rolls one back (40P01).
+    await holder.query('BEGIN');
+    await holder.query('SELECT id FROM drives WHERE id = ANY($1::text[]) FOR UPDATE', [[xDrive, yDrive]]);
+    resetEvents();
+    const removeX = fx.request(owner, 'DELETE', `/api/members/${x}`, { replacement_user_id: y });
+    const removeY = fx.request(admin, 'DELETE', `/api/members/${y}`, { replacement_user_id: x });
+    await waitForLockWaiters(2, 'both removals hold their member and wait on their drive');
+    await holder.query('COMMIT');
+    responses = await Promise.all([removeX, removeY]);
+  } finally {
+    await holder.query('ROLLBACK').catch(() => undefined);
+    await holder.end();
+  }
+  const bodies = await Promise.all(responses.map((res) => json(res)));
+  const statuses = responses.map((res) => res.status);
+  assert.ok(!statuses.includes(500), `no 500: ${JSON.stringify(bodies)}`);
+  assert.deepEqual([...statuses].sort(), [200, 400], JSON.stringify(bodies));
+  const winnerIsX = statuses[0] === 200;
+  const [winner, loser] = winnerIsX ? [x, y] : [y, x];
+  const [winnerDrive, loserDrive] = winnerIsX ? [xDrive, yDrive] : [yDrive, xDrive];
+  const [winnerDoc] = winnerIsX ? [xDoc] : [yDoc];
+  assert.equal(bodies[winnerIsX ? 1 : 0].code, 'PRINCIPAL_CANNOT_HOLD_ACCESS', 'the retry finds its replacement gone');
+
+  assert.equal(await isActiveMember(winner), false);
+  assert.equal(await isActiveMember(loser), true, 'the refused removal changed nothing');
+  assert.equal((await driveState(winnerDrive)).kind, 'private', 'handed to the loser, who was still active');
+  assert.equal(await driveRoleFor(loser, fx.orgId, winnerDrive), 'full');
+  const loserState = await driveState(loserDrive);
+  assert.equal(loserState.kind, 'personal');
+  assert.equal(loserState.frozen, false);
+  // The steps after commit ran once, for the transaction that committed.
+  assert.equal((await auditsOf(winnerDrive, 'drive_handed_over')).length, 1);
+  assert.deepEqual(await auditsOf(loserDrive, 'drive_handed_over'), []);
+  assert.equal((await handoverNotices(loser, winnerDrive)).length, 1, 'one notice');
+  const handoverChange = { orgId: fx.orgId, driveId: winnerDrive, documentIds: [winnerDoc] };
+  assert.equal(accessChanges.filter((change) => isDeepStrictEqual(change, handoverChange)).length, 1, 'the handover finished once');
+  assert.equal(accessChanges.filter((change) => isDeepStrictEqual(change, { orgId: fx.orgId, userIds: [winner] })).length, 1,
+    'the departure finished once');
+  assert.equal(accessChanges.some((change) => isDeepStrictEqual(change, { orgId: fx.orgId, userIds: [loser] })), false);
+});
+
 test('a removal that waited for another finds the member gone and hands nothing over', async (t) => {
   if (!fx) return t.skip(SKIP);
   const { admin, member2, owner } = fx.people;

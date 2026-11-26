@@ -3449,14 +3449,18 @@ export async function cleanDuplicatePilotAgents(orgId: string) {
   const staleEmployeeIds = stalePilotAgents.map((employee) => employee.id);
   const staleUserIds = [...new Set(stalePilotAgents.map((employee) => employee.user_id))];
   const losses = await db.transaction(async (tx) => {
-    await tx
-      .update(agentEmployees)
-      .set({ is_active: false, is_deleted: true, deleted_at: now, updated_at: now })
-      .where(inArray(agentEmployees.id, staleEmployeeIds));
+    // Membership rows first, then employee rows: the order every transaction
+    // that locks both for one agent takes (a handover's eligibility check,
+    // removing an agent member, deleting an agent employee), so this never
+    // waits on one of them while holding what it needs.
     await tx
       .update(orgMembers)
       .set({ is_active: false, updated_at: now })
       .where(and(eq(orgMembers.org_id, orgId), inArray(orgMembers.user_id, staleUserIds)));
+    await tx
+      .update(agentEmployees)
+      .set({ is_active: false, is_deleted: true, deleted_at: now, updated_at: now })
+      .where(inArray(agentEmployees.id, staleEmployeeIds));
     const pending: PendingAccessLoss[] = [];
     for (const userId of staleUserIds) pending.push(...await endDriveAccessOnDepartureInTx(tx, orgId, userId));
     return pending;

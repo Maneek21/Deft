@@ -8,8 +8,10 @@ import path from 'node:path';
 // Chromium and viewed by the owner. When the person being removed has a
 // personal drive with documents in it (the offboarding preview says so), the
 // remove dialog shows the replacement picker even with no open work, and asks
-// explicitly: hand the drive to the replacement, or freeze it. The test reads
-// the DELETE /api/members/:id body the dialog actually sends (spec 5.2, F6).
+// explicitly: hand the drive to the replacement, or freeze it. Removal stays
+// disabled until a preview has loaded; a failed preview shows its error and a
+// retry. The test reads the DELETE /api/members/:id body the dialog actually
+// sends (spec 5.2, F6).
 const web = fileURLToPath(new URL('../..', import.meta.url));
 const require = createRequire(path.join(web, 'package.json'));
 const { chromium } = require('playwright');
@@ -54,8 +56,14 @@ type Scenario = {
   personalDrive: boolean;
   /** 'hand_over' or 'freeze' clicks that radio; null clicks neither. */
   choose: 'hand_over' | 'freeze' | null;
+  /** The first preview request fails with a 500; the dialog's retry loads it. */
+  failFirstPreview?: boolean;
 };
-type Seen = { radios: boolean; picker: boolean; disabledBeforeChoice: boolean; line: string | null; body: Record<string, unknown> };
+type Seen = {
+  radios: boolean; picker: boolean; disabledBeforeChoice: boolean; line: string | null; body: Record<string, unknown>;
+  /** While the preview had failed: its error, the retry, Confirm disabled, no choice shown and nothing sent. */
+  failed?: { error: string | null; retry: boolean; confirmDisabled: boolean; radios: boolean; deletes: number };
+};
 
 let bundled: string | null = null;
 async function bundle(): Promise<string> {
@@ -99,6 +107,8 @@ async function removeLeaver(browser: any, scenario: Scenario): Promise<Seen> {
   const tab = await browser.newPage();
   tab.setDefaultTimeout(6000);
   let deleteBody: Record<string, unknown> | null = null;
+  let deletes = 0;
+  let previews = 0;
   await tab.route('**/*', (route: any) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -110,8 +120,15 @@ async function removeLeaver(browser: any, scenario: Scenario): Promise<Seen> {
     }
     if (url.pathname === '/api/members/directory') return json({ members: MEMBERS, invites: [], summary: { active: 3, pending: 0, inactive: 0, agents: 0 } });
     if (url.pathname === '/api/members/seats') return json({ hosted: false });
-    if (url.pathname === '/api/members/leaver/offboarding-preview') return json(preview(scenario.openTasks, scenario.personalDrive));
+    if (url.pathname === '/api/members/leaver/offboarding-preview') {
+      previews += 1;
+      if (scenario.failFirstPreview && previews === 1) {
+        return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Failed to load offboarding preview', code: 'INTERNAL_ERROR' }) });
+      }
+      return json(preview(scenario.openTasks, scenario.personalDrive));
+    }
     if (url.pathname === '/api/members/leaver' && request.method() === 'DELETE') {
+      deletes += 1;
       deleteBody = JSON.parse(request.postData() ?? '{}');
       return json({ success: true, receipt: {} });
     }
@@ -132,9 +149,24 @@ async function removeLeaver(browser: any, scenario: Scenario): Promise<Seen> {
   await tab.getByText('Admin actions').waitFor();
   await tab.getByRole('button', { name: 'Remove', exact: true }).click();
   await tab.getByText('Remove Lea Leaver?').waitFor();
+  const confirm = tab.getByRole('button', { name: scenario.openTasks > 0 ? 'Transfer and remove' : 'Confirm remove' });
+  let failed: Seen['failed'];
+  if (scenario.failFirstPreview) {
+    const retryButton = tab.getByTestId('offboarding-preview-retry');
+    await retryButton.waitFor();
+    // Without a preview the button reads "Confirm remove" (no open work is known yet).
+    const confirmNow = tab.getByRole('button', { name: 'Confirm remove' });
+    failed = {
+      error: (await tab.getByText('Failed to load offboarding preview').textContent())?.trim() ?? null,
+      retry: await retryButton.isVisible(),
+      confirmDisabled: await confirmNow.isDisabled(),
+      radios: await tab.getByTestId('offboarding-drive-hand-over').count() > 0,
+      deletes,
+    };
+    await retryButton.click();
+  }
   await tab.getByText(/Also revokes/).waitFor();
 
-  const confirm = tab.getByRole('button', { name: scenario.openTasks > 0 ? 'Transfer and remove' : 'Confirm remove' });
   const radios = await tab.getByTestId('offboarding-drive-hand-over').count() > 0;
   const picker = await tab.getByTestId('offboarding-replacement-select').count() > 0;
   const disabledBeforeChoice = await confirm.isDisabled();
@@ -146,7 +178,8 @@ async function removeLeaver(browser: any, scenario: Scenario): Promise<Seen> {
   await tab.waitForFunction(() => !document.body.textContent?.includes('Remove Lea Leaver?'));
   await tab.close();
   assert.ok(deleteBody, 'the dialog sent DELETE /api/members/leaver');
-  return { radios, picker, disabledBeforeChoice, line, body: deleteBody };
+  assert.equal(deletes, 1, 'one DELETE');
+  return { radios, picker, disabledBeforeChoice, line, body: deleteBody, failed };
 }
 
 test('Members page: the remove dialog hands My drive to the chosen replacement, or freezes it, and sends exactly that', async () => {
@@ -179,6 +212,14 @@ test('Members page: the remove dialog hands My drive to the chosen replacement, 
     assert.equal(nothing.disabledBeforeChoice, false);
     assert.equal(nothing.line, null);
     assert.deepEqual(nothing.body, { replacement_user_id: null, personal_drive: 'freeze' });
+
+    // A failed preview: an error and a retry, Confirm disabled, no choice offered and nothing sent;
+    // after the retry the explicit choice is required as usual.
+    const retried = await removeLeaver(browser, { openTasks: 0, personalDrive: true, choose: 'hand_over', failFirstPreview: true });
+    assert.deepEqual(retried.failed, { error: 'Failed to load offboarding preview', retry: true, confirmDisabled: true, radios: false, deletes: 0 });
+    assert.equal(retried.radios, true);
+    assert.equal(retried.disabledBeforeChoice, true);
+    assert.deepEqual(retried.body, { replacement_user_id: 'heir', personal_drive: 'hand_over' });
 
     // Open work only: the replacement is sent for the work; the empty drive is frozen.
     const workOnly = await removeLeaver(browser, { openTasks: 1, personalDrive: false, choose: null });

@@ -463,6 +463,14 @@ export default function MembersPage() {
     ));
     setOffboardingReplacementId(defaultReplacement?.id ?? '');
     setOffboardingDriveChoice(null);
+    await loadOffboardingPreview(memberId);
+  };
+
+  // The preview says what the removal hands over, the personal drive
+  // included: removal stays disabled until one has loaded, and a failed load
+  // offers a retry.
+  const loadOffboardingPreview = async (memberId: string) => {
+    setOffboardingPreview(null);
     setOffboardingError('');
     setOffboardingLoading(true);
     try {
@@ -471,7 +479,7 @@ export default function MembersPage() {
       if (!res.ok) throw new Error(data.error || 'Failed to load offboarding preview');
       setOffboardingPreview(data);
     } catch (err: any) {
-      setOffboardingError(err.message);
+      setOffboardingError(err.message || 'Failed to load offboarding preview');
     } finally {
       setOffboardingLoading(false);
     }
@@ -951,7 +959,20 @@ export default function MembersPage() {
                             {offboardingLoading ? (
                               <p className="mt-3 text-[12px]" style={{ color: 'var(--muted)' }}>Loading offboarding preview...</p>
                             ) : offboardingError ? (
-                              <p className="mt-3 rounded px-2 py-1.5 text-[12px]" style={{ color: 'var(--error)', background: 'rgba(147,0,10,0.16)' }}>{offboardingError}</p>
+                              <div className="mt-3 grid gap-2">
+                                <p className="rounded px-2 py-1.5 text-[12px]" style={{ color: 'var(--error)', background: 'rgba(147,0,10,0.16)' }}>{offboardingError}</p>
+                                {!offboardingPreview && (
+                                  <button
+                                    type="button"
+                                    data-testid="offboarding-preview-retry"
+                                    onClick={() => loadOffboardingPreview(detail.member.id)}
+                                    className="h-8 justify-self-start rounded-md px-2 text-[11px] font-semibold"
+                                    style={{ color: 'var(--foreground)', border: '1px solid var(--border)' }}
+                                  >
+                                    Try again
+                                  </button>
+                                )}
+                              </div>
                             ) : offboardingPreview && (
                               <div className="mt-3 grid gap-2">
                                 <div className="grid grid-cols-3 gap-2">
@@ -1030,7 +1051,7 @@ export default function MembersPage() {
                               <button
                                 onClick={() => handleRemove(detail.member.id)}
                                 disabled={
-                                  offboardingLoading || removingId === detail.member.id
+                                  offboardingLoading || removingId === detail.member.id || !offboardingPreview
                                   || (offboardingHandoffCount > 0 && !offboardingReplacementId)
                                   || (offboardingHasDrive && !offboardingDriveChoice)
                                   || (offboardingHasDrive && offboardingDriveChoice === 'hand_over' && !offboardingSelected)
