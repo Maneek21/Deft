@@ -66,7 +66,7 @@ export function ModuleUploadReview({
       </div>
 
       <div className="mt-4 space-y-3 md:pl-[52px]">
-        {summary ?? (
+        {summary ? <fieldset disabled={busy || locked} className="m-0 min-w-0 border-0 p-0">{summary}</fieldset> : (
           <ul className="space-y-1.5" aria-label="Record types in this app">
             {preview.manifest.collections.map((collection) => (
               <li key={collection.key} className="flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-[0.8125rem]" style={{ background: 'var(--surface-container-high)' }}>

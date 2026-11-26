@@ -29,6 +29,7 @@ import { useAuth } from '@/lib/auth-context';
 import { appApiError, canEnableAppWithoutReview, canStageConnectedUpgrade, isConnectedAppManifest, normalizeAppInspection, type AppInspection, type AppInstallation } from '@/lib/apps';
 import {
   moduleApiError,
+  normalizeModuleInstallation,
   previewModuleManifestJson,
   type BundledModule,
   type ModuleInstallation,
@@ -170,7 +171,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
       const result = await installAppTemplate({ template, name, withSamples, installed: installedModules.modules });
       await refreshModuleCaches(result.slug);
       setMessage(result.seedError
-        ? { tone: 'error', text: `${result.name} is installed, but the sample records were not all added: ${result.seedError}`, href: `/modules/${encodeURIComponent(result.slug)}`, hrefLabel: `Open ${result.name}` }
+        ? { tone: 'error', text: `${result.name}: ${result.seedError}`, href: `/modules/${encodeURIComponent(result.slug)}`, hrefLabel: `Open ${result.name}` }
         : { tone: 'success', text: `${result.name} is installed${result.seeded ? ` with ${result.seeded} sample record${result.seeded === 1 ? '' : 's'}` : ''}.`, href: `/modules/${encodeURIComponent(result.slug)}`, hrefLabel: `Open ${result.name}` });
       return true;
     } catch (reason) {
@@ -286,6 +287,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   };
 
   const selectedParts = selectedApp ? installedModules.modules.filter((module) => module.owningAppInstallationId === selectedApp.id) : [];
+  const focusAfterClose = (id: string) => { requestAnimationFrame(() => (document.getElementById(id) ?? document.getElementById('apps-upload-button'))?.focus()); };
   const focusUpload = () => { requestAnimationFrame(() => (document.getElementById('apps-upload-button') ?? document.getElementById('apps-back-link'))?.focus()); };
   // When an action removes the focused control (a review card closing), move focus to the result.
   useEffect(() => {
@@ -311,7 +313,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
           <div className="mt-3 flex items-center gap-2"><code className="rounded-lg px-3 py-2 text-base font-semibold tracking-widest" style={{ background: 'var(--surface-container-high)' }}>{pairing.code}</code><button type="button" className="deft-pill min-h-11" onClick={() => void navigator.clipboard.writeText(pairing.code).then(() => setCopied(true), () => setCopied(false))}>{copied ? <Check size={13} aria-hidden /> : <Copy size={13} aria-hidden />} {copied ? 'Copied' : 'Copy'}</button></div>
         </section>}
         {pendingModule && <ModuleUploadReview preview={pendingModule.preview} decision={pendingModule.decision} busy={busy === pendingModule.preview.slug} locked={busy !== null} onCancel={() => { setPendingModule(null); focusUpload(); }} onConfirm={() => void confirmModule()} summary={<ManifestSummary manifest={pendingModule.preview.manifest} {...(pendingModule.decision.mode === 'install' ? { agentRead, onAgentReadChange: setAgentRead } : {})} />} />}
-        {editingModule && !selectedId && <AppFileEditor key={editingModule.id} module={editingModule} locked={busy !== null} onClose={() => { setEditingId(null); focusUpload(); }} onCheck={async (source) => { const checked = await checkModuleManifestEdit(source, { version: editingModule.manifest.version ?? '', moduleId: editingModule.moduleId, slug: editingModule.slug }); return checked.ok ? { ok: true, version: checked.preview.version } : { ok: false, lines: checked.lines }; }} onSave={async (source) => { setBusy('edit'); try { const saved = await saveModuleManifestEdit({ slug: editingModule.slug, source, activeDigest: editingModule.manifestDigest ?? '', activeVersion: editingModule.manifest.version ?? '', moduleId: editingModule.moduleId }); await refreshModuleCaches(editingModule.slug); return { version: saved.version, source: saved.source }; } finally { setBusy(null); } }} />}
+        {editingModule && !selectedId && <AppFileEditor key={editingModule.id} module={editingModule} locked={busy !== null} onClose={() => { const id = editingModule.id; setEditingId(null); focusAfterClose(`apps-edit-${id}`); }} onCheck={async (source, base) => { const checked = await checkModuleManifestEdit(source, { version: base.version, moduleId: editingModule.moduleId, slug: editingModule.slug }); return checked.ok ? { ok: true, version: checked.preview.version } : { ok: false, lines: checked.lines }; }} onSave={async (source, base) => { setBusy('edit'); try { const saved = await saveModuleManifestEdit({ slug: editingModule.slug, source, activeDigest: base.digest, activeVersion: base.version, moduleId: editingModule.moduleId }); const updated = normalizeModuleInstallation(saved.module); await refreshModuleCaches(editingModule.slug); return { version: saved.version, source: saved.source, digest: updated?.manifestDigest ?? null }; } finally { setBusy(null); } }} />}
         {pending && <InspectionCard pending={pending.inspection} upgradeTarget={pending.upgradeTarget} busy={busy === 'stage'} locked={busy !== null} onCancel={() => { setPending(null); focusUpload(); }} onStage={() => void stage()} />}
         {selectedId ? (
           isLoading ? <div className="flex min-h-48 items-center justify-center"><Loader2 className="animate-spin" role="img" aria-label="Loading apps" /></div>
@@ -349,7 +351,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
                 onUploadVersion: (module) => choosePackage({ kind: 'module', module }),
                 onBundledUpdate: (module) => void updateBundledVersion(module),
                 moduleActions: (module) => <>
-                  <button type="button" disabled={busy !== null} onClick={() => { setPendingModule(null); setEditingId(module.id); }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-[0.8125rem] font-medium disabled:opacity-60 md:min-h-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface)' }} aria-label={`${appFileReadOnlyReason(module) ? 'View the file of' : 'Edit'} ${module.manifest.name || module.slug}`}><Pencil size={14} aria-hidden /> {appFileReadOnlyReason(module) ? 'View file' : 'Edit'}</button>
+                  <button type="button" id={`apps-edit-${module.id}`} disabled={busy !== null} onClick={() => { setPendingModule(null); setEditingId(module.id); }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-[0.8125rem] font-medium disabled:opacity-60 md:min-h-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface)' }} aria-label={`${appFileReadOnlyReason(module) ? 'View the file of' : 'Edit'} ${module.manifest.name || module.slug}`}><Pencil size={14} aria-hidden /> {appFileReadOnlyReason(module) ? 'View file' : 'Edit'}</button>
                   <button type="button" onClick={() => downloadAppFile(module)} title="Download its file" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg px-3 md:min-h-9 md:min-w-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface)' }} aria-label={`Download the file of ${module.manifest.name || module.slug}`}><Download size={14} aria-hidden /></button>
                 </>,
               }} />

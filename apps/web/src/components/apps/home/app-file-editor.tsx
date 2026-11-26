@@ -43,6 +43,14 @@ export function appFileReadOnlyReason(module: ModuleInstallation): string | null
 
 type CheckResult = { ok: true; version: string } | { ok: false; lines: string[] };
 
+/** The installed version the editor started from. Save is checked against it, never against a newer one. */
+export type AppFileBase = { digest: string; version: string; text: string };
+export type AppFileSaveResult = { version: string; source: string; digest: string | null };
+
+function baseFor(module: ModuleInstallation): AppFileBase {
+  return { digest: module.manifestDigest ?? '', version: module.manifest.version ?? '', text: appFileText(module) };
+}
+
 export function AppFileEditor({
   module,
   locked = false,
@@ -54,35 +62,52 @@ export function AppFileEditor({
   /** True while another action on the page runs: Save waits. */
   locked?: boolean;
   onClose: () => void;
-  onCheck: (source: string) => Promise<CheckResult>;
-  /** Saves and resolves with the new version and the saved text, or throws readable text. */
-  onSave: (source: string) => Promise<{ version: string; source?: string }>;
+  onCheck: (source: string, base: AppFileBase) => Promise<CheckResult>;
+  /** Saves against `base` (If-Match its digest); resolves with the saved text and digest, or throws readable text. */
+  onSave: (source: string, base: AppFileBase) => Promise<AppFileSaveResult>;
 }) {
   const name = module.manifest.name || module.slug;
   const readOnlyReason = appFileReadOnlyReason(module);
-  const [source, setSource] = useState(() => appFileText(module));
+  const [base, setBase] = useState<AppFileBase>(() => baseFor(module));
+  const [source, setSource] = useState(base.text);
   const [result, setResult] = useState<{ tone: 'error' | 'success'; text: string } | null>(null);
   const [busy, setBusy] = useState<'check' | 'save' | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
   const editorId = useId();
   const hintId = useId();
-  const dirty = source !== appFileText(module);
+  const dirty = source !== base.text;
+  const latestDigest = module.manifestDigest ?? '';
+  const changedElsewhere = latestDigest !== '' && latestDigest !== base.digest;
 
   useEffect(() => { headingRef.current?.focus(); }, []);
-  // After a save, start again from the new active file once it arrives.
-  const savedRef = useRef(false);
-  const digest = module.manifestDigest;
+  // A newer installed version arrived (someone else saved, or our own save
+  // refreshed). With no unsaved edits, follow it; with edits, keep them and
+  // say so: Save still checks against the version they started from.
   useEffect(() => {
-    if (!savedRef.current) return;
-    savedRef.current = false;
-    setSource(appFileText(module));
+    if (!changedElsewhere || busy === 'save') return;
+    if (readOnlyReason || sourceRef.current === base.text) {
+      const fresh = baseFor(module);
+      setBase(fresh);
+      setSource(fresh.text);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [digest]);
+  }, [latestDigest]);
+
+  const loadNewest = () => {
+    const fresh = baseFor(module);
+    setBase(fresh);
+    setSource(fresh.text);
+    setResult(null);
+  };
 
   const check = async () => {
+    const checking = source;
     setBusy('check'); setResult(null);
     try {
-      const checked = await onCheck(source);
+      const checked = await onCheck(checking, base);
+      if (sourceRef.current !== checking) return; // edited since: this result is stale
       setResult(checked.ok
         ? { tone: 'success', text: `Looks good. Saving will update ${name} to v${checked.version}.` }
         : { tone: 'error', text: checked.lines.join('\n') });
@@ -92,10 +117,10 @@ export function AppFileEditor({
   const save = async () => {
     setBusy('save'); setResult(null);
     try {
-      const { version, source: saved } = await onSave(source);
-      savedRef.current = true;
-      if (saved) setSource(saved);
-      setResult({ tone: 'success', text: `Saved. ${name} is now v${version}, and every record was kept.` });
+      const saved = await onSave(source, base);
+      setBase({ digest: saved.digest ?? '', version: saved.version, text: saved.source });
+      setSource(saved.source);
+      setResult({ tone: 'success', text: `Saved. ${name} is now v${saved.version}, and every record was kept.` });
     } catch (error) {
       setResult({ tone: 'error', text: error instanceof Error && error.message ? error.message : 'Unable to save this app.' });
     } finally { setBusy(null); }
@@ -107,7 +132,7 @@ export function AppFileEditor({
         <div className="min-w-0 flex-1">
           <p className="text-[0.6875rem] font-medium uppercase tracking-wide" style={{ color: 'var(--primary)' }}>{readOnlyReason ? 'View app file' : 'Edit app file'}</p>
           <h2 id={`${editorId}-title`} ref={headingRef} tabIndex={-1} className="text-[0.9375rem] font-semibold" style={{ color: 'var(--on-surface)', outline: 'none' }}>
-            {name} <span className="font-normal" style={{ color: 'var(--on-surface-variant)' }}>v{module.manifest.version ?? '—'}</span>
+            {name} <span className="font-normal" style={{ color: 'var(--on-surface-variant)' }}>v{base.version || '—'}</span>
           </h2>
         </div>
         <button type="button" onClick={onClose} disabled={busy !== null} aria-label={`Close the ${name} file`} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg md:h-9 md:w-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}>
@@ -122,7 +147,7 @@ export function AppFileEditor({
         id={editorId}
         value={source}
         onChange={(event) => { setSource(event.target.value); setResult(null); }}
-        readOnly={Boolean(readOnlyReason)}
+        readOnly={Boolean(readOnlyReason) || busy === 'save'}
         aria-describedby={hintId}
         spellCheck={false}
         autoCapitalize="off"
@@ -131,6 +156,12 @@ export function AppFileEditor({
         className="mt-3 block w-full resize-y rounded-lg border p-3 text-[0.75rem] leading-[1.55]"
         style={{ fontFamily: 'var(--font-mono)', background: 'var(--surface-container-high)', borderColor: 'var(--ghost-border)', color: 'var(--on-surface)', tabSize: 2 }}
       />
+      {changedElsewhere && dirty && !readOnlyReason && (
+        <div role="status" className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg px-3 py-2 text-[0.8125rem]" style={{ background: 'var(--warning-subtle)', color: 'var(--on-surface)' }}>
+          <span className="min-w-0 flex-1">Someone else updated this app after you opened it, so Save will be refused. Copy your changes, then load the newest version.</span>
+          <button type="button" onClick={loadNewest} disabled={busy !== null} className="min-h-11 font-semibold underline underline-offset-2 md:min-h-0">Load the newest version</button>
+        </div>
+      )}
       {result && (
         <p role={result.tone === 'error' ? 'alert' : 'status'} className="mt-3 whitespace-pre-line rounded-lg px-3 py-2 text-[0.8125rem] leading-relaxed" style={{ background: result.tone === 'error' ? 'var(--danger-subtle)' : 'rgba(48,164,108,.12)', color: result.tone === 'error' ? 'var(--error)' : 'var(--status-green)' }}>
           {result.text}

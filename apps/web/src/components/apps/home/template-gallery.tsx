@@ -29,6 +29,12 @@ export function TemplateGallery<T extends GalleryTemplate>({
   const nameId = useId();
   if (templates.length === 0) return null;
   const choose = (template: T) => { setChosen(template); setName(template.name); setWithSamples(true); };
+  // Closing the form returns focus to the template it was opened from.
+  const close = () => {
+    const key = chosen?.key;
+    setChosen(null);
+    if (key) requestAnimationFrame(() => document.getElementById(`template-${key}`)?.focus());
+  };
   const trimmed = name.trim();
   return (
     <section aria-labelledby="template-gallery-title">
@@ -54,7 +60,7 @@ export function TemplateGallery<T extends GalleryTemplate>({
               <h3 className="text-[0.9375rem] font-semibold" style={{ color: 'var(--on-surface)' }}>{chosen.name}</h3>
               <p className="mt-0.5 text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>{chosen.description}</p>
             </div>
-            <button type="button" onClick={() => setChosen(null)} disabled={busy} aria-label="Choose a different template" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg md:h-9 md:w-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}>
+            <button type="button" onClick={close} disabled={busy} aria-label="Choose a different template" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg md:h-9 md:w-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}>
               <X size={15} aria-hidden />
             </button>
           </div>
@@ -77,7 +83,7 @@ export function TemplateGallery<T extends GalleryTemplate>({
               Add a few sample records so you can see how it works
             </label>
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <button type="button" onClick={() => setChosen(null)} disabled={busy} className="min-h-11 rounded-lg px-4 text-[0.8125rem] font-medium" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface)' }}>Cancel</button>
+              <button type="button" onClick={close} disabled={busy} className="min-h-11 rounded-lg px-4 text-[0.8125rem] font-medium" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface)' }}>Cancel</button>
               <button type="submit" disabled={busy || locked || !trimmed} className="flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 text-[0.8125rem] font-medium text-white disabled:opacity-50" style={{ background: 'var(--primary-container)' }}>
                 {busy && <Loader2 size={14} className="animate-spin" aria-hidden />} Install {trimmed || chosen.name}
               </button>
@@ -89,6 +95,7 @@ export function TemplateGallery<T extends GalleryTemplate>({
           {templates.map((template) => (
             <li key={template.key}>
               <button
+                id={`template-${template.key}`}
                 type="button"
                 onClick={() => choose(template)}
                 disabled={busy || locked}

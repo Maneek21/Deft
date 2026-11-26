@@ -216,7 +216,7 @@ test('Apps page: templates install with no file, the Defty question sets access,
     await tab.getByRole('button', { name: 'Use the Vendor tracker template' }).click();
     await tab.getByLabel('Name', { exact: true }).fill('Suppliers');
     await tab.getByRole('button', { name: 'Install Suppliers' }).click();
-    await tab.getByText(/^Suppliers is installed/).waitFor();
+    await tab.getByText(/^Suppliers( is installed|: The app is installed)/).waitFor();
     const installed = JSON.parse(calls.find((call) => call.path === '/api/modules/sideload')!.body!);
     assert.deepEqual([installed.name, installed.slug, installed.id], ['Suppliers', 'suppliers', 'workspace.suppliers']);
 
@@ -242,6 +242,21 @@ test('Apps page: templates install with no file, the Defty question sets access,
     const save = calls.filter((call) => call.path === '/api/modules/hiring/upgrade').at(-1)!;
     assert.equal(save.ifMatch, 'sha256:active');
     assert.equal(JSON.parse(save.body!).version, '1.0.1');
+
+    // Someone else updates the app while edits are open: the edits stay, the page says so,
+    // and Save still checks against the version they started from, so it cannot overwrite.
+    await editor.fill((await editor.inputValue()).replace('"label": "Full name"', '"label": "Legal name"'));
+    state.modules[0] = installation(hiring('1.0.5'), 'sha256:elsewhere');
+    await tab.evaluate(() => (window as any).__deftDeliver('module:updated', { slug: 'hiring' }));
+    await tab.getByText('Someone else updated this app after you opened it', { exact: false }).waitFor();
+    assert.match(await editor.inputValue(), /"label": "Legal name"/);
+    state.upgradeAnswer = 409;
+    await tab.getByRole('button', { name: 'Save', exact: true }).click();
+    await tab.getByText(/schema changed before the update started/).waitFor();
+    assert.equal(calls.filter((call) => call.path === '/api/modules/hiring/upgrade').at(-1)!.ifMatch, 'sha256:next');
+    state.upgradeAnswer = 200;
+    await tab.getByRole('button', { name: 'Load the newest version' }).click();
+    assert.match(await editor.inputValue(), /"version": "1\.0\.5"/);
 
     // A broken edit is caught before anything is sent.
     const before = calls.length;
