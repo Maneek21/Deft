@@ -1,6 +1,6 @@
 'use client';
 
-import { CalBrief, CalEvent, DayBucket, ITEM_COLORS, getEventSourceColor, getEventSourceLabel } from '@/lib/calendar';
+import { CalBrief, CalEvent, DayBucket, ITEM_COLORS, calNoteHref, getEventSourceColor, getEventSourceLabel } from '@/lib/calendar';
 import { formatCalendarDateLong, formatEventTime } from '@/lib/time';
 import { plainAutomationText } from '@/components/automation-text';
 import { X, ExternalLink, MapPin, Users, CheckCircle2, Circle, FileText, Bell } from 'lucide-react';
@@ -191,7 +191,7 @@ export function DayDetailPanel({
               {notes.map((n) => (
                 <Link
                   key={n.id}
-                  href={`/d/${n.id}`}
+                  href={calNoteHref(n)}
                   className="flex items-center gap-2 rounded-2xl border p-3 transition-colors hover:opacity-90"
                   style={{ borderColor: 'var(--border-default)', background: 'var(--surface-container)' }}
                 >

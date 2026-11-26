@@ -10,6 +10,7 @@
  */
 import type { api as ApiClient } from './api';
 import type { useRouter } from 'next/navigation';
+import { driveWrite } from './drive-actions';
 
 type Api = typeof ApiClient;
 type Router = ReturnType<typeof useRouter>;
@@ -65,29 +66,58 @@ export function openCreateSpace() {
 
 /**
  * Create a document in the caller's My drive and open it at /d/<id>. The one
- * path the `g n` shortcut, the palette, quick actions and the chat `note`
- * command share. Returns the new document's id, or null when it failed.
+ * path the `g n` shortcut, the palette, quick actions and the chat and thread
+ * `note` commands share. A failure comes back as a message every caller shows.
+ * One creation runs at a time: a second call while one is in flight gets the
+ * same promise, so a repeated Enter or `g n` makes one document.
  */
-export async function createDocumentAndOpen(
+export type CreateDocumentOutcome = { ok: true; id: string } | { ok: false; message: string };
+
+let creatingDocument: Promise<CreateDocumentOutcome> | null = null;
+
+function createFailure(outcome: { status: number | null; message: string }): CreateDocumentOutcome {
+  if (outcome.status === 503) return { ok: false, message: 'The workspace is paused right now. Try again when it resumes.' };
+  if (outcome.status === 403) return { ok: false, message: "You can't create documents in your drive." };
+  return { ok: false, message: outcome.message };
+}
+
+async function createDocument(api: Pick<Api, 'post'>, router: Pick<Router, 'push'>, title?: string): Promise<CreateDocumentOutcome> {
+  const mine = await driveWrite<{ drive?: { id?: string } }>(() => api.post('/api/drives/mine'), 'Could not open your drive');
+  if (!mine.ok) return createFailure(mine);
+  const driveId = mine.body.drive?.id;
+  if (!driveId) return { ok: false, message: 'Could not open your drive' };
+  const trimmed = title?.trim();
+  const created = await driveWrite<{ document?: { id?: string } }>(
+    () => api.post('/api/documents', { drive_id: driveId, ...(trimmed ? { title: trimmed } : {}) }),
+    'Could not create the document',
+  );
+  if (!created.ok) return createFailure(created);
+  const id = created.body.document?.id;
+  if (!id) return { ok: false, message: 'Could not create the document' };
+  router.push(`/d/${id}`);
+  return { ok: true, id };
+}
+
+export function createDocumentAndOpen(
   api: Pick<Api, 'post'>,
   router: Pick<Router, 'push'>,
   title?: string,
-): Promise<string | null> {
-  try {
-    const mine = await api.post('/api/drives/mine');
-    if (!mine.ok) return null;
-    const drive = (await mine.json().catch(() => null) as { drive?: { id?: string } } | null)?.drive;
-    if (!drive?.id) return null;
-    const trimmed = title?.trim();
-    const res = await api.post('/api/documents', { drive_id: drive.id, ...(trimmed ? { title: trimmed } : {}) });
-    if (!res.ok) return null;
-    const id = (await res.json().catch(() => null) as { document?: { id?: string } } | null)?.document?.id;
-    if (!id) return null;
-    router.push(`/d/${id}`);
-    return id;
-  } catch {
-    return null;
-  }
+): Promise<CreateDocumentOutcome> {
+  if (creatingDocument) return creatingDocument;
+  const run = createDocument(api, router, title).finally(() => { if (creatingDocument === run) creatingDocument = null; });
+  creatingDocument = run;
+  return run;
+}
+
+/** A thread composer's slash commands: `note` makes a document; the rest belong to the main chat. */
+export async function runThreadSlashCommand(
+  command: string,
+  args: string,
+  deps: { api: Pick<Api, 'post'>; router: Pick<Router, 'push'> },
+): Promise<void> {
+  if (command !== 'note') throw new Error(`/${command} works in the main chat, not in a thread.`);
+  const outcome = await createDocumentAndOpen(deps.api, deps.router, args || undefined);
+  if (!outcome.ok) throw new Error(outcome.message);
 }
 
 /**

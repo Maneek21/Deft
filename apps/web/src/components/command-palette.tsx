@@ -23,12 +23,13 @@ import {
   createReminderFromArgs,
   openDeftyDm,
 } from '@/lib/quick-actions';
+import { noteResultHref } from '@/lib/legacy-notes-redirect';
 import { parseReminderTime } from './slash-command-autocomplete';
 
 const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
 
 type WikiResult = { id: string; title: string; summary: string | null; slug: string | null; type: string | null; source_id: string };
-type NoteResult = { id: string; title: string; summary: string | null; source_id: string };
+type NoteResult = { id: string; title: string; summary: string | null; source_id: string; url?: string | null };
 type DecisionResult = { id: string; title: string; summary: string | null; slug: string | null; source_id: string };
 type ModuleSearchResult = {
   id: string;
@@ -124,7 +125,11 @@ export function CommandPalette() {
     {
       label: 'New document',
       icon: FileText,
-      action: async () => { await createDocumentAndOpen(api, router); close(); },
+      action: async () => {
+        const outcome = await createDocumentAndOpen(api, router);
+        // A failure keeps the palette open with the reason, rather than closing on nothing.
+        if (outcome.ok) close(); else setPromptError(outcome.message);
+      },
     },
     {
       label: 'New space',
@@ -363,7 +368,7 @@ export function CommandPalette() {
           router.push(slug ? `/knowledge?slug=${slug}` : '/knowledge');
           close();
         } else if (selected.type === 'privateNote') {
-          router.push(`/d/${selected.item.id}`);
+          router.push(noteResultHref(selected.item));
           close();
         }
       }
@@ -730,7 +735,7 @@ export function CommandPalette() {
                       color: 'var(--on-surface)',
                       transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
                     }}
-                    onClick={() => { router.push(`/d/${item.id}`); close(); }}
+                    onClick={() => { router.push(noteResultHref(item)); close(); }}
                   >
                     <FileText size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
                     <span className="text-[13px] flex-1 truncate">{item.title}</span>

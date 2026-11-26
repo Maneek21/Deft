@@ -1,6 +1,7 @@
 // ═══ Shared Calendar Types & Helpers ═══
 
 import { dateKeyInUserTimezone } from '@/lib/time';
+import { legacyNotesHref } from '@/lib/legacy-notes-redirect';
 
 export type CalTask = {
   id: string; number: number; title: string; status: string; priority: string;
@@ -12,7 +13,13 @@ export type CalEvent = {
   timestamp: string; metadata: any; source: string;
 };
 
-export type CalNote = { id: string; title: string; icon: string | null; created_at: string };
+/** `legacy`: the id is an old note id (from the API's `notes` key), not a document id. */
+export type CalNote = { id: string; title: string; icon: string | null; created_at: string; legacy?: boolean };
+
+/** Documents open at /d/<id>; an old note id goes through the /notes redirect. */
+export function calNoteHref(note: Pick<CalNote, 'id' | 'legacy'>): string {
+  return note.legacy ? legacyNotesHref(note.id) : `/d/${note.id}`;
+}
 
 export type CalReminder = { id: string; message: string; remind_at: string; is_sent: boolean };
 
@@ -92,8 +99,11 @@ export function bucketByDay(data: CalendarData): Map<string, DayBucket> {
   for (const e of data.events) {
     ensure(dateKeyInUserTimezone(e.timestamp)).events.push(e);
   }
-  for (const n of data.documents ?? data.notes ?? []) {
-    ensure(dateKeyInUserTimezone(n.created_at)).notes.push(n);
+  for (const n of data.documents ?? []) {
+    ensure(dateKeyInUserTimezone(n.created_at)).notes.push({ ...n, legacy: false });
+  }
+  for (const n of data.notes ?? []) {
+    ensure(dateKeyInUserTimezone(n.created_at)).notes.push({ ...n, legacy: true });
   }
   for (const r of (data.reminders || [])) {
     ensure(dateKeyInUserTimezone(r.remind_at)).reminders.push(r);

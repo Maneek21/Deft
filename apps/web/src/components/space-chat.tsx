@@ -2594,9 +2594,8 @@ export function SpaceChat({
 
               case 'note': {
                 // A document in My drive, opened at /d/<id> (F16).
-                const id = await createDocumentAndOpen(api, router, args || undefined);
-                if (!id) throw new Error('Failed to create document');
-                setCmdToast(`Document "${args || 'Untitled'}" created`);
+                const outcome = await createDocumentAndOpen(api, router, args || undefined);
+                setCmdToast(outcome.ok ? `Document "${args || 'Untitled'}" created` : outcome.message);
                 break;
               }
             }

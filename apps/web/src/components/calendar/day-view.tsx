@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { CalEvent, DayBucket, HOURS, ITEM_COLORS, formatHourLabel, toDateKey, getEventSourceColor } from '@/lib/calendar';
+import { CalEvent, DayBucket, HOURS, ITEM_COLORS, calNoteHref, formatHourLabel, toDateKey, getEventSourceColor } from '@/lib/calendar';
 import { dateKeyInUserTimezone, formatEventTime, timePartsInUserTimezone } from '@/lib/time';
 import { MapPin, ExternalLink, CheckCircle2, Circle } from 'lucide-react';
 import Link from 'next/link';
@@ -92,7 +92,7 @@ export function DayView({
           ))}
 
           {allNotes.map((n) => (
-            <Link key={n.id} href={`/d/${n.id}`}
+            <Link key={n.id} href={calNoteHref(n)}
               className="flex items-center gap-2 py-1 hover:opacity-80">
               <span className="text-[11px]">{n.icon || '\uD83D\uDCC4'}</span>
               <span className="text-[12px]" style={{ color: 'var(--text-primary)' }}>

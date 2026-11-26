@@ -6,18 +6,7 @@
 import { Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
-import { legacyNoteId, legacyNotesTarget } from '@/lib/legacy-notes-redirect';
-
-async function mappedDocument(noteId: string): Promise<string | null> {
-  try {
-    const res = await api.get(`/api/documents/by-legacy/note/${encodeURIComponent(noteId)}`);
-    if (!res.ok) return null;
-    const body = await res.json().catch(() => null) as { document_id?: unknown } | null;
-    return typeof body?.document_id === 'string' && body.document_id ? body.document_id : null;
-  } catch {
-    return null;
-  }
-}
+import { legacyNoteId, legacyNotesTarget, resolveLegacyNote } from '@/lib/legacy-notes-redirect';
 
 function LegacyNotesRedirect() {
   const router = useRouter();
@@ -28,7 +17,7 @@ function LegacyNotesRedirect() {
     let cancelled = false;
     const params = new URLSearchParams(query);
     const noteId = legacyNoteId(params);
-    void (noteId ? mappedDocument(noteId) : Promise.resolve(null)).then((mapped) => {
+    void (noteId ? resolveLegacyNote(noteId, api) : Promise.resolve(null)).then((mapped) => {
       if (!cancelled) router.replace(legacyNotesTarget(params, mapped));
     });
     return () => { cancelled = true; };
