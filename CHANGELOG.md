@@ -10,6 +10,21 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### "Email me about this report" starts unticked
+
+- On hosted Deft, the **Email me about this report** box in **Report a problem** (user
+  menu) is now unticked when the form opens. A report carries your account's email
+  address only when you tick the box yourself. Ticked, it works as before: the Deft team
+  can email you at that address about the report.
+
+### The Apps guide says hosted Deft has no Email
+
+- **Apps and App packages** (`docs/modules-and-apps.md`) now says Email is a self-hosted
+  developer preview and that hosted Deft doesn't include Email at launch: new hosted
+  workspaces get no Email helper. It also says the newest Email release's
+  `compatibility.json` names Deft 0.3.0-preview.138, and that no Email release has been
+  tested with 0.3.0-preview.155.
+
 ## [0.3.0-preview.155] — 2026-11-26 (prerelease)
 
 Changes since `v0.3.0-preview.154`: #610, #613, #609, #614, #615, #616, #617 and #618, plus

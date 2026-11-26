@@ -264,6 +264,7 @@ jobs:
           src/lib/document-page-mounted.test.ts
           src/lib/error-telemetry-mounted.test.ts
           src/lib/report-problem-mounted.test.ts
+          src/lib/report-problem-reopen-mounted.test.ts
           src/lib/signup-install-ping-mounted.test.ts
           src/lib/two-step-recovery-mounted.test.ts
           src/lib/agent-management-mounted.test.ts
