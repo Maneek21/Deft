@@ -10,10 +10,16 @@
 // uploaded image is readable to viewers and commenters only once the
 // document's next store confirms it is in the content, which can take up to a
 // minute while people are editing. So a 404 is not taken as broken at once:
-// the view shows "Image is loading" and tries again when the document changes
-// (a Yjs change, or `document:updated`) and on a backoff, for about 90 s;
-// only then does it say "Image not available". Any other refusal says so at
-// once.
+// the view shows "Image is loading" and tries again, for about 90 s; only
+// then does it say "Image not available". Any other refusal says so at once.
+//
+// Every retry goes through one backoff (IMAGE_RETRY_STEPS_MS): after the n-th
+// miss, no request starts until step n has passed since the last one started,
+// whatever asks for it (the timer, a document change, a change that arrived
+// while a request was in flight). A document change (a Yjs change, or
+// `document:updated`) since the last request lets the next one start as soon
+// as its step has passed; without one, the timer waits one step longer. So
+// someone typing never makes a viewer fetch more often than the steps allow.
 //
 // An image from another site (`src`, https only) is drawn as is.
 
@@ -26,12 +32,24 @@ import { api } from '@/lib/api';
 import { protectedFilePath } from '@/lib/protected-file';
 import { DOCUMENT_UPDATED_EVENT } from '@/lib/document-events';
 
-/** Waits between retries after a 404 (about 90 s in all). */
-export const IMAGE_RETRY_DELAYS_MS = [3_000, 6_000, 12_000, 24_000, 45_000];
+/** The backoff: after the n-th miss, the least time between the last request's start and the next; the last step repeats. */
+export const IMAGE_RETRY_STEPS_MS = [1_500, 3_000, 6_000, 12_000, 24_000, 30_000];
 /** How long after the first 404 the image is given up on. */
 export const IMAGE_GIVE_UP_AFTER_MS = 90_000;
-/** A change to the document brings a retry this soon after it. */
-const NUDGE_MS = 250;
+
+const stepAfter = (misses: number) => IMAGE_RETRY_STEPS_MS[Math.min(Math.max(misses - 1, 0), IMAGE_RETRY_STEPS_MS.length - 1)]!;
+
+/**
+ * When the next request may start, after `misses` misses (at least one), the
+ * last request having started at `lastStart`: once its step has passed when
+ * the document changed since, else one step later; never past the give-up
+ * time, and never before the step.
+ */
+export function nextRetryAt(i: { misses: number; lastStart: number; firstMiss: number; changed: boolean }): number {
+  const earliest = i.lastStart + stepAfter(i.misses);
+  const due = i.changed ? earliest : i.lastStart + stepAfter(i.misses + 1);
+  return Math.max(earliest, Math.min(due, i.firstMiss + IMAGE_GIVE_UP_AFTER_MS));
+}
 
 /** An outside image is drawn only from an https address. */
 export function outsideImageSrc(src: unknown): string | null {
@@ -52,33 +70,38 @@ function useDocumentFile(fileId: string, editor: Editor): Phase {
     let done = false;
     let objectUrl: string | null = null;
     let inFlight: AbortController | null = null;
-    let again = false;
-    let retries = 0;
+    let misses = 0;
     let firstMiss: number | null = null;
+    let lastStart = 0;
+    /** A document change since the last request started. */
+    let changed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let nudge: ReturnType<typeof setTimeout> | null = null;
-    const clearTimers = () => {
+    const clearTimer = () => {
       if (timer) clearTimeout(timer);
-      if (nudge) clearTimeout(nudge);
       timer = null;
-      nudge = null;
     };
     const finish = (next: Phase) => {
       done = true;
-      clearTimers();
+      clearTimer();
       setPhase(next);
     };
-    const retryLater = () => {
-      if (timer) clearTimeout(timer);
-      const wait = IMAGE_RETRY_DELAYS_MS[Math.min(retries, IMAGE_RETRY_DELAYS_MS.length - 1)]!;
-      retries += 1;
-      timer = setTimeout(() => { timer = null; void attempt(); }, wait);
+    /**
+     * The one gate: (re)plans the next request from the backoff. While a
+     * request is in flight nothing is planned; its end plans again, with any
+     * change that arrived meanwhile.
+     */
+    const plan = () => {
+      if (done || inFlight || firstMiss === null) return;
+      clearTimer();
+      const at = nextRetryAt({ misses, lastStart, firstMiss, changed });
+      timer = setTimeout(() => { timer = null; void attempt(); }, Math.max(0, at - Date.now()));
     };
     const attempt = async (): Promise<void> => {
-      if (done) return;
-      if (inFlight) { again = true; return; }
+      if (done || inFlight) return;
       const controller = new AbortController();
       inFlight = controller;
+      lastStart = Date.now();
+      changed = false;
       let status: number | 'network' = 'network';
       let blob: Blob | null = null;
       try {
@@ -99,23 +122,20 @@ function useDocumentFile(fileId: string, editor: Editor): Phase {
         finish({ kind: 'unavailable' });
         return;
       }
+      misses += 1;
       firstMiss ??= Date.now();
       if (Date.now() - firstMiss >= IMAGE_GIVE_UP_AFTER_MS) {
         finish({ kind: 'unavailable' });
         return;
       }
       setPhase({ kind: 'waiting' });
-      if (again) {
-        again = false;
-        void attempt();
-        return;
-      }
-      retryLater();
+      plan();
     };
     const onDocumentChange = () => {
       if (done || firstMiss === null) return;
-      if (nudge) clearTimeout(nudge);
-      nudge = setTimeout(() => { nudge = null; void attempt(); }, NUDGE_MS);
+      if (changed && !inFlight) return; // already planned for the earliest the step allows
+      changed = true;
+      plan();
     };
     const onTransaction = ({ transaction }: { transaction: Transaction }) => {
       if (transaction.docChanged) onDocumentChange();
@@ -125,7 +145,7 @@ function useDocumentFile(fileId: string, editor: Editor): Phase {
     void attempt();
     return () => {
       done = true;
-      clearTimers();
+      clearTimer();
       inFlight?.abort();
       editor.off('transaction', onTransaction);
       window.removeEventListener(DOCUMENT_UPDATED_EVENT, onDocumentChange);

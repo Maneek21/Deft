@@ -23,7 +23,8 @@ import * as Y from 'yjs';
 // - An editor uploads images through POST /api/upload?document_id= (toolbar
 //   and paste); a viewer has no upload control.
 // - A new image a viewer gets 404 for shows "Image is loading" and appears
-//   once the document updates and the file answers.
+//   once the document updates and the file answers; changes every 300 ms
+//   never make it fetch more often than its backoff steps allow.
 // - While the workspace is paused the title can't be edited; the share
 //   dialog says which later pages need a fresh share.
 const web = fileURLToPath(new URL('../..', import.meta.url));
@@ -493,6 +494,41 @@ test('mounted: a new image that answers 404 shows "Image is loading", then appea
     await tab.locator('[data-document-image] img').waitFor({ timeout: 2500 });
     assert.equal(await tab.getByText('Image is loading').count(), 0);
     assert.ok(fetches[0] === 404 && fetches[fetches.length - 1] === 200, `fetches: ${fetches.join(', ')}`);
+    assert.deepEqual(errors, []);
+    await tab.close();
+  } finally {
+    await browser.close();
+  }
+});
+
+test('mounted: document changes every 300 ms while a new image keeps answering 404 stay within the retry backoff', async () => {
+  const browser = await launch();
+  try {
+    const { doc, yTexts } = serverDoc('Spec with a chart nobody can load yet', 'f-gone');
+    const requests: number[] = [];
+    const { tab, errors } = await open(browser, 1280, {
+      document: { live: true, role: 'view', content_json: undefined },
+      collab: { mode: 'sync', doc, scope: 'readonly' },
+      file: () => { requests.push(Date.now()); return { status: 404, body: { error: 'File not found', code: 'NOT_FOUND' } }; },
+      ready: 'Spec with a chart nobody can load yet',
+    });
+    await tab.getByText('Image is loading').waitFor();
+    // Someone types: a change every 300 ms for about 6.6 s, each one reaching the viewer.
+    for (let i = 0; i < 22; i += 1) {
+      yTexts[0]!.insert(yTexts[0]!.length, '.');
+      await tab.waitForTimeout(300);
+    }
+    const first = requests[0]!;
+    const at = requests.map((t) => t - first);
+    const gaps = requests.slice(1).map((t, i) => t - requests[i]!);
+    // The steps are 1.5 s, 3 s, 6 s (the least time between two requests): over ~6.6 s that is
+    // requests at about 0, 1.5 and 4.5 s. Without the shared backoff it was one every ~300 ms.
+    assert.ok(requests.length >= 2 && requests.length <= 4, `requests at ${at.join(', ')} ms`);
+    assert.ok(gaps.every((gap) => gap >= 1_400), `no two requests closer than the first step: gaps ${gaps.join(', ')} ms`);
+    // A change brings a retry forward once its step has passed: the second came at the first step, before the 3 s timer.
+    assert.ok(gaps[0]! < 2_800, `the second request came after ${gaps[0]} ms`);
+    assert.equal(await tab.getByText('Image not available').count(), 0, 'still waiting within the 90 s');
+    await tab.getByText('Image is loading').waitFor();
     assert.deepEqual(errors, []);
     await tab.close();
   } finally {
