@@ -56,14 +56,19 @@
 //
 // `document_attachments.in_current` (consult change) is kept by a second
 // stored listener: on every derived store, for that document only, a row is
-// current exactly when its file id is in the stored JSON (an image's
+// current exactly when its file id is in the stored content (an image's
 // `fileId`, at any depth). Rows are never added here: linking a file to a
 // document is the upload's job (F10), so an id someone types into the
-// content grants nothing. The content is already committed when the
-// listener runs, so if its update fails a durable job,
-// `document-attachments-reconcile` (keyed `…:<documentId>:<revision>`, rule
-// C1), recomputes the flags from the latest stored content_json; that is
-// idempotent, and it holds the row FOR SHARE so a store can't slip in between.
+// content grants nothing. Listener runs can come late, after later stores, so
+// the flags are never taken from the event's JSON: every update (the
+// listener's and the job's, reconcileDocumentAttachments) reads the latest
+// stored content_json with the row FOR SHARE and writes the flags in the
+// same transaction, so no store lands in between and no run writes stale
+// flags, whatever order they come in. The content is already committed when
+// the listener runs, so if its update fails, a durable job,
+// `document-attachments-reconcile`, does the same work later. It is keyed
+// `…:<documentId>:<revision of the store whose listener failed>` (rule C1),
+// so a new failure never folds into a job that has already run.
 //
 // startDocumentVersioning registers both listeners; the API's entry point
 // (server.ts) calls it at startup. Logs are fixed text; a failing listener
@@ -183,7 +188,8 @@ async function versionSource(x: Executor, i: CreateVersionInput): Promise<{ titl
   if (i.json !== undefined) return { title: row.title, json: i.json };
   if (i.ydoc !== undefined) return { title: row.title, json: ensureBlockIds(yDocToJson(i.ydoc)) };
   // The live state, every accepted edit included; the stored copy only when that state holds content outside the schema.
-  const state = await readCurrentDocument(i.documentId, i.orgId);
+  // Through `x`: inside nameVersion's transaction, a second pool connection could wait behind the transactions holding them all.
+  const state = await readCurrentDocument(i.documentId, i.orgId, x);
   const json = state ? jsonOfState(state) : null;
   if (json) return { title: row.title, json };
   const [stored] = await x.select({ content_json: documents.content_json }).from(documents).where(where).limit(1);
@@ -281,30 +287,40 @@ async function setInCurrent(x: Executor, orgId: string, documentId: string, json
   ));
 }
 
-/** `in_current` for the stored document's attachment rows; on failure, the reconcile job (the header). */
+/**
+ * `in_current` after a store (the header): recomputed from the latest stored
+ * content, never from the event's JSON, which a later store may already have
+ * replaced. On failure, the reconcile job, keyed by this store's own revision
+ * (rule C1), so a failure never folds into a job for an earlier store that may
+ * already have run; a duplicate does no harm, since every run reads the
+ * latest content.
+ */
 async function syncAttachmentsInCurrent(e: DocumentStoredEvent): Promise<void> {
   try {
-    await setInCurrent(db, e.orgId, e.documentId, e.json);
+    await reconcileDocumentAttachments(e.orgId, e.documentId);
     return;
   } catch {
     // Queued below; if queueing fails too, runStoredListeners logs it.
   }
-  const [row] = await db.select({ revision: documents.revision }).from(documents)
-    .where(and(eq(documents.id, e.documentId), eq(documents.org_id, e.orgId))).limit(1);
-  if (!row) return;
   await enqueue(QUEUE_NAMES.AGENT_JOBS, DOCUMENT_ATTACHMENTS_RECONCILE_JOB, { org_id: e.orgId, document_id: e.documentId }, {
-    orgId: e.orgId, dedupeKey: `${DOCUMENT_ATTACHMENTS_RECONCILE_JOB}:${e.documentId}:${row.revision}`, maxAttempts: 5,
+    orgId: e.orgId, dedupeKey: `${DOCUMENT_ATTACHMENTS_RECONCILE_JOB}:${e.documentId}:${e.revision}`, maxAttempts: 5,
   });
   console.error('[documents] a document’s attachment flags could not be updated; a reconcile job was queued');
 }
 
 /**
- * The reconcile job's work: `in_current` from the document's latest stored
- * content_json, read FOR SHARE so no store lands between the read and the
- * update. Idempotent; a document that is gone has nothing to put right.
+ * `in_current` from the document's latest stored content_json, the one way
+ * the flags are written (the stored listener and the reconcile job): in one
+ * transaction, the row read FOR SHARE, so a store waits until the flags are
+ * written and its own listener then recomputes them. Whatever order runs
+ * come in, the last to write read the latest content. Idempotent; a document
+ * with no attachment rows, or one that is gone, has nothing to put right.
  */
 export async function reconcileDocumentAttachments(orgId: string, documentId: string): Promise<void> {
   await db.transaction(async (tx) => {
+    const [attached] = await tx.select({ id: documentAttachments.id }).from(documentAttachments)
+      .where(and(eq(documentAttachments.org_id, orgId), eq(documentAttachments.document_id, documentId))).limit(1);
+    if (!attached) return;
     const [row] = await tx.select({ content_json: documents.content_json }).from(documents)
       .where(and(eq(documents.id, documentId), eq(documents.org_id, orgId))).for('share');
     if (!row) return;

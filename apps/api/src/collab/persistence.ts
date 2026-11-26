@@ -69,6 +69,8 @@ export type DocumentStoredEvent = {
   json: JSONContent;
   sizeBytes: number;
   at: Date;
+  /** The revision this store wrote (`documents.revision` once it committed); a later store's is higher. */
+  revision: number;
 };
 
 type StoredListener = (e: DocumentStoredEvent) => Promise<void>;

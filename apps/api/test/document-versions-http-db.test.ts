@@ -552,6 +552,99 @@ test('a failed in_current update queues a reconcile job, which puts the flags ri
   assert.deepEqual(await inCurrent(doc), { [kept]: true, [removed]: false }, 'running it again changes nothing');
 });
 
+test('late attachment listeners can’t leave stale flags: stores A, B, C commit first, A fails, its job runs, B runs late, C fails', { skip: !url && SKIP }, async (t) => {
+  const { people } = fx!;
+  const [one, two, three] = [await insertFile(), await insertFile(), await insertFile()];
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Interleaved', json: canonical({ type: 'doc', content: [image(one, 'one')] }) });
+  for (const file of [one, two, three]) await attach(doc, file);
+
+  // A gate that runs first in every listener run for this document, so each run waits until the test lets it go.
+  const arrivals: Array<() => void> = [];
+  stopVersioning!();
+  const gateOff = onDocumentStored(async (e) => {
+    if (e.documentId !== doc) return;
+    await new Promise<void>((resolve) => { arrivals.push(resolve); });
+  });
+  stopVersioning = startDocumentVersioning();
+  t.after(gateOff);
+
+  const revision = async () => Number((await stored(doc)).revision);
+  const write = (mutate: (d: Y.Doc) => void) =>
+    writeDocument({ orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: people.member }, reason: 'import', mutate });
+  const addImage = (fileId: string) => (d: Y.Doc) => {
+    const element = new Y.XmlElement('image');
+    element.setAttribute('fileId', fileId);
+    d.getXmlFragment('default').push([element]);
+  };
+  const removeImage = (fileId: string) => (d: Y.Doc) => {
+    const fragment = d.getXmlFragment('default');
+    fragment.delete(fragment.toArray().findIndex((node) => node instanceof Y.XmlElement && node.getAttribute('fileId') === fileId), 1);
+  };
+  const jobs = async () => (await fx!.client.query(`SELECT id, name, data, org_id, dedupe_key, status FROM job_queue
+    WHERE org_id = $1 AND name = 'document-attachments-reconcile' AND data->>'document_id' = $2`, [fx!.orgId, doc]))
+    .rows as Array<{ id: string; name: string; data: Record<string, unknown>; org_id: string; dedupe_key: string; status: string }>;
+  const handler = (await _getAgentJobHandlerForTest('document-attachments-reconcile'))!;
+  /** Runs every pending job for the document and marks it completed, as a worker would. */
+  const runPendingJobs = async () => {
+    for (const job of (await jobs()).filter((j) => j.status === 'pending')) {
+      await handler({ id: job.id, name: job.name, data: job.data, attempts: 1, orgId: job.org_id });
+      await fx!.client.query(`UPDATE job_queue SET status = 'completed', completed_at = now() WHERE id = $1`, [job.id]);
+    }
+  };
+
+  // Stores A, B and C all commit before any of their listeners runs.
+  at('2026-11-26T18:00:00.000Z');
+  const start = await revision();
+  const writes = [write(addImage(two))]; // A: one, two
+  await pollUntil(async () => (await revision()) === start + 1 && arrivals.length === 1, 'store A committed, its run waits');
+  writes.push(write(removeImage(one))); // B: two
+  await pollUntil(async () => (await revision()) === start + 2, 'store B committed');
+  writes.push(write(addImage(three))); // C: two, three
+  await pollUntil(async () => (await revision()) === start + 3, 'store C committed');
+  const [revA, revC] = [start + 1, start + 3];
+
+  // A's listener fails; its job runs (from whatever is stored then) and finishes.
+  let drop = await failRowsOf('document_attachments', doc);
+  t.after(drop);
+  arrivals[0]!();
+  await pollUntil(() => arrivals.length === 2, 'A’s run is over and B’s waits');
+  await drop();
+  const firstJobKey = (await jobs())[0]?.dedupe_key ?? null;
+  await runPendingJobs();
+  // B's listener runs late, after C's store; then C's listener fails.
+  arrivals[1]!();
+  await pollUntil(() => arrivals.length === 3, 'B’s run is over and C’s waits');
+  drop = await failRowsOf('document_attachments', doc);
+  t.after(drop);
+  arrivals[2]!();
+  await Promise.all(writes);
+  await drop();
+
+  assert.deepEqual({ firstJobKey, flags: await inCurrent(doc) }, {
+    firstJobKey: `document-attachments-reconcile:${doc}:${revA}`,
+    flags: { [one]: false, [two]: true, [three]: true },
+  }, `A’s job is keyed by A’s own store (not the latest, ${revC}), and the flags match the latest stored content`);
+  await runPendingJobs();
+  assert.deepEqual(await inCurrent(doc), { [one]: false, [two]: true, [three]: true }, 'any job still queued leaves them right');
+});
+
+test('concurrent named versions of documents nobody has open all complete: the cold read uses the transaction’s connection', { skip: !url && SKIP }, async () => {
+  const { people } = fx!;
+  // More requests than the pool's 4 ordinary connections, each holding one in its transaction.
+  const docs: string[] = [];
+  for (let k = 0; k < 8; k += 1) docs.push(await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: `Cold ${k}`, json: canonical(paragraphs(`Cold text ${k}`)) }));
+  at('2026-11-26T18:30:00.000Z');
+  const startedAt = Date.now();
+  const results = await Promise.all(docs.map((doc) => call(people.member, 'POST', listPath(doc), { name: 'Cold' })));
+  const took = Date.now() - startedAt;
+  assert.deepEqual(results.map((r) => r.status), docs.map(() => 201), JSON.stringify(results.map((r) => r.body)));
+  assert.ok(took < 4_000, `they finished without waiting for a pool connection (${took} ms)`);
+  for (const [k, doc] of docs.entries()) {
+    const [version] = await versionRows(doc);
+    assert.equal(jsonToText(version!.content_json), `Cold text ${k}`);
+  }
+});
+
 test('restore brings back the version’s title: the document and the restore version carry it', { skip: !url && SKIP }, async (t) => {
   const { people } = fx!;
   const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Historical title', json: canonical(paragraphs('Historical text')) });

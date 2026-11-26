@@ -1000,7 +1000,7 @@ function createCollabServer(): CollabServer {
       if (slot.changeCounter === counter) slot.derivedDirty = false;
       void queueListeners(slot.documentId, {
         orgId: slot.orgId!, documentId: slot.documentId, editorIds: byCount(editors!), agentUserIds: [], actionIds: [],
-        previousJson, json: derived.json, sizeBytes: state.byteLength, at: new Date(),
+        previousJson, json: derived.json, sizeBytes: state.byteLength, at: new Date(), revision,
       });
     }
     scheduleDerive(slot);
@@ -1402,7 +1402,7 @@ function createCollabServer(): CollabServer {
    * state, plus the writer.
    */
   function storedEventOf(i: WriteInput, accumulated: Map<string, number>, previousJson: JSONContent, json: JSONContent,
-    sizeBytes: number): DocumentStoredEvent {
+    sizeBytes: number, revision: number): DocumentStoredEvent {
     const editors = new Map(accumulated);
     if (i.actor.kind === 'user') editors.set(i.actor.userId, (editors.get(i.actor.userId) ?? 0) + 1);
     return {
@@ -1410,7 +1410,7 @@ function createCollabServer(): CollabServer {
       editorIds: byCount(editors),
       agentUserIds: i.actor.kind === 'agent' ? [i.actor.userId] : [],
       actionIds: i.actor.actionId ? [i.actor.actionId] : [],
-      previousJson, json, sizeBytes, at: new Date(),
+      previousJson, json, sizeBytes, at: new Date(), revision,
     };
   }
 
@@ -1522,7 +1522,8 @@ function createCollabServer(): CollabServer {
       scheduleDerive(slot);
       return {
         result: { revision: written.revision, sizeBytes: written.state.byteLength },
-        listeners: queueListeners(i.documentId, storedEventOf(i, result.accumulated, result.previousJson, written.derived.json, written.state.byteLength)),
+        listeners: queueListeners(i.documentId, storedEventOf(i, result.accumulated, result.previousJson, written.derived.json, written.state.byteLength,
+          written.revision)),
       };
     } finally {
       slot.writers -= 1;
@@ -1540,7 +1541,8 @@ function createCollabServer(): CollabServer {
       }));
       return {
         result: { revision: written.revision, sizeBytes: written.state.byteLength },
-        listeners: queueListeners(i.documentId, storedEventOf(i, new Map(), written.row.json, written.derived.json, written.state.byteLength)),
+        listeners: queueListeners(i.documentId, storedEventOf(i, new Map(), written.row.json, written.derived.json, written.state.byteLength,
+          written.revision)),
       };
     } finally {
       working.destroy();
@@ -1810,12 +1812,15 @@ export function getCollabServer(): CollabServer {
  * row's stored state, or, before the first live load, the state built from
  * content_json as a load builds it. Null when the row isn't in `orgId`.
  * Checks no access (callers do), takes no lock and writes nothing, so it is
- * not a writer (rule C2).
+ * not a writer (rule C2). The row is read through `reader`: a caller inside a
+ * transaction passes it, so the read uses that transaction's connection
+ * rather than waiting for a second one from the pool.
  */
-export async function readCurrentDocument(documentId: string, orgId: string): Promise<Uint8Array | null> {
+export async function readCurrentDocument(documentId: string, orgId: string,
+  reader: Parameters<typeof readDocumentState>[2] = db): Promise<Uint8Array | null> {
   const live = instance ? liveReaders.get(instance)?.(documentId, orgId) : null;
   if (live) return live;
-  const row = await readDocumentState(documentId, orgId);
+  const row = await readDocumentState(documentId, orgId, reader);
   if (!row) return null;
   if (row.state) return row.state;
   const built = new Y.Doc();
