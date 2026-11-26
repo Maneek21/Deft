@@ -8,6 +8,7 @@ import { app } from './index.js';
 import { getIO, setupSocket } from './socket.js';
 import { getCollabServer } from './collab/server.js';
 import { startDocumentVersioning } from './lib/document-versions.js';
+import { startDocumentCrossReferences } from './lib/document-cross-references.js';
 import { moveNotesBeforeListen } from './lib/drives-move/startup.js';
 import { assertPausedStartSettingValid, logPausedStart, serverStartupPlan } from './lib/paused-start.js';
 import { captureProcessError, flushErrorTelemetryBeforeExit, isErrorTelemetryEnabled } from './lib/telemetry/error-reporter.js';
@@ -120,6 +121,8 @@ getCollabServer().attach(server as unknown as Server);
 // Automatic document versions and document_attachments.in_current follow
 // every derived store (lib/document-versions.ts).
 startDocumentVersioning();
+// Task keys written in documents become backlinks (lib/document-cross-references.ts).
+startDocumentCrossReferences();
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;

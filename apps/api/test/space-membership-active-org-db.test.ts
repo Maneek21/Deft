@@ -218,7 +218,12 @@ test('W1g: pins refuses a space outside the caller\'s active org', async () => {
 
 test('W1g: canvas refuses a space outside the caller\'s active org', async () => {
   await assertLooksLikeNonMember('canvas', 'GET', (s) => `/api/spaces/${s}/canvas`);
-  await assertLooksLikeNonMember('canvas', 'PATCH', (s) => `/api/spaces/${s}/canvas`, () => ({ title: 'cross-org' }));
+  // Every canvas write is 410 since F15, chat member or not: an org-B space answers as a missing one, naming nothing.
+  const crossOrgPatch = await call('canvas', ORG_A, 'PATCH', `/api/spaces/${SPACE_B}/canvas`, { title: 'cross-org' });
+  const missingPatch = await call('canvas', ORG_A, 'PATCH', `/api/spaces/${MISSING_SPACE}/canvas`, { title: 'cross-org' });
+  assert.equal(crossOrgPatch.status, 410, crossOrgPatch.text);
+  assert.deepEqual(crossOrgPatch.json, missingPatch.json);
+  assert.ok(!crossOrgPatch.text.includes(SECRET) && !crossOrgPatch.text.includes('document_id'), 'canvas PATCH named org-B data');
   assert.equal(await rowCount(`SELECT count(*)::int AS n FROM canvases WHERE space_id = $1`, [SPACE_B]), 0);
 
   // A canvas is its document since F15: reading a space with none creates nothing, in the right org too.
@@ -413,8 +418,11 @@ test('W1g: daily-notes owner-only routes are bound to the active org', async () 
     'org-A session changed an org-B folder');
   assert.equal(await rowCount(`SELECT count(*)::int AS n FROM note_shares WHERE note_id = $1`, [NOTE_B]), 0);
 
+  // History lives on the document since F15 (fix round 1): its owner is pointed there.
   const okHistory = await call('daily-notes', ORG_B, 'GET', `/api/daily-notes/${NOTE_B}/history`);
-  assert.equal(okHistory.status, 200, okHistory.text);
+  assert.equal(okHistory.status, 410, okHistory.text);
+  assert.equal((okHistory.json as { code: string }).code, 'NOTES_MOVED');
+  assert.ok((okHistory.json as { document_id?: string }).document_id, okHistory.text);
   const okFolders = await call('daily-notes', ORG_B, 'GET', '/api/daily-notes/folders');
   assert.ok(okFolders.text.includes(FOLDER_B), okFolders.text);
 });

@@ -131,14 +131,39 @@ function redactSensitiveReceiptValue(value: unknown): unknown {
 }
 
 /**
- * Single receipt representation: module scrub, then secret-key redaction.
- * Callers must not use this object for action execution.
+ * create_note and write_canvas write a document: their content is read
+ * through the document's own access once it exists (review F15 B-I1), so a
+ * receipt names the document and the size, never the content.
+ */
+const DOCUMENT_CONTENT_ACTIONS: ReadonlySet<string> = new Set(['create_note', 'write_canvas']);
+
+function withoutDocumentContent(action: string, paramsValue: unknown, resultValue: unknown): unknown {
+  if (!DOCUMENT_CONTENT_ACTIONS.has(action) || !paramsValue || typeof paramsValue !== 'object' || Array.isArray(paramsValue)) {
+    return paramsValue;
+  }
+  const params = paramsValue as Record<string, unknown>;
+  const content = params.content;
+  if (content === undefined || content === null) return paramsValue;
+  if (typeof content === 'object' && (content as Record<string, unknown>).content_omitted === true) return paramsValue;
+  const result = resultValue && typeof resultValue === 'object' ? resultValue as Record<string, unknown> : {};
+  const documentId = typeof result.document_id === 'string' ? result.document_id
+    : typeof result.canvas_document_id === 'string' ? result.canvas_document_id : null;
+  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  return { ...params, content: { document_id: documentId, content_omitted: true, content_bytes: Buffer.byteLength(text) } };
+}
+
+/**
+ * Single receipt representation: a document's content left out, module
+ * scrub, then secret-key redaction. `resultValue` is the action's result,
+ * which names the document. Callers must not use this object for action
+ * execution.
  */
 export function sanitizeActionParamsForReceipt(
   action: string,
   paramsValue: unknown,
+  resultValue?: unknown,
 ): Record<string, unknown> {
-  const moduleSafe = sanitizeModuleActionParamsForReceipt(action, paramsValue);
+  const moduleSafe = sanitizeModuleActionParamsForReceipt(action, withoutDocumentContent(action, paramsValue, resultValue));
   const redacted = redactSensitiveReceiptValue(moduleSafe);
   return recordValue(redacted);
 }

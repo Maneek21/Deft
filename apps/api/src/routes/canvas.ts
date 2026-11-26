@@ -7,14 +7,14 @@
 // before joining) and can open the document now. It never creates anything:
 // a chat with no canvas, or one whose canvas was empty, is 404, and so is a
 // document the caller can't open. PATCH answers 410 CANVAS_MOVED, with the
-// document's id when the caller can open it.
+// document's id when the caller can open it (chat membership plays no part).
 import { Hono } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import { documents } from '@deft/db/documents';
 import { db } from '../lib/db.js';
 import { documentRoleFor } from '../lib/document-access.js';
 import { canvasDocumentFor, CANVAS_MOVED, documentJsonNow } from '../lib/legacy-notes.js';
-import { canReadSpace, requireSpaceMembership } from '../lib/space-membership.js';
+import { canReadSpace } from '../lib/space-membership.js';
 
 export const canvasRoutes = new Hono();
 
@@ -53,14 +53,13 @@ canvasRoutes.get('/:spaceId/canvas', async (c) => {
   });
 });
 
-// PATCH /api/spaces/:spaceId/canvas — canvases are documents now
+// PATCH /api/spaces/:spaceId/canvas — canvases are documents now: 410 for
+// everyone signed in, chat member or not; the document's access alone
+// decides whether the answer names it.
 canvasRoutes.patch('/:spaceId/canvas', async (c) => {
   const user = c.get('user');
   const spaceId = c.req.param('spaceId');
 
-  if (!(await requireSpaceMembership(spaceId, user.id, user.org_id))) {
-    return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
-  }
   const canvas = await canvasDocumentFor(user.org_id, spaceId);
   if (canvas?.documentId && await documentRoleFor(user.id, user.org_id, canvas.documentId)) {
     return c.json({ ...CANVAS_MOVED, document_id: canvas.documentId }, 410);

@@ -279,7 +279,8 @@ test('S4-c: note sharing answers 410 NOTES_MOVED, and the old share listing hide
   }
   assert.equal(await scalar(`SELECT count(*)::int AS v FROM note_shares WHERE note_id = $1`, [NOTE_OWN_A]), 0);
 
-  // Share rows from before the move, one to a stranger, are listed as before: the stranger's name and email never.
+  // Share rows from before the move, one to a stranger, are never listed: sharing lives on the document (F15
+  // fix round 1), so the old listing points its owner there and names nobody.
   await withClient(async (c) => {
     for (const userId of [OTHER, FOREIGN]) {
       await c.query(`INSERT INTO note_shares (id, note_id, shared_with_user_id, permission, created_at)
@@ -287,12 +288,10 @@ test('S4-c: note sharing answers 410 NOTES_MOVED, and the old share listing hide
     }
   });
   const list = await call('daily-notes', callerA, 'GET', `/api/daily-notes/${NOTE_OWN_A}/shares`);
-  assert.equal(list.status, 200, list.text);
-  const body = list.json as { document_id: string; shares: Array<{ user_id: string }> };
-  assert.equal(body.document_id, DOC_OWN_A);
-  assert.deepEqual(body.shares.map((s) => s.user_id), [OTHER]);
-  assert.ok(!list.text.includes(email(FOREIGN)), 'listing leaked a stranger email');
-  // Only the owner, while they can edit its document; from org B it is not found.
+  assert.equal(list.status, 410, list.text);
+  assert.deepEqual(list.json, { ...NOTES_MOVED, document_id: DOC_OWN_A });
+  assert.ok(!list.text.includes(email(FOREIGN)) && !list.text.includes(email(OTHER)), 'listing named a person');
+  // Someone who can't open its document, or from org B, finds nothing.
   assert.equal((await call('daily-notes', { id: OTHER, org: ORG_A }, 'GET', `/api/daily-notes/${NOTE_OWN_A}/shares`)).status, 404);
   assert.equal((await call('daily-notes', callerB, 'GET', `/api/daily-notes/${NOTE_OWN_A}/shares`)).status, 404);
 });
@@ -377,7 +376,7 @@ test('S4-a/c review: removed members leave the old share list', async () => {
   await withClient((c) => c.query(`UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2`, [ORG_A, OTHER]));
   try {
     const list = await call('daily-notes', callerA, 'GET', `/api/daily-notes/${NOTE_OWN_A}/shares`);
-    assert.equal(list.status, 200, list.text);
+    assert.equal(list.status, 410, list.text);
     assert.ok(!list.text.includes(email(OTHER)), 'listing shows a removed member');
   } finally {
     await withClient((c) => c.query(`UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`, [ORG_A, OTHER]));

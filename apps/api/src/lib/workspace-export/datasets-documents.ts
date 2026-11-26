@@ -67,9 +67,9 @@ function liveDocumentSql(orgId: string, ref: SQL): SQL {
  * removed from the document, and the document's deletion, would otherwise
  * reach the export (F15's ruling, which replaces F17's deleted-document check).
  */
-export function unmovedLegacySourceSql(orgId: string, sourceType: 'note' | 'note_folder' | 'canvas', ref: SQL): SQL {
+export function unmovedLegacySourceSql(orgId: string, legacyType: 'note' | 'note_folder' | 'canvas', ref: SQL): SQL {
   return sql`NOT EXISTS (SELECT 1 FROM note_document_map moved_source
-    WHERE moved_source.org_id = ${orgId} AND moved_source.source_type = ${sourceType} AND moved_source.source_id = ${ref})`;
+    WHERE moved_source.org_id = ${orgId} AND moved_source.source_type = ${legacyType} AND moved_source.source_id = ${ref})`;
 }
 
 /** The ids (`id`) of the documents the export holds; for the member scope, those the person holds at least `min` on. */

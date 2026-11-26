@@ -179,6 +179,7 @@ export async function generateReceipt(
     const safeActionParams = sanitizeActionParamsForReceipt(
       params.actionName,
       params.actionParams,
+      params.resultJson,
     );
     const envelope = buildSignedEnvelope({
       actionId: params.actionId,

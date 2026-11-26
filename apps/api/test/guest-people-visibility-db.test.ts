@@ -128,7 +128,7 @@ before(async () => {
   await c.query(`INSERT INTO task_comments (id, org_id, task_id, user_id, content) VALUES (gen_random_uuid()::text, $1, $2, $3, 'gpv comment')`, [org, task, stranger]);
   await c.query(`INSERT INTO notes (id, org_id, user_id, title) VALUES ($1, $2, $3, 'gpv note')`, [note, org, guest]);
   await c.query(`INSERT INTO note_shares (id, note_id, shared_with_user_id, permission) VALUES (gen_random_uuid()::text, $1, $2, 'view')`, [note, sharer]);
-  // The notes move (F14): the guest's note is a document in their My drive; the old share list reads through it (F15).
+  // The notes move (F14): the guest's note is a document in their My drive; the old share list points there (F15).
   await c.query(`INSERT INTO drives (id, org_id, name, kind, owner_user_id, created_by) VALUES ($1, $2, 'My drive', 'personal', $3, $3)`, [noteDrive, org, guest]);
   await c.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES (gen_random_uuid()::text, $1, $2, 'user', $3, 'full')`,
     [org, noteDrive, guest]);
@@ -320,9 +320,12 @@ test('a guest cannot make a hidden person visible: DMs, room adds and note share
   // Sharing a note is gone (410, F15); the answer is the same whoever is named.
   assert.equal(shareHidden.status, 410);
   assert.deepEqual(shareHidden, shareUnknown);
+  // The old share list lives on the document now (F15 fix round 1): it points the guest there and names nobody.
   const shares = await get(guest, `/api/daily-notes/${note}/shares`);
-  assert.equal(shares.status, 200);
-  assert.deepEqual(shares.body.shares.map((s: any) => [s.user_id, s.user_name, s.user_email]), [[sharer, nameOf(sharer), null]]);
+  assert.equal(shares.status, 410);
+  assert.equal(shares.body.code, 'NOTES_MOVED');
+  assert.equal(shares.body.document_id, noteDocument, 'the guest can open their own note\'s document');
+  assert.ok(!JSON.stringify(shares.body).includes(nameOf(sharer)) && !JSON.stringify(shares.body).includes(nameOf(stranger)));
 
   // A member is unchanged: the DM with Stella is created.
   const memberDm = await call(sharer, '/api/spaces', { method: 'POST', body: { name: 'dm', type: 'dm', user_ids: [stranger] } });

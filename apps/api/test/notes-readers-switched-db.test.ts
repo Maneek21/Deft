@@ -389,12 +389,15 @@ test('the notes readers\' document list forms plan within budget', { skip }, asy
           .groupBy(entityTags.tag_id).toSQL()],
         ['documents by id (tags, teams, cross-references)', db.select({ id: documents.id, title: documents.title }).from(documents)
           .where(and(inArray(documents.id, ids), visibleDocumentCondition(member, orgId))).toSQL()],
-        ['legacy notes list', db.select({ id: notes.id, document_id: noteDocumentMap.target_id }).from(notes)
+        // GET /api/daily-notes (fix round 1, A-I1): the note's document, its current title and content.
+        ['legacy notes list', db.select({ id: notes.id, document_id: documents.id, title: documents.title, content_json: documents.content_json })
+          .from(notes)
           .innerJoin(noteDocumentMap, and(eq(noteDocumentMap.org_id, notes.org_id), eq(noteDocumentMap.source_type, 'note'),
             eq(noteDocumentMap.source_id, notes.id)))
-          .where(and(eq(notes.org_id, orgId), eq(notes.is_deleted, false), eq(notes.is_template, false),
-            visibleDocumentIdSql(member, orgId, sql`${noteDocumentMap.target_id}`)))
-          .orderBy(desc(notes.is_pinned), desc(notes.updated_at)).limit(100).toSQL()],
+          .innerJoin(documents, and(eq(documents.id, noteDocumentMap.target_id), eq(documents.org_id, noteDocumentMap.org_id)))
+          .where(and(eq(notes.org_id, orgId), eq(notes.is_deleted, false), visibleDocumentCondition(member, orgId),
+            eq(documents.is_template, false)))
+          .orderBy(desc(notes.is_pinned), desc(documents.updated_at)).limit(100).toSQL()],
         ['note tools search', noteDocumentsSearchQuery({ orgId, userId: member, query: 'seed document', scope: 'all', limit: 50 }).toSQL()],
         ['note tools search, mine', noteDocumentsSearchQuery({ orgId, userId: member, query: 'seed', scope: 'mine', limit: 50, templates: false }).toSQL()],
         ['note_to_wiki point lookup', db.select({ id: documents.id }).from(documents)

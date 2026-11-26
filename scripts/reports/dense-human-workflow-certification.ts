@@ -312,7 +312,7 @@ type CleanupCounts = {
   receipts: number;
   tasks: number;
   wiki_pages: number;
-  notes: number;
+  documents: number;
 };
 
 type CleanupSummary = {
@@ -334,7 +334,7 @@ function zeroCounts(): CleanupCounts {
     receipts: 0,
     tasks: 0,
     wiki_pages: 0,
-    notes: 0,
+    documents: 0,
   };
 }
 
@@ -398,14 +398,15 @@ async function createCleanupTempTables(client: pg.Client, auth: Auth, marker: st
         or coalesce(metadata::text, '') ilike $2
       )
   `, [orgId, like]);
+  // Notes are documents (F15): the run's note is a document.
   await client.query(`
-    create temp table cert_cleanup_notes on commit drop as
+    create temp table cert_cleanup_documents on commit drop as
     select id
-    from notes
+    from documents
     where org_id = $1
       and (
         coalesce(title, '') ilike $2
-        or coalesce(content, '') ilike $2
+        or coalesce(content_text, '') ilike $2
       )
   `, [orgId, like]);
 }
@@ -420,7 +421,7 @@ async function readCleanupCounts(client: pg.Client): Promise<CleanupCounts> {
       (select count(*)::int from action_receipts ar join cert_cleanup_actions ca on ca.id = ar.action_id) as receipts,
       (select count(*)::int from tasks t join cert_cleanup_tasks ct on ct.id = t.id where t.is_deleted = false) as tasks,
       (select count(*)::int from wiki_pages wp join cert_cleanup_wiki_pages cw on cw.id = wp.id where wp.is_deleted = false) as wiki_pages,
-      (select count(*)::int from notes n join cert_cleanup_notes cn on cn.id = n.id where n.is_deleted = false) as notes
+      (select count(*)::int from documents d join cert_cleanup_documents cd on cd.id = d.id where d.is_deleted = false) as documents
   `);
   return { ...zeroCounts(), ...(result.rows[0] ?? {}) };
 }
@@ -465,7 +466,9 @@ async function cleanupRunArtifacts(auth: Auth, options: { marker: string; apply:
     mutations.messages_soft_deleted = (await client.query('update messages set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_messages) and is_deleted = false')).rowCount ?? 0;
     mutations.tasks_soft_deleted = (await client.query('update tasks set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_tasks) and is_deleted = false')).rowCount ?? 0;
     mutations.wiki_pages_soft_deleted = (await client.query('update wiki_pages set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_wiki_pages) and is_deleted = false')).rowCount ?? 0;
-    mutations.notes_soft_deleted = (await client.query('update notes set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_notes) and is_deleted = false')).rowCount ?? 0;
+    // To the trash, as a soft delete leaves a document (restorable for 30 days).
+    mutations.documents_soft_deleted = (await client.query(`update documents set is_deleted = true, deleted_at = now(), deleted_by = $1, updated_at = now()
+      where id in (select id from cert_cleanup_documents) and is_deleted = false`, [auth.user.id])).rowCount ?? 0;
     summary.mutations = mutations;
     summary.after = await readCleanupCounts(client);
     await client.query('commit');
@@ -917,44 +920,27 @@ async function approveSomeViaUi(page: Page) {
   }
 }
 
-async function createAndPromoteNote(page: Page, auth: Auth) {
-  await page.goto(`${WEB_URL}/notes`, { waitUntil: 'domcontentloaded' });
-  await page.locator('main').waitFor({ state: 'visible', timeout: 25_000 });
-  await screenshot(page, 'notes-before-dense-note');
-  const createResponse = page.waitForResponse(
-    (response) => response.request().method() === 'POST' && response.url().includes('/api/daily-notes'),
-    { timeout: 20_000 },
-  ).catch(() => null);
-  await page.getByRole('button', { name: /new note/i }).first().click();
-  const blankNote = page.getByRole('button', { name: /blank note/i }).first();
-  if (await blankNote.isVisible().catch(() => false)) await blankNote.click();
-  const created = await createResponse;
-  if (created && created.status() >= 400) throw new Error(`New note failed with ${created.status()}`);
-  await page.waitForTimeout(1_500);
+// Notes are documents (F15): the manager's note is a document in their My
+// drive, created through the documents API the Drive uses, opened in the
+// document editor, and found through search's documents group.
+async function createNoteDocument(page: Page, auth: Auth) {
   const noteTitle = `Dense manager field note ${RUN_MARKER}`;
-  await page.locator('input[placeholder="Untitled"]').first().fill(noteTitle);
-  const editor = page.locator('[contenteditable="true"].deft-notes-editor').first();
-  await editor.waitFor({ state: 'visible', timeout: 20_000 });
-  await editor.fill(`Dense note ${RUN_MARKER}: Diego recorded that route capacity, Sun Gold sample boxes, and buyer-copy timing must stay connected in the workspace memory before launch.`);
-  await delay(2_000);
-  await screenshot(page, 'notes-dense-note-before-promote');
-  await page.getByRole('button', { name: /promote to wiki/i }).first().click();
-  await page.getByRole('button', { name: /^fact$/i }).click();
-  page.once('dialog', async (dialog) => { await dialog.accept(); });
-  await page.getByRole('button', { name: /^promote$/i }).click();
-  await delay(1_500);
-  const wiki = await waitFor<any>('dense promoted note searchable', async () => {
-    const body = await api<any>(auth, `/api/wiki?q=${encodeURIComponent(noteTitle)}&limit=10`);
-    const pages = asArray<any>(body, ['pages']);
-    return pages.find((page) => page.title === noteTitle || JSON.stringify(page).includes(RUN_MARKER)) ? { pages, body } : null;
-  }, { timeoutMs: 45_000, intervalMs: 2_000 });
-  artifact.evidence.promoted_note = wiki.pages.map((page: any) => ({ id: page.id, title: page.title, slug: page.slug, type: page.type }));
-  await page.goto(`${WEB_URL}/knowledge`, { waitUntil: 'domcontentloaded' });
+  const text = `Dense note ${RUN_MARKER}: Diego recorded that route capacity, Sun Gold sample boxes, and buyer-copy timing must stay connected in the workspace memory before launch.`;
+  const created = await api<any>(auth, '/api/documents', {
+    method: 'POST',
+    body: JSON.stringify({ title: noteTitle, json: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] } }),
+  });
+  const documentId = created?.document?.id;
+  if (typeof documentId !== 'string') throw new Error('Creating the note document returned no id');
+  await page.goto(`${WEB_URL}/d/${documentId}`, { waitUntil: 'domcontentloaded' });
   await page.locator('main').waitFor({ state: 'visible', timeout: 25_000 });
-  const search = page.locator('input[placeholder*="Search"], input[placeholder*="search"]').first();
-  if (await search.isVisible().catch(() => false)) await search.fill(RUN_MARKER);
-  await delay(800);
-  await screenshot(page, 'knowledge-after-dense-note');
+  await delay(1_500);
+  await screenshot(page, 'note-document-dense-note');
+  await waitFor<any>('dense note document searchable', async () => {
+    const body = await api<any>(auth, `/api/search?q=${encodeURIComponent(RUN_MARKER)}`);
+    return asArray<any>(body?.documents).some((row) => row.id === documentId) ? body : null;
+  }, { timeoutMs: 45_000, intervalMs: 2_000 });
+  artifact.evidence.note_document = { id: documentId, title: noteTitle, url: `/d/${documentId}` };
 }
 
 async function verifyReceipts(auth: Auth, actionIds: string[]) {
@@ -1118,7 +1104,7 @@ async function writeReport() {
   <section class="hero">
     <span class="pill">${escapeHtml(reportKicker)}</span>
     <h1>${escapeHtml(reportTitle)}</h1>
-    <p>Run marker <code>${escapeHtml(RUN_MARKER)}</code>. Mode <code>${escapeHtml(artifact.mode)}</code>. Seeded employees used real browser sessions against <code>${escapeHtml(WEB_URL)}</code>, posted a total of ${metrics?.attempted_messages ?? 0} tagged messages across several spaces, then Defty captures, approvals, receipts, notes, and wiki search were verified where applicable.</p>
+    <p>Run marker <code>${escapeHtml(RUN_MARKER)}</code>. Mode <code>${escapeHtml(artifact.mode)}</code>. Seeded employees used real browser sessions against <code>${escapeHtml(WEB_URL)}</code>, posted a total of ${metrics?.attempted_messages ?? 0} tagged messages across several spaces, then Defty captures, approvals, receipts and a note document found through search were verified where applicable.</p>
     <div class="grid">
       <div class="card"><div class="metric">${metrics?.sent_messages ?? 0}/${metrics?.attempted_messages ?? 0}</div><span>UI chat sends succeeded</span></div>
       <div class="card"><div class="metric">${metrics?.completed_observation_count ?? 0}/${metrics?.sent_messages ?? 0}</div><span>Messages durably observed</span></div>
@@ -1138,7 +1124,7 @@ async function writeReport() {
       <tr><td>Chat becomes context</td><td class="${(coverage?.false_negative_count ?? 0) === 0 ? 'pass' : 'warn'}">${(coverage?.false_negative_count ?? 0) === 0 ? 'Strong' : 'Partial'}</td><td>${coverage?.matched_expected ?? 0}/${coverage?.expected_count ?? 0} non-noise messages produced expected capture kinds.</td></tr>
       <tr><td>Noise guardrails</td><td class="${(coverage?.false_positive_count ?? 0) === 0 ? 'pass' : 'fail'}">${(coverage?.false_positive_count ?? 0) === 0 ? 'Passed' : 'Needs work'}</td><td>${coverage?.false_positive_count ?? 0}/${coverage?.noise_count ?? 0} explicit no-action messages produced captures.</td></tr>
       <tr><td>Approvals and receipts</td><td class="${(artifact.evidence.receipts as any[])?.every((r) => r.ok) ? 'pass' : 'warn'}">Checked</td><td>${(artifact.evidence.receipts as any[])?.length ?? 0} approved actions checked for receipts.</td></tr>
-      <tr><td>Notes become memory</td><td class="${artifact.evidence.promoted_note ? 'pass' : 'fail'}">${artifact.evidence.promoted_note ? 'Passed' : 'Not proven'}</td><td>Manager note promoted to wiki and found through wiki search.</td></tr>
+      <tr><td>Notes are documents</td><td class="${artifact.evidence.note_document ? 'pass' : 'fail'}">${artifact.evidence.note_document ? 'Passed' : 'Not proven'}</td><td>Manager note created as a document, opened in the editor and found through search.</td></tr>
     </tbody>
   </table>
 
@@ -1177,7 +1163,7 @@ async function writeReport() {
       false_positives: coverage?.false_positives,
     },
     receipts: artifact.evidence.receipts,
-    promoted_note: artifact.evidence.promoted_note,
+    note_document: artifact.evidence.note_document,
   }, null, 2))}</pre>
 </main>
 </body>
@@ -1356,7 +1342,7 @@ async function main() {
     }));
     artifact.evidence.receipts = receipts;
 
-    await step('Create note and promote to wiki through UI', () => createAndPromoteNote(managerPage, managerAuth), true);
+    await step('Create a note document and find it through search', () => createNoteDocument(managerPage, managerAuth), true);
 
     await step('Capture final dashboard/tasks/inbox surfaces', async () => {
       for (const [route, name] of [

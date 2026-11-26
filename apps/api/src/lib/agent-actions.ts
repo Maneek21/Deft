@@ -52,8 +52,9 @@ import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.j
 import { clientSafeErrorMessage } from './client-safe-error.js';
 import { authorizeNativeActionTarget } from './agent-action-visibility.js';
 import {
-  canvasDocumentToWrite, createNoteDocument, noteContentJson, noteToolActor, noteToolError, promotableNoteDocument,
-  readCanvasDocument, readNoteDocument, replaceDocumentContent, searchNoteDocuments, type JSONContent as NoteJSONContent,
+  canvasDocumentToWrite, createNoteDocument, noteContentJson, noteToolActor, noteToolError, omitExecutedToolContent,
+  promotableNoteDocument, readCanvasDocument, readNoteDocument, replaceDocumentContent, searchNoteDocuments,
+  type JSONContent as NoteJSONContent,
 } from './legacy-notes.js';
 import { updateDocument } from './documents.js';
 import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
@@ -3190,6 +3191,8 @@ export async function executeAction(
             executed_at: new Date(),
           })
           .where(eq(agentActions.id, actionId));
+        // The content is the document's now: history and run details keep no copy (B-I1).
+        await omitExecutedToolContent({ orgId, actionId, documentId: target.documentId, content });
 
         await logAuditEvent({
           orgId,
@@ -3346,6 +3349,8 @@ export async function executeAction(
             executed_at: new Date(),
           })
           .where(eq(agentActions.id, actionId));
+        // The content is the document's now: history and run details keep no copy (B-I1).
+        await omitExecutedToolContent({ orgId, actionId, documentId: document.id, content: params.content });
 
         await logAuditEvent({
           orgId,

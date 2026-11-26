@@ -234,7 +234,8 @@ const WRITES: Row[] = [
   { surface: 'pin a message', method: 'POST', path: `/api/spaces/${S.pub}/pins`, body: { message_id: M.pubReply }, member: 403, guest: 403 },
   { surface: 'unpin a message', method: 'DELETE', path: `/api/spaces/${S.pub}/pins/${M.pub}`, member: 403, guest: 403 },
   { surface: 'delete a clip', method: 'DELETE', path: `/api/clips/${CLIP.pub}`, member: 404, guest: 404 },
-  { surface: 'edit the canvas', method: 'PATCH', path: `/api/spaces/${S.pub}/canvas`, body: { title: 'changed' }, member: 403, guest: 403 },
+  // Every canvas write is 410 CANVAS_MOVED since F15, joined or not; it names the document only to someone who can open it.
+  { surface: 'edit the canvas', method: 'PATCH', path: `/api/spaces/${S.pub}/canvas`, body: { title: 'changed' }, member: 410, guest: 410 },
   { surface: 'add knowledge', method: 'POST', path: `/api/spaces/${S.pub}/knowledge`, body: { type: 'decision', title: 'added' }, member: 403, guest: 403 },
   { surface: 'capture a discussion', method: 'POST', path: `/api/spaces/${S.pub}/knowledge/capture-discussion`, body: {}, member: 403, guest: 403 },
 ];

@@ -13,7 +13,7 @@ export {
   jsonToYDoc,
   yDocToJson,
 } from './convert';
-export { htmlToJson } from './html';
+export { htmlToJson, jsonToHtml } from './html';
 export { jsonToMarkdown, markdownToJson } from './markdown';
 export { BLOCK_ID_COMMENT, blockHash, ensureBlockIds, topLevelBlocks } from './blocks';
 export { BUILT_IN_TEMPLATES, templateJson, withFreshBlockIds, type BuiltInTemplateKey } from './templates';
