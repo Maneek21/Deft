@@ -152,9 +152,10 @@ async function requireDocumentRole(tx: Tx, actor: DriveActor, documentId: string
 /**
  * A live document locked for a change that needs edit on it, in the lock
  * order: the actor, its drive (the role that counts is the document's own),
- * then the document.
+ * then the document. Also the first locks of an upload into a document
+ * (routes/upload.ts).
  */
-async function lockDocumentForEditInTx(tx: Tx, actor: DriveActor, documentId: string): Promise<DocumentRow> {
+export async function lockDocumentForEditInTx(tx: Tx, actor: DriveActor, documentId: string): Promise<DocumentRow> {
   const driveId = await liveDriveOf(tx, actor.org_id, documentId);
   if (!driveId) throw notFound();
   await lockActorInTx(tx, actor);

@@ -1,4 +1,5 @@
-import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, or, sql, type SQL } from 'drizzle-orm';
+import { documentAttachments, documents, documentShares, driveMembers, drives } from '@deft/db/documents';
 import {
   files,
   messageAttachments,
@@ -17,6 +18,7 @@ import {
 } from '@deft/db/schema';
 import { noteFiles } from '@deft/db/note-files';
 import { db } from './db.js';
+import { visibleDocumentIdSql } from './document-access.js';
 import { visibleTaskCondition } from './task-visibility.js';
 import { visibleNoteCondition, visibleNoteConditionFromLockedGrants } from './note-visibility.js';
 import { unjoinedPublicSpaceReadableSql } from './space-membership.js';
@@ -95,9 +97,41 @@ export async function canReadAttachmentThroughNote(
 }
 
 /**
+ * For a query over document_attachments: the link admits `userId` under the
+ * document access check (document-access.ts). An image still in the
+ * document (`in_current`, kept by document-versions.ts) needs view; one only
+ * in its history needs edit, the role that may read history.
+ */
+function documentImageReadableSql(userId: string, orgId: string): SQL {
+  const documentId = sql`${documentAttachments.document_id}`;
+  return sql`CASE WHEN ${documentAttachments.in_current}
+    THEN ${visibleDocumentIdSql(userId, orgId, documentId, 'view')}
+    ELSE ${visibleDocumentIdSql(userId, orgId, documentId, 'edit')} END`;
+}
+
+/**
+ * A file uploaded into a document (or linked to one by the notes move) is
+ * read through its documents (document_attachments) and nothing else: null
+ * when no document links it; otherwise true when any one of them admits the
+ * caller (documentImageReadableSql), false when none does.
+ */
+export async function canReadAttachmentThroughDocument(fileId: string, orgId: string, userId: string): Promise<boolean | null> {
+  const [row] = await db.select({
+    linked: sql<boolean>`count(*) > 0`,
+    readable: sql<boolean>`coalesce(bool_or(${documentImageReadableSql(userId, orgId)}), false)`,
+  })
+    .from(documentAttachments)
+    .where(and(eq(documentAttachments.org_id, orgId), eq(documentAttachments.file_id, fileId)));
+  if (!row?.linked) return null;
+  return row.readable === true;
+}
+
+/**
  * Resolves the current attachment target before returning metadata. Typed
  * links are authoritative once present; legacy columns remain a read fallback
  * throughout the compatibility window. Multiple typed targets fail closed.
+ * A file on no task or message that documents link is decided by those
+ * documents alone (canReadAttachmentThroughDocument), its uploader included.
  */
 export async function getVisibleAttachment(fileId: string, orgId: string, userId: string) {
   const [file] = await db.select()
@@ -135,7 +169,10 @@ export async function getVisibleAttachment(fileId: string, orgId: string, userId
   if (file.message_id) {
     return await canAccessAttachmentMessage(file.message_id, orgId, userId, 'read') ? file : null;
   }
-  // On no task or message: its uploader, or a reader of a note that shows it.
+  // In documents: whoever one of them admits, and nobody else.
+  const throughDocument = await canReadAttachmentThroughDocument(fileId, orgId, userId);
+  if (throughDocument !== null) return throughDocument ? file : null;
+  // On no task, message or document: its uploader, or a reader of a note that shows it.
   if (file.uploaded_by === userId) return file;
   return await canReadAttachmentThroughNote(fileId, orgId, userId) ? file : null;
 }
@@ -167,6 +204,20 @@ export async function authorizeAttachmentDownload(params: Readonly<{
     await tx.select({ id: notes.id }).from(notes).where(and(eq(notes.org_id, params.org_id), inArray(notes.id,
       tx.select({ id: noteFiles.note_id }).from(noteFiles).where(and(eq(noteFiles.org_id, params.org_id), eq(noteFiles.file_id, params.file.id))))))
       .orderBy(notes.id).for('share');
+    // An upload into a document locks its drive, then the document, then
+    // writes the file and its link (routes/upload.ts, in lib/drive-locks.ts's
+    // order). Take the drives, then the documents, that link this file before
+    // the file, in that order, each in id order. Every change to a drive's
+    // members, links, default role, freezing or deletion locks the drive FOR
+    // UPDATE, and every share change, move and delete of a document locks the
+    // document, so those wait for this decision or it reads them.
+    const linkedDocumentIds = tx.select({ id: documentAttachments.document_id }).from(documentAttachments).where(and(
+      eq(documentAttachments.org_id, params.org_id), eq(documentAttachments.file_id, params.file.id)));
+    const lockedDrives = await tx.select({ id: drives.id }).from(drives).where(and(eq(drives.org_id, params.org_id), inArray(drives.id,
+      tx.select({ id: documents.drive_id }).from(documents).where(and(eq(documents.org_id, params.org_id), inArray(documents.id, linkedDocumentIds))))))
+      .orderBy(drives.id).for('share');
+    const lockedDocuments = lockedDrives.length === 0 ? [] : await tx.select({ id: documents.id, drive_id: documents.drive_id }).from(documents)
+      .where(and(eq(documents.org_id, params.org_id), inArray(documents.id, linkedDocumentIds))).orderBy(documents.id).for('share');
     const [file] = await tx.select().from(files).where(and(eq(files.org_id, params.org_id), eq(files.id, params.file.id))).for('update');
     if (!file || file.storage_key !== params.file.storage_key || file.size_bytes !== params.file.size_bytes
       || file.content_sha256 !== params.file.content_sha256) throw missing();
@@ -175,6 +226,10 @@ export async function authorizeAttachmentDownload(params: Readonly<{
       eq(messageAttachments.org_id, params.org_id), eq(messageAttachments.file_id, file.id))).for('share');
     const taskLinks = await tx.select({ id: taskAttachments.task_id }).from(taskAttachments).where(and(
       eq(taskAttachments.org_id, params.org_id), eq(taskAttachments.file_id, file.id))).for('share');
+    // The file's UPDATE lock fences new document links (their foreign key);
+    // these SHARE locks fence `in_current` changing.
+    const documentLinks = await tx.select({ id: documentAttachments.document_id }).from(documentAttachments).where(and(
+      eq(documentAttachments.org_id, params.org_id), eq(documentAttachments.file_id, file.id))).for('share');
     const typed = messageLinks.length + taskLinks.length;
     if (typed > 1) throw missing();
     const messageId = typed ? messageLinks[0]?.id : file.task_id ? undefined : file.message_id;
@@ -206,6 +261,29 @@ export async function authorizeAttachmentDownload(params: Readonly<{
         .innerJoin(projects, and(eq(tasks.project_id, projects.id), eq(projects.org_id, params.org_id)))
         .where(and(eq(tasks.id, taskId), eq(tasks.org_id, params.org_id), eq(tasks.is_deleted, false), visibleTaskCondition(params.user_id)));
       if (!visible) throw missing();
+    } else if (documentLinks.length > 0) {
+      // In documents: only through them, the uploader included. The drives
+      // and documents are SHARE-locked above, the caller's org_members row at
+      // the start (a departure, a role change or an agent's pause updates
+      // it), and here the caller's seats in the chats those drives and
+      // documents grant to, so a removal from one waits too. A document that
+      // moved to a drive not locked above, or a link to a document not locked
+      // there, counts for nothing.
+      const lockedDriveIds = new Set(lockedDrives.map((drive) => drive.id));
+      const documentIds = lockedDocuments.filter((document) => lockedDriveIds.has(document.drive_id)).map((document) => document.id);
+      if (documentIds.length === 0) throw missing();
+      const driveIds = [...new Set(lockedDocuments.map((document) => document.drive_id))].filter((id) => lockedDriveIds.has(id));
+      const grantingChats = sql`(SELECT ${driveMembers.principal_id} FROM ${driveMembers}
+        WHERE ${driveMembers.org_id} = ${params.org_id} AND ${driveMembers.principal_type} = 'space' AND ${inArray(driveMembers.drive_id, driveIds)}
+        UNION SELECT ${documentShares.principal_id} FROM ${documentShares}
+        WHERE ${documentShares.org_id} = ${params.org_id} AND ${documentShares.principal_type} = 'space' AND ${inArray(documentShares.document_id, documentIds)})`;
+      await tx.select({ space_id: spaceMembers.space_id }).from(spaceMembers)
+        .where(and(eq(spaceMembers.user_id, params.user_id), sql`${spaceMembers.space_id} IN ${grantingChats}`))
+        .orderBy(spaceMembers.space_id).for('share');
+      const [admitted] = await tx.select({ id: documentAttachments.document_id }).from(documentAttachments).where(and(
+        eq(documentAttachments.org_id, params.org_id), eq(documentAttachments.file_id, file.id),
+        inArray(documentAttachments.document_id, documentIds), documentImageReadableSql(params.user_id, params.org_id))).limit(1);
+      if (!admitted) throw missing();
     } else if (file.uploaded_by !== params.user_id) {
       // On no task or message and not the caller's upload: only a reader of a
       // note that shows it. The file row is UPDATE-locked above, which fences
