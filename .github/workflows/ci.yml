@@ -209,6 +209,8 @@ jobs:
           src/lib/drive-actions.test.ts
           src/components/drive/drive-sidebar.test.tsx
           src/components/documents/posting-prompt.test.tsx
+          src/lib/collab-status.test.ts
+          src/components/documents/document-header.test.tsx
       - name: Install locked browser for mounted App contracts
         run: pnpm exec playwright install --with-deps chromium
       - name: Test public space preview reads
@@ -246,6 +248,7 @@ jobs:
           src/lib/members-remove-personal-drive-mounted.test.ts
           src/lib/chat-documents-mounted.test.ts
           src/lib/drive-page-mounted.test.ts
+          src/lib/document-page-mounted.test.ts
           src/lib/error-telemetry-mounted.test.ts
           src/lib/report-problem-mounted.test.ts
           src/lib/signup-install-ping-mounted.test.ts
