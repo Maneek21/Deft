@@ -18,7 +18,7 @@ import test, { after, before, mock } from 'node:test';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import * as Y from 'yjs';
-import { ensureBlockIds, getDocumentSchema, jsonToText, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
+import { applyJsonToYDoc, ensureBlockIds, getDocumentSchema, jsonToText, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
 import { setCollabLimitsForTest } from '../src/collab/limits.js';
 import { deriveContent, markSizeWarning, onDocumentStored, type DocumentStoredEvent } from '../src/collab/persistence.js';
 import { collabStateForTest, collabTestSeams, getCollabServer } from '../src/collab/server.js';
@@ -26,6 +26,7 @@ import { closeDb, db } from '../src/lib/db.js';
 import * as accessChange from '../src/lib/document-access-change.js';
 import { applyAccessLossInTx, currentAccessGeneration, finishAccessLoss } from '../src/lib/document-access-change.js';
 import { DocumentWriteRefused, writeDocument } from '../src/lib/document-writer.js';
+import { ensureDeftyMembership } from '../src/lib/ensure-defty-membership.js';
 import { _setPausedStartForTest } from '../src/lib/paused-start.js';
 import { revokeMemberWebSessions } from '../src/lib/web-sessions.js';
 import { documentRoutes } from '../src/routes/documents.js';
@@ -784,7 +785,8 @@ test('writeDocument checks Defty as the asker and an agent as itself, lets a sys
   await fx!.addDriveMember(drive, { user: people.member }, 'edit');
   await fx!.addDriveMember(drive, { user: people.agentUser }, 'edit');
   const doc = await fx!.insertDocument({ driveId: drive, title: 'Actors' });
-  const defty = await fx!.addPerson({ kind: 'agent' });
+  // The built-in Defty user (the only actor whose askerId may name someone else).
+  const defty = await ensureDeftyMembership(fx!.orgId);
   const write = (actor: Parameters<typeof writeDocument>[0]['actor'], extra: Partial<Parameters<typeof writeDocument>[0]> = {}) =>
     writeDocument({ orgId: fx!.orgId, documentId: doc, actor, reason: 'agent_edit', mutate: (d) => appendParagraph(d, 'edit'), ...extra });
   const forbidden = (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'FORBIDDEN';
@@ -1653,7 +1655,7 @@ test('thousands of empty updates after a held-back struct leave the size account
 });
 
 for (const as of ['update', 'syncStep2'] as const) {
-  test(`775 empty headings in one ${as === 'update' ? 'Update' : 'SyncStep2'} are charged for their ids and defaults, refused, and nothing over the cap is stored`, { skip: !url && SKIP }, async (t) => {
+  test(`775 empty headings in one ${as === 'update' ? 'Update' : 'SyncStep2'} are charged at least their growth, and nothing over the cap is stored`, { skip: !url && SKIP }, async (t) => {
     t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
     const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: `Empty headings ${as}` });
     const editor = await open(t, doc, fx!.people.member);
@@ -1670,11 +1672,18 @@ for (const as of ['update', 'syncStep2'] as const) {
     });
     const update = Y.encodeStateAsUpdate(draft, vector);
     getDocumentSchema().nodeFromJSON(yDocToJson(draft)).check();
-    const normalized = normalizedSize(draft);
+    // Round 5's case: the derive then re-applied the canonical JSON, writing
+    // every heading's `level` default with its id, which took this past the
+    // cap. Since the consult it writes the id alone.
     assert.ok(update.byteLength * 4 < 0.9 * 65_536 - 1_000, `round 4's ×4 would take it fast (${update.byteLength} bytes)`);
-    assert.ok(normalized > 65_536, `normalized, it is ${normalized} bytes`);
+    assert.ok(fullRewriteSize(draft) > 65_536, `the old derive would take it to ${fullRewriteSize(draft)} bytes`);
+    const normalized = normalizedSize(draft);
     await sendHandled(doc, editor, observer, [update], 'the headings are handled', { as });
-    assert.equal(editor.closes[0]?.code, 4413, `the headings were applied (${observer.ydoc.getXmlFragment('default').length} blocks)`);
+    if (editor.closes.length > 0) assert.equal(editor.closes[0]!.code, 4413);
+    else {
+      const estimate = collabStateForTest().approxBytes(doc)!;
+      assert.ok(estimate >= normalized - 64, `admitted, the estimate ${estimate} is below the normalized size ${normalized}`);
+    }
     editor.destroy();
     observer.destroy();
     await allUnloaded();
@@ -1717,6 +1726,323 @@ test('one tiny frame removing the ids the server wrote back is charged for the i
   const truth = normalizedSize(removal);
   const estimate = collabStateForTest().approxBytes(doc)!;
   assert.ok(estimate >= truth - 64, `estimate ${estimate} is below the normalized size ${truth}`);
+});
+
+// ---------------------------------------------------------------------------
+// F7 consult
+
+/** Appends `n` runs of text, alternately bold and plain. */
+function formattedRuns(text: Y.XmlText, n: number): void {
+  for (let k = 0; k < n; k += 1) text.insert(text.length, `w${k} `, k % 2 ? { bold: {} } : {});
+}
+
+/** Stores `draft` as the document's live state, with derived copies that match it (so a load doesn't derive). */
+async function storeState(documentId: string, draft: Y.Doc): Promise<void> {
+  const json = ensureBlockIds(yDocToJson(draft));
+  await fx!.client.query('UPDATE documents SET ydoc_state = $2, content_json = $3, content_text = $4 WHERE id = $1',
+    [documentId, Buffer.from(Y.encodeStateAsUpdate(draft)), JSON.stringify(json), jsonToText(json)]);
+}
+
+/** The size the old derive (the whole canonical JSON re-applied whenever an id changed) would have given `doc`. */
+function fullRewriteSize(doc: Y.Doc): number {
+  const scratch = new Y.Doc();
+  try {
+    Y.applyUpdate(scratch, Y.encodeStateAsUpdate(doc));
+    const json = yDocToJson(scratch);
+    const withIds = ensureBlockIds(json);
+    if (JSON.stringify(withIds) !== JSON.stringify(json)) scratch.transact(() => applyJsonToYDoc(scratch, withIds));
+    return Y.encodeStateAsUpdate(scratch).byteLength;
+  } finally {
+    scratch.destroy();
+  }
+}
+
+test('deleting a hard break between formatted runs stays within the cap: the derive writes ids back, nothing else', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Hard break' });
+  const draft = new Y.Doc();
+  t.after(() => draft.destroy());
+  const paragraph = new Y.XmlElement('paragraph');
+  paragraph.setAttribute('id', randomUUID());
+  const first = new Y.XmlText();
+  const second = new Y.XmlText();
+  paragraph.insert(0, [first, new Y.XmlElement('hardBreak'), second]);
+  draft.getXmlFragment('default').push([paragraph]);
+  formattedRuns(first, 1_000);
+  formattedRuns(second, 1_000);
+  await storeState(doc, draft);
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  const removal = new Y.Doc();
+  t.after(() => removal.destroy());
+  Y.applyUpdate(removal, Y.encodeStateAsUpdate(editor.ydoc));
+  const vector = Y.encodeStateVector(removal);
+  // One frame: the hard break deleted, and a block without an id (so the next derive writes one back).
+  removal.transact(() => {
+    (removal.getXmlFragment('default').get(0) as Y.XmlElement).delete(1, 1);
+    removal.getXmlFragment('default').push([new Y.XmlElement('paragraph')]);
+  });
+  const frame = Y.encodeStateAsUpdate(removal, vector);
+  assert.ok(frame.byteLength < 100, `a tiny frame (${frame.byteLength} bytes)`);
+  const before = Y.encodeStateAsUpdate(removal).byteLength;
+  const rewritten = fullRewriteSize(removal);
+  assert.ok(before <= 65_536 && rewritten > 65_536, `the old derive would take ${before} bytes to ${rewritten}, past the cap`);
+  await sendHandled(doc, editor, observer, [frame], 'the hard break removal is handled');
+  assert.equal(editor.closes.length, 0, 'admitted');
+  editor.destroy();
+  observer.destroy();
+  // The final store derives.
+  await allUnloaded();
+  const row = await stored(doc);
+  assert.ok(row.state_bytes! <= 65_536, `the stored state is ${row.state_bytes} bytes, past the cap`);
+  assert.ok(row.content_text.includes('w999 '), 'the text is stored whole');
+});
+
+test('a delete inside a run that reaches the server after a derived store still lands', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Concurrent delete' });
+  const draft = new Y.Doc();
+  t.after(() => draft.destroy());
+  const paragraph = new Y.XmlElement('paragraph');
+  paragraph.setAttribute('id', randomUUID());
+  // Two neighbouring texts, as a deleted hard break leaves them.
+  const first = new Y.XmlText('Hello ');
+  const second = new Y.XmlText('brave new world');
+  paragraph.insert(0, [first, second]);
+  draft.getXmlFragment('default').push([paragraph]);
+  await storeState(doc, draft);
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  // The client deletes "brave " on its copy before it hears of the server's next derive.
+  const deleter = new Y.Doc();
+  t.after(() => deleter.destroy());
+  Y.applyUpdate(deleter, Y.encodeStateAsUpdate(editor.ydoc));
+  const vector = Y.encodeStateVector(deleter);
+  (((deleter.getXmlFragment('default').get(0) as Y.XmlElement).get(1)) as Y.XmlText).delete(0, 'brave '.length);
+  const frame = Y.encodeStateAsUpdate(deleter, vector);
+  // A block without an id makes the first derived store write back.
+  editor.typeText('Trigger');
+  await pollUntil(async () => (await stored(doc)).content_text.includes('Trigger'), 'a derived store ran', 10_000);
+  await sendHandled(doc, editor, observer, [frame], 'the delete is handled');
+  assert.ok(observer.text().includes('Hello new world'), `the delete was lost: ${observer.text()}`);
+});
+
+test('a document stored with a struct held back loads with a bounded estimate, not its whole state\'s charge', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Held back at load' });
+  const draft = jsonToYDoc({ type: 'doc', content: Array.from({ length: 2_000 }, (_, k) => ({ type: 'paragraph', content: [{ type: 'text', text: `p${k}` }] })) });
+  t.after(() => draft.destroy());
+  deriveContent(draft);
+  // Another client's heading, held back behind a struct that never arrives.
+  const ghost = new Y.Doc();
+  t.after(() => ghost.destroy());
+  Y.applyUpdate(ghost, Y.encodeStateAsUpdate(draft));
+  appendParagraph(ghost, 'Withheld');
+  const afterWithheld = Y.encodeStateVector(ghost);
+  ghost.getXmlFragment('default').push([new Y.XmlElement('heading')]);
+  Y.applyUpdate(draft, Y.encodeStateAsUpdate(ghost, afterWithheld));
+  assert.ok(draft.store.pendingStructs !== null, 'held back');
+  await storeState(doc, draft);
+  await open(t, doc, fx!.people.member);
+  const state = collabStateForTest();
+  const bytes = state.encodedBytes(doc)!;
+  const estimate = state.approxBytes(doc)!;
+  assert.ok(estimate <= bytes + 10 * 128, `the estimate starts at ${estimate} for ${bytes} bytes`);
+  assert.ok(estimate >= bytes, 'and no lower than the state itself');
+});
+
+test('one connection holds awareness states for at most two client ids', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Awareness ids' });
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  const probe = async (value: string) => {
+    editor.provider.setAwarenessField('probe', value);
+    await pollUntil(() => (observer.provider.awareness!.getStates().get(editor.ydoc.clientID) as { probe?: string } | undefined)?.probe === value,
+      `the probe ${value} arrives`);
+  };
+  await probe('own');
+  const ids = [90_001, 90_002, 90_003, 90_004];
+  editor.socket.send(collabFrames.awareness(`doc:${doc}`, ids.map((clientId) => ({ clientId, clock: 1, state: { user: 'someone else' } }))));
+  await probe('after');
+  const taken = ids.filter((id) => observer.provider.awareness!.getStates().has(id));
+  assert.ok(taken.length <= 1, `states under ${taken.length} more client ids were taken from one connection`);
+});
+
+test('one awareness frame carries at most 16 KB of states', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Awareness bytes' });
+  const observer = await open(t, doc, fx!.people.member2);
+  const raw = rawCollab(srv!.url);
+  t.after(() => raw.ws.terminate());
+  await raw.authenticate(`doc:${doc}`, await tokenFor(fx!.people.member, fx!.orgId));
+  raw.send(collabFrames.awareness(`doc:${doc}`, [
+    { clientId: 91_001, clock: 1, state: { text: 'x'.repeat(10_000) } },
+    { clientId: 91_002, clock: 1, state: { text: 'y'.repeat(10_000) } },
+  ]));
+  raw.send(collabFrames.awareness(`doc:${doc}`, [{ clientId: 91_001, clock: 2, state: { probe: 'done' } }]));
+  await pollUntil(() => (observer.provider.awareness!.getStates().get(91_001) as { probe?: string } | undefined)?.probe === 'done', 'both frames are handled');
+  assert.equal(observer.provider.awareness!.getStates().has(91_002), false, 'the state past 16 KB in one frame was dropped');
+});
+
+/** A private drive where `member` can edit, with one document; and the access loss that removes them. */
+async function driveWithMember(title: string) {
+  const { people } = fx!;
+  const drive = await fx!.insertDrive({ kind: 'private', name: title });
+  await fx!.addDriveMember(drive, { user: people.owner }, 'full');
+  await fx!.addDriveMember(drive, { user: people.member }, 'edit');
+  const doc = await fx!.insertDocument({ driveId: drive, title });
+  const change = { orgId: fx!.orgId, driveId: drive, userIds: [people.member] };
+  const loseAccess = () => db.transaction(async (tx) => {
+    await tx.execute(sql`DELETE FROM drive_members WHERE drive_id = ${drive} AND principal_id = ${people.member}`);
+    return applyAccessLossInTx(tx, change);
+  });
+  return { doc, change, loseAccess };
+}
+
+test('a write reaching commit while an access loss is still being applied is refused BUSY', { skip: !url && SKIP }, async (t) => {
+  const { doc, change, loseAccess } = await driveWithMember('Barrier at commit');
+  let finish: (() => Promise<void>) | null = null;
+  t.after(async () => { collabTestSeams.beforeWriteCommit = null; await finish?.(); });
+  // The loss commits after the write read the role, and its barrier is open when the write reaches commit.
+  collabTestSeams.beforeWriteCommit = async (documentId) => {
+    if (documentId !== doc) return;
+    collabTestSeams.beforeWriteCommit = null;
+    const result = await loseAccess();
+    finish = () => finishAccessLoss(change, result);
+  };
+  await assert.rejects(
+    writeDocument({ orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member }, reason: 'import', mutate: (d) => appendParagraph(d, 'Past the barrier') }),
+    (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'BUSY',
+  );
+  assert.ok(!(await stored(doc)).content_text.includes('Past the barrier'), 'nothing was written');
+});
+
+test('a write whose access was lost after its check and before its commit is refused FORBIDDEN', { skip: !url && SKIP }, async (t) => {
+  const { doc, change, loseAccess } = await driveWithMember('Lost before commit');
+  t.after(() => { collabTestSeams.beforeWriteCommit = null; });
+  // The loss commits and finishes (barrier closed, generation moved) after the write read the role.
+  collabTestSeams.beforeWriteCommit = async (documentId) => {
+    if (documentId !== doc) return;
+    collabTestSeams.beforeWriteCommit = null;
+    await finishAccessLoss(change, await loseAccess());
+  };
+  await assert.rejects(
+    writeDocument({ orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member }, reason: 'import', mutate: (d) => appendParagraph(d, 'After the loss') }),
+    (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'FORBIDDEN',
+  );
+  assert.ok(!(await stored(doc)).content_text.includes('After the loss'), 'nothing was written');
+});
+
+test('a store that keeps failing is retried with the backoff, never back to back', { skip: !url && SKIP }, async (t) => {
+  collabTestSeams.derivedEveryMs = 4_000;
+  t.after(() => { collabTestSeams.derivedEveryMs = 60_000; });
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Backoff' });
+  const editor = await open(t, doc, fx!.people.member);
+  editor.typeText('One');
+  await pollUntil(async () => (await stored(doc)).content_text.includes('One'), 'the first edit is derived', 10_000);
+  editor.typeText('Two');
+  // Stored inside the derive window: the state alone, and a derive timer for when the window ends.
+  await pollUntil(async () => storedStateText(await stored(doc)).includes('Two'), 'the second edit is stored', 10_000);
+  assert.ok(!(await stored(doc)).content_text.includes('Two'));
+  const drop = await failWrites(doc);
+  t.after(drop);
+  const failures = collabStateForTest().storeFailures;
+  await pollUntil(() => collabStateForTest().storeFailures > failures, 'the derive timer\'s store fails', 10_000);
+  const firstFailure = Date.now();
+  await pollUntil(() => Date.now() - firstFailure > 1_500, 'a moment passes', 3_000);
+  const failed = collabStateForTest().storeFailures - failures;
+  assert.ok(failed <= 2, `${failed} stores failed within ${Date.now() - firstFailure} ms`);
+  await drop();
+  await pollUntil(async () => (await stored(doc)).content_text.includes('Two'), 'the retry stores it', 15_000);
+});
+
+test('a frame Yjs only holds back is stored, so an unload and reload keep it', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Held back, stored' });
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  const ghost = new Y.Doc();
+  t.after(() => ghost.destroy());
+  Y.applyUpdate(ghost, Y.encodeStateAsUpdate(editor.ydoc));
+  const start = Y.encodeStateVector(ghost);
+  appendParagraph(ghost, 'Withheld first');
+  const completing = Y.encodeStateAsUpdate(ghost, start);
+  const afterWithheld = Y.encodeStateVector(ghost);
+  appendParagraph(ghost, 'Held back');
+  await sendHandled(doc, editor, observer, [Y.encodeStateAsUpdate(ghost, afterWithheld)], 'the held-back frame is handled');
+  assert.equal(editor.closes.length, 0);
+  editor.destroy();
+  observer.destroy();
+  await allUnloaded();
+  const state = new Y.Doc();
+  Y.applyUpdate(state, new Uint8Array((await stored(doc)).ydoc_state!));
+  Y.applyUpdate(state, completing);
+  const text = ydocText(state);
+  state.destroy();
+  assert.ok(text.includes('Held back'), `the held-back struct was not stored: ${text}`);
+});
+
+test('a document whose text is past the search index limit still stores, and the start of its text is searchable', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Many words' });
+  const editor = await open(t, doc, fx!.people.member);
+  // 150,000 different words: over 1 MB of lexemes, past Postgres's tsvector limit.
+  editor.typeText(Array.from({ length: 150_000 }, (_, k) => `u${k.toString(36).padStart(7, '0')}`).join(' '));
+  await pollUntil(async () => {
+    const { rows: [row] } = await fx!.client.query('SELECT length(content_text) AS n FROM documents WHERE id = $1', [doc]);
+    return (row as { n: number }).n > 1_000_000;
+  }, 'stored with its text', 20_000);
+  const { rows: [row] } = await fx!.client.query(
+    "SELECT search_vector @@ to_tsquery('simple', 'u0000001') AS start, search_vector @@ to_tsquery('simple', 'u00000ab') AS early FROM documents WHERE id = $1", [doc]);
+  assert.deepEqual(row, { start: true, early: true });
+});
+
+test('when the derived copies can\'t be written, the live state is stored alone, and the derive is retried', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Derived refused' });
+  const editor = await open(t, doc, fx!.people.member);
+  // The database refuses this row's text while it holds the marker: the derived copies fail, the state alone doesn't.
+  const constraint = `f7_text_fault_${doc.replaceAll('-', '').slice(0, 12)}`;
+  await fx!.client.query(`ALTER TABLE documents ADD CONSTRAINT ${constraint} CHECK (id <> '${doc}' OR content_text NOT LIKE '%Refused text%') NOT VALID`);
+  const drop = () => fx!.client.query(`ALTER TABLE documents DROP CONSTRAINT IF EXISTS ${constraint}`);
+  t.after(drop);
+  editor.typeText('Refused text');
+  await pollUntil(async () => storedStateText(await stored(doc)).includes('Refused text'), 'the live state is stored alone', 10_000);
+  assert.ok(!(await stored(doc)).content_text.includes('Refused text'), 'its derived copies are not');
+  await drop();
+  await pollUntil(async () => (await stored(doc)).content_text.includes('Refused text'), 'the derive is retried', 15_000);
+});
+
+test('the memory estimate follows live growth before the next store', { skip: !url && SKIP }, async (t) => {
+  // Nothing else loaded, so no other document's unload moves the total.
+  await allUnloaded();
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Growing' });
+  const editor = await open(t, doc, fx!.people.member);
+  const before = collabStateForTest().reservedBytes;
+  editor.typeText(bigText(100_000));
+  await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'acknowledged');
+  const grown = collabStateForTest().reservedBytes - before;
+  assert.ok(grown >= 100_000 * 13, `the memory estimate grew by ${grown} bytes`);
+});
+
+test('only Defty may write for someone else: any other actor naming another asker is refused', { skip: !url && SKIP }, async () => {
+  const { people } = fx!;
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'On behalf of' });
+  const defty = await ensureDeftyMembership(fx!.orgId);
+  const write = (actor: Parameters<typeof writeDocument>[0]['actor']) =>
+    writeDocument({ orgId: fx!.orgId, documentId: doc, actor, reason: 'import', mutate: (d) => appendParagraph(d, 'On behalf') });
+  const forbidden = (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'FORBIDDEN';
+  // The asker could write; the actors naming them may not write as them.
+  await assert.rejects(write({ kind: 'user', userId: people.outsider, askerId: people.member }), forbidden);
+  await assert.rejects(write({ kind: 'agent', userId: people.agentUser, askerId: people.member }), forbidden);
+  await write({ kind: 'agent', userId: defty, askerId: people.member });
+});
+
+test('a write to a document holding content outside the schema is refused INVALID_CONTENT', { skip: !url && SKIP }, async () => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Odd content' });
+  const odd = new Y.Doc();
+  appendParagraph(odd, 'Before the odd block');
+  odd.getXmlFragment('default').push([new Y.XmlElement('notInTheSchema')]);
+  await fx!.client.query('UPDATE documents SET ydoc_state = $2 WHERE id = $1', [doc, Buffer.from(Y.encodeStateAsUpdate(odd))]);
+  odd.destroy();
+  await assert.rejects(
+    writeDocument({ orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member }, reason: 'import', mutate: (d) => appendParagraph(d, 'x') }),
+    (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'INVALID_CONTENT',
+  );
 });
 
 test('shutdown flushes pending stores', { skip: !url && SKIP }, async (t) => {
@@ -1829,4 +2155,38 @@ test('shutdown with a stored listener that hangs completes by its deadline and r
   assert.ok(lines.some((line) => line.includes('[collab] shutdown abandoned a stored listener that did not finish')), lines.join(' | '));
   assert.ok(lines.every((line) => !line.includes('Stored before the hung listener')), 'nothing a person wrote is logged');
   assert.ok(storedStateText(await stored(doc)).includes('Stored before the hung listener'), 'the document itself was stored');
+});
+
+test('shutdown with a hung write still stores the other documents, and finishes by its deadline', { skip: !url && SKIP }, async (t) => {
+  srv!.renew();
+  const stuck = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Hung write' });
+  const other = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Not hung' });
+  const stuckEditor = await open(t, stuck, fx!.people.member);
+  const otherEditor = await open(t, other, fx!.people.member);
+  // The write waits on a row another connection holds: it holds the document's writer lock and save mutex.
+  const row = await holdRow(stuck);
+  t.after(row.release);
+  const writing = writeDocument({
+    orgId: fx!.orgId, documentId: stuck, actor: { kind: 'user', userId: fx!.people.member2 }, reason: 'import',
+    mutate: (d) => appendParagraph(d, 'From the hung write'),
+  });
+  writing.catch(() => undefined);
+  await pollUntil(row.waiterBlocked, 'the write waits on the row');
+  // A frame for the same document waits behind the write's lock.
+  stuckEditor.typeText('Behind the hung write');
+  otherEditor.typeText('Stored at shutdown');
+  await pollUntil(() => !otherEditor.provider.hasUnsyncedChanges, 'the other edit was acknowledged');
+  const typedAt = Date.now();
+  await pollUntil(() => Date.now() - typedAt > 300, 'the stuck frame reaches the server');
+  const lines = captureConsole(t);
+  const started = Date.now();
+  const outcome = await Promise.race([
+    srv!.collab.destroy({ retryUntil: started + 2_000 }).then(() => 'resolved', (e: unknown) => e),
+    delay(8_000).then(() => 'still running'),
+  ]);
+  const took = Date.now() - started;
+  assert.ok(outcome instanceof Error, `shutdown reports what it left behind (${String(outcome)})`);
+  assert.ok(took < 4_000, `shutdown finished by its deadline (${took} ms)`);
+  assert.ok(storedStateText(await stored(other)).includes('Stored at shutdown'), 'the other document was stored');
+  assert.ok(lines.some((line) => line.includes('[collab] shutdown abandoned a write that did not finish')), lines.join(' | '));
 });

@@ -156,6 +156,19 @@ test('the search trigger fills search_vector from title and text', async () => {
   assert.equal(second.later, true, 'the new text is searchable');
 });
 
+test('past Postgres\'s tsvector limit, the search trigger indexes the start of the text, and the row is still written', async () => {
+  const d = await drive(orgA);
+  // 150,000 different words: over 1 MB of lexemes.
+  const text = Array.from({ length: 150_000 }, (_, k) => `u${k.toString(36).padStart(7, '0')}`).join(' ');
+  const doc = await document(orgA, d, { title: 'Many words', text });
+  const { rows: [row] } = await client.query<{ title: boolean; start: boolean; stored: number }>(`SELECT
+      search_vector @@ to_tsquery('simple', 'many') AS title,
+      search_vector @@ to_tsquery('simple', 'u0000001') AS start,
+      length(content_text) AS stored
+    FROM documents WHERE id = $1`, [doc]);
+  assert.deepEqual(row, { title: true, start: true, stored: text.length });
+});
+
 test('one personal drive per person and one Workspace drive per org', async () => {
   const personal = { kind: 'personal', default_role: null, owner_user_id: alice };
   await drive(orgA, personal);

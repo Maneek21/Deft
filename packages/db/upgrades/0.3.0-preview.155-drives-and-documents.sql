@@ -216,15 +216,24 @@ CREATE TABLE note_document_map (
 );
 
 -- Full-text search over title (weight A) and text (weight B). A trigger, not
--- a generated column: upgrades may not add generated columns.
+-- a generated column: upgrades may not add generated columns. Postgres
+-- refuses a tsvector over 1 MB, which a long text of mostly unique words can
+-- reach; then the start of the title and text are searched instead, so the
+-- row (and the live state stored with it) is still written.
 CREATE FUNCTION documents_search_update() RETURNS trigger
   LANGUAGE plpgsql
   SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
-  NEW.search_vector :=
-    setweight(to_tsvector('simple', coalesce(NEW.title, '')), 'A') ||
-    setweight(to_tsvector('simple', coalesce(NEW.content_text, '')), 'B');
+  BEGIN
+    NEW.search_vector :=
+      setweight(to_tsvector('simple', coalesce(NEW.title, '')), 'A') ||
+      setweight(to_tsvector('simple', coalesce(NEW.content_text, '')), 'B');
+  EXCEPTION WHEN program_limit_exceeded THEN
+    NEW.search_vector :=
+      setweight(to_tsvector('simple', left(coalesce(NEW.title, ''), 10000)), 'A') ||
+      setweight(to_tsvector('simple', left(coalesce(NEW.content_text, ''), 100000)), 'B');
+  END;
   RETURN NEW;
 END;
 $$;

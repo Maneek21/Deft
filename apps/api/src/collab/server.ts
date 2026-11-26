@@ -64,8 +64,11 @@
 // A refused frame closes the socket, detaches the connection and marks it
 // read-only, so Hocuspocus applies nothing from it, and nothing more from its
 // queue, and logs nothing. Frames over MAX_FRAME_BYTES are refused by the
-// socket itself (1009), and an awareness state over AWARENESS_STATE_MAX_BYTES
-// is dropped, not re-broadcast.
+// socket itself (1009). Awareness: each connection holds states for at most
+// AWARENESS_CLIENTS_PER_CONNECTION client ids (the first it uses), and one
+// frame carries at most AWARENESS_FRAME_MAX_BYTES of states, none over
+// AWARENESS_STATE_MAX_BYTES; anything else is dropped, not applied or
+// re-broadcast, and so is a removal of a state the connection doesn't hold.
 //
 // Access changes (closeForAccessChange, subscribed to onDocumentAccessChanged)
 // read the role again for every connection the change can touch: the
@@ -80,7 +83,12 @@
 // armed for that moment, and follows it when a write moves it), on unload
 // and at shutdown. A document loaded with derived copies behind its live
 // state is derived straight away. A failed store keeps the document loaded
-// and is retried after 5 s, 30 s and then every 2 minutes. A document
+// and is retried after 5 s, 30 s and then every 2 minutes; while it waits,
+// no derive timer runs. When only the derived copies can't be written (a
+// database limit on the text, say), the live state is stored alone, so it
+// stays durable, and the derive is retried with the same backoff. A change
+// Yjs only holds back (its structs wait for a missing clock) fires no update,
+// yet it is marked changed when admitted, so it is stored too. A document
 // unloads unloadAfterMs after its last connection leaves, once its live
 // state is durably stored; derived copies that couldn't be made (content
 // outside the schema) are logged and tried again by the next load.
@@ -109,16 +117,19 @@
 // Shutdown (destroy): admissions stop (upgrades ended, connecting refused,
 // writes refused with BUSY) and incoming frames are dropped. Then passes run
 // until one finds nothing loading and nothing changed: loads in flight finish
-// and apply the frames buffered behind them, frames already taken and writes
-// in progress finish, pending stores are flushed and every changed document
-// is stored durably, retried until the caller's deadline. Then connections
-// close and documents are dropped. A document that still couldn't be stored
-// is logged with its id and makes destroy() reject, so the process exits
-// non-zero. Writes and stored-listener runs are awaited only until that
-// deadline too: one still running then is logged, abandoned, and makes
-// destroy() reject.
+// and apply the frames buffered behind them, pending stores are flushed, and
+// each document on its own has the frames it already took and the writes to
+// it in progress finish and is stored durably, retried until the caller's
+// deadline. Every wait is bounded by that deadline, so a hung frame, write
+// or store holds up only its own document, and the others are still stored.
+// Then connections close and documents are dropped. A document that still
+// couldn't be stored is logged with its id and makes destroy() reject, so
+// the process exits non-zero. Writes and stored-listener runs still running
+// at the deadline are logged, abandoned, and make destroy() reject.
 //
-// Logs are fixed text (document ids only through logId).
+// Logs are fixed text (document ids only through logId). A named exception
+// (the F7 consult): Hocuspocus's own console warnings, which `quiet` doesn't
+// silence, print the document name, `doc:<uuid>`, and nothing a person wrote.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
@@ -128,10 +139,12 @@ import { Hocuspocus, type Connection, type Document as HocuspocusDocument } from
 import { and, eq } from 'drizzle-orm';
 import * as Y from 'yjs';
 import { drives } from '@deft/db/documents';
+import { users } from '@deft/db/schema';
 import { db } from '../lib/db.js';
 import { documentRoleFor, roleAtLeast, type DocRole } from '../lib/document-access.js';
 import { accessLossBarrierCovers, currentAccessGeneration } from '../lib/document-access-change.js';
 import { onDocumentAccessChanged, type DocumentAccessChange } from '../lib/document-access-events.js';
+import { DEFTY_EMAIL } from '../lib/defty-identity.js';
 import { logId } from '../lib/log-metadata.js';
 import { isPausedStart } from '../lib/paused-start.js';
 import { socketOriginAllowed } from '../lib/web-origins.js';
@@ -139,14 +152,15 @@ import { verifyWebAccess, webSessionEvents } from '../lib/web-sessions.js';
 import { captureRealtimeAccessGeneration, isRealtimeAccessGenerationCurrent } from '../socket.js';
 import { authenticateCollab, canWrite, CollabRefusal, documentIdOf, type CollabContext } from './auth.js';
 import {
-  AWARENESS_STATE_MAX_BYTES, COLLAB_CLOSE, COLLAB_LIMITS, encodedStateBytes, HEAP_FACTOR, liveEditingEnabled,
+  AWARENESS_CLIENTS_PER_CONNECTION, AWARENESS_FRAME_MAX_BYTES, AWARENESS_STATE_MAX_BYTES, COLLAB_CLOSE, COLLAB_LIMITS, encodedStateBytes, HEAP_FACTOR,
+  liveEditingEnabled,
   MAX_FRAME_BYTES, withinSizeCap, type CollabCloseCode,
 } from './limits.js';
 import {
   applyRowToDoc, deriveContent, derivedIsBehind, lockDocumentState, markSizeWarning, readDocumentState, runStoredListeners, SYSTEM_ORIGIN,
   WRITER_ORIGIN, writeInitialState, writeStore, type DocumentStateRow, type DocumentStoredEvent, type JSONContent,
 } from './persistence.js';
-import { chargeFor, SizeAccount } from './size-account.js';
+import { boundFor, chargeFor, SizeAccount } from './size-account.js';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -154,13 +168,18 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type CollabActor = { kind: 'user' | 'agent' | 'system'; userId: string; askerId?: string; actionId?: string };
 
 export type DocumentWriteReason = 'agent_edit' | 'suggestion' | 'restore' | 'import' | 'template' | 'move_fix';
-/** BUSY: live editing can't take the write now (its memory budget is spent, the server is shutting down, or a loaded document didn't become live); try again later. */
-export type DocumentWriteRefusalCode = 'FORBIDDEN' | 'REVISION_CHANGED' | 'TOO_LARGE' | 'BUSY';
+/**
+ * BUSY: live editing can't take the write now (its memory budget is spent, the server is shutting down, a loaded
+ * document didn't become live, or an access change is being applied); try again later. INVALID_CONTENT: the
+ * document holds content outside the schema, so its text can't be derived.
+ */
+export type DocumentWriteRefusalCode = 'FORBIDDEN' | 'REVISION_CHANGED' | 'TOO_LARGE' | 'INVALID_CONTENT' | 'BUSY';
 
 const REFUSAL_MESSAGES: Record<DocumentWriteRefusalCode, string> = {
   FORBIDDEN: 'Not allowed to change this document',
   REVISION_CHANGED: 'The document changed since it was read',
   TOO_LARGE: 'The document would be too large',
+  INVALID_CONTENT: 'The document holds content the editor does not support',
   BUSY: 'Live editing is busy; try again shortly',
 };
 
@@ -189,6 +208,8 @@ type WriteInput = {
   mutate: (doc: Y.Doc) => void;
   /** Runs in the write's transaction with the document row locked FOR UPDATE; throws DocumentWriteRefused to refuse. */
   check: (tx: Tx, row: DocumentStateRow) => Promise<void>;
+  /** Runs in the same transaction after the store, right before it commits; throws DocumentWriteRefused to refuse. */
+  beforeCommit: (tx: Tx) => Promise<void>;
 };
 type WriteResult = { revision: number; sizeBytes: number };
 /** A write that has applied, with its listener run (queued in order, awaited once the writer lock is released). */
@@ -226,6 +247,8 @@ type SocketEntry = {
   accessGeneration: number;
   connected: boolean;
   expiryTimer: NodeJS.Timeout | null;
+  /** The awareness client ids this connection holds states for (AWARENESS_CLIENTS_PER_CONNECTION at most). */
+  awarenessClients: Set<number>;
 };
 
 /**
@@ -233,7 +256,14 @@ type SocketEntry = {
  * Hocuspocus has applied (or dropped) it: afterHandleMessage settles it, and
  * an exact scratch measurement re-bases the estimate only then.
  */
-type Admission = { account: SizeAccount; seq: number; measured: { bytes: number; covered: number } | null };
+type Admission = {
+  slot: DocSlot;
+  account: SizeAccount;
+  seq: number;
+  measured: { bytes: number; covered: number } | null;
+  /** What Yjs held back before the frame applied: a frame it only holds back still changes the state to store. */
+  heldBack: readonly [Uint8Array | null, Uint8Array | null];
+};
 
 type DocSlot = {
   documentId: string;
@@ -247,6 +277,8 @@ type DocSlot = {
   /** Non-socket writes in progress. */
   writers: number;
   estimateBytes: number;
+  /** A write's scratch copy of the live state, reserved while the write runs. */
+  scratchBytes: number;
   /**
    * The size cap's accounting (collab/size-account.ts): an upper bound on the
    * encoded size the live state has once normalized (block ids written back,
@@ -437,7 +469,8 @@ function createCollabServer(): CollabServer {
   const frameLocks = new WeakMap<Connection, () => void>();
   /** The update frame a connection has admitted, until afterHandleMessage settles it. */
   const admissions = new WeakMap<Connection, Admission>();
-  const activeWrites = new Set<Promise<unknown>>();
+  /** Writes in progress (each includes its listener run), by the document they write. */
+  const activeWrites = new Map<Promise<unknown>, string>();
   /** Per document: the tail of its stored-listener runs, which go one at a time in the order of their stores. */
   const listenerChains = new Map<string, Promise<void>>();
   const attached: Array<{ server: HttpServer; listener: (req: IncomingMessage, socket: Duplex, head: Buffer) => void }> = [];
@@ -450,9 +483,17 @@ function createCollabServer(): CollabServer {
   // ---------------------------------------------------------------------
   // Capacity
 
+  /**
+   * A document's share of the memory estimate. Loaded: its size at the last
+   * store or load, or the size accounting's bound when changes applied since
+   * have grown it (growth landing during a store isn't lost when that store
+   * finishes), times HEAP_FACTOR, plus a write's scratch copy while one runs.
+   */
+  const slotMemory = (slot: DocSlot) =>
+    (slot.loaded ? Math.max(slot.estimateBytes, slot.size.estimate * HEAP_FACTOR) : slot.estimateBytes) + slot.scratchBytes;
   const memoryEstimate = () => {
     let total = coldReservedBytes;
-    for (const slot of docs.values()) total += slot.estimateBytes;
+    for (const slot of docs.values()) total += slotMemory(slot);
     return total;
   };
   /** Until a document has loaded its size is unknown, so it counts the largest a document may be. */
@@ -465,7 +506,7 @@ function createCollabServer(): CollabServer {
   function newSlot(documentId: string): DocSlot {
     return {
       documentId, name: `doc:${documentId}`, orgId: null, loaded: false, loading: null, unloading: false,
-      connections: 0, writers: 0, estimateBytes: provisionalEstimate(), size: new SizeAccount(0), revision: 0,
+      connections: 0, writers: 0, estimateBytes: provisionalEstimate(), scratchBytes: 0, size: new SizeAccount(0), revision: 0,
       changeCounter: 0, stateDirty: false, derivedDirty: false, deriveFailedAt: null, lastDerivedAt: 0, lastDerivedJson: null,
       editors: new Map(), lastEdit: null, emptySince: null, unloadTimer: null, retryAttempt: 0, retryTimer: null, deriveTimer: null,
     };
@@ -643,11 +684,12 @@ function createCollabServer(): CollabServer {
   /**
    * The encoded size `scratch` has once the server has normalized it (block
    * ids, the size warning). Exact only when it could be normalized: it
-   * derived (no content outside the schema) and Yjs holds nothing back;
-   * otherwise it is measured as it is, which may be below what it
-   * normalizes to later.
+   * derived (no content outside the schema) and Yjs holds nothing back.
+   * `bound` is an upper bound on its normalized size either way: the size
+   * itself when exact, else boundFor (blocks still needing an id, structs
+   * held back), so even a document that is never exact re-bases.
    */
-  function normalizedBytes(scratch: Y.Doc): { bytes: number; exact: boolean } {
+  function normalizedBytes(scratch: Y.Doc): { bytes: number; exact: boolean; bound: number } {
     let derived = true;
     try {
       deriveContent(scratch);
@@ -655,14 +697,29 @@ function createCollabServer(): CollabServer {
       derived = false;
     }
     markSizeWarning(scratch, encodedStateBytes(scratch));
-    return { bytes: encodedStateBytes(scratch), exact: derived && heldBackNothing(scratch) };
+    const bytes = encodedStateBytes(scratch);
+    const exact = derived && heldBackNothing(scratch);
+    return { bytes, exact, bound: exact ? bytes : boundFor(scratch, bytes) };
+  }
+
+  /**
+   * A scratch copy of `document`. It takes the live client id, so the
+   * server's normalization of it encodes exactly as the live document's own
+   * would (the same client, the same next clocks). Taken after the state is
+   * applied: Yjs gives a document a new client id when an update it didn't
+   * make carries structs under its own.
+   */
+  function scratchCopy(document: Y.Doc): Y.Doc {
+    const scratch = new Y.Doc();
+    Y.applyUpdate(scratch, Y.encodeStateAsUpdate(document));
+    scratch.clientID = document.clientID;
+    return scratch;
   }
 
   /** normalizedBytes of a scratch copy of `document` (the document is left as it is). */
-  function normalizedCopyBytes(document: Y.Doc): { bytes: number; exact: boolean } {
-    const scratch = new Y.Doc();
+  function normalizedCopyBytes(document: Y.Doc): { bytes: number; exact: boolean; bound: number } {
+    const scratch = scratchCopy(document);
     try {
-      Y.applyUpdate(scratch, Y.encodeStateAsUpdate(document));
       return normalizedBytes(scratch);
     } finally {
       scratch.destroy();
@@ -673,16 +730,17 @@ function createCollabServer(): CollabServer {
    * The estimate a load starts from. A state stored by a derived store
    * (`mayHoldBlocksWithoutIds` false) with nothing held back is normalized:
    * its size is exact. Otherwise (built from the stored JSON, or stored
-   * without a derive) it is measured normalized on a scratch copy; when that
-   * can't be exact (content outside the schema, structs held back), the
-   * bound is the whole state's charge, as one change applied to an empty
-   * document: the most it can normalize to.
+   * without a derive) it is measured normalized on a scratch copy, and starts
+   * from that measurement's bound (exact, or boundFor when content outside
+   * the schema or held-back structs keep it from being exact).
    */
   function loadedSize(document: Y.Doc, bytes: number, mayHoldBlocksWithoutIds: boolean): number {
     if (!mayHoldBlocksWithoutIds && heldBackNothing(document)) return bytes;
-    const measured = normalizedCopyBytes(document);
-    return measured.exact ? measured.bytes : chargeFor(Y.encodeStateAsUpdate(document), null);
+    return normalizedCopyBytes(document).bound;
   }
+
+  /** What Yjs holds back in `doc` now: an admission compares it before and after its frame applies. */
+  const heldBackOf = (doc: Y.Doc) => [doc.store.pendingStructs?.update ?? null, doc.store.pendingDs] as const;
 
   /**
    * The size cap for a SyncStep2 or Update frame from a connection that can
@@ -704,16 +762,17 @@ function createCollabServer(): CollabServer {
     } catch {
       return dropFrame(entry, connection, 'tooLarge');
     }
+    const heldBack = heldBackOf(document);
     if (account.fitsFast(charge)) {
-      admissions.set(connection, { account, seq: account.admit(charge), measured: null });
+      admissions.set(connection, { slot, account, seq: account.admit(charge), measured: null, heldBack });
       return true;
     }
-    let after: { bytes: number; exact: boolean };
+    let after: { bytes: number; exact: boolean; bound: number };
     let before = Infinity;
-    const withUpdate = new Y.Doc();
+    let withUpdate: Y.Doc | null = null;
     try {
       // The copy carries what Yjs holds back too (encodeStateAsUpdate includes it).
-      Y.applyUpdate(withUpdate, Y.encodeStateAsUpdate(document));
+      withUpdate = scratchCopy(document);
       Y.applyUpdate(withUpdate, update);
       after = normalizedBytes(withUpdate);
       // Over the cap, it may still pass by being no larger than before,
@@ -722,13 +781,13 @@ function createCollabServer(): CollabServer {
     } catch {
       return dropFrame(entry, connection, 'tooLarge');
     } finally {
-      withUpdate.destroy();
+      withUpdate?.destroy();
     }
     if (!withinSizeCap(before, after.bytes)) return dropFrame(entry, connection, 'tooLarge');
     const seq = account.admit(charge);
-    // An exact measurement covers this frame and everything applied before
-    // it; it re-bases the estimate once the frame has been applied.
-    admissions.set(connection, { account, seq, measured: after.exact ? { bytes: after.bytes, covered: account.covered(seq) } : null });
+    // The measurement covers this frame and everything applied before it; its
+    // bound (exact, or boundFor) re-bases the estimate once the frame has been applied.
+    admissions.set(connection, { slot, account, seq, measured: { bytes: after.bound, covered: account.covered(seq) }, heldBack });
     return true;
   }
 
@@ -806,11 +865,13 @@ function createCollabServer(): CollabServer {
    * Keeps a derive timer armed for `lastDerivedAt + window` while derived
    * copies are behind: (re)armed after every store, a writer's included, so a
    * window that moved later is followed. The timer re-arms itself while work
-   * is pending.
+   * is pending. Not while a failed store waits for its retry: the retry
+   * keeps the 5 s / 30 s / 2 min backoff, and re-arms this once it succeeds.
    */
   function scheduleDerive(slot: DocSlot): void {
     if (slot.deriveTimer) clearTimeout(slot.deriveTimer);
     slot.deriveTimer = null;
+    if (slot.retryTimer) return;
     if (destroying || !slot.loaded || !slot.derivedDirty || slot.deriveFailedAt === slot.changeCounter) return;
     slot.deriveTimer = setTimeout(() => {
       slot.deriveTimer = null;
@@ -850,50 +911,38 @@ function createCollabServer(): CollabServer {
     }
     markSizeWarning(document, encodedStateBytes(document));
     const state = Y.encodeStateAsUpdate(document);
-    // A derived store wrote every block id back, so, unless Yjs holds
-    // something back, it encodes the normalized state: an exact measurement
-    // of the admissions applied so far. Frames admitted while the row is
-    // written stay on top of it; a frame measured meanwhile bounds the size
-    // more tightly, and that bound stands.
+    // A measurement of the admissions applied so far. A derived store wrote
+    // every block id back, so, unless Yjs holds something back, it encodes
+    // the normalized state: exact. Any other store (the state alone, a derive
+    // that failed, structs held back) re-bases with boundFor. Frames admitted
+    // while the row is written stay on top of it; a frame measured meanwhile
+    // bounds the size more tightly, and that bound stands.
     const account = slot.size;
-    const measured = derived && heldBackNothing(document) ? { bytes: state.byteLength, covered: account.covered() } : null;
+    const measured = {
+      bytes: derived && heldBackNothing(document) ? state.byteLength : boundFor(document, state.byteLength),
+      covered: account.covered(),
+    };
     const edit = slot.lastEdit;
     const editors = derived ? takeEditors(slot) : null;
+    const write = (withDerived: boolean) => writeStore(db, {
+      documentId: slot.documentId, orgId: slot.orgId!, state, derived: withDerived ? derived : null,
+      editedBy: edit?.userId ?? null, editedAt: edit?.at ?? null,
+    });
+    let revision: number | null;
+    let derivedStored = derived !== null;
     try {
-      const revision = await writeStore(db, {
-        documentId: slot.documentId, orgId: slot.orgId!, state, derived, editedBy: edit?.userId ?? null, editedAt: edit?.at ?? null,
-      });
-      if (revision === null) {
-        // The row is gone: nothing can be stored, so nothing is kept back.
-        slot.stateDirty = false;
-        slot.derivedDirty = false;
-        return 'ok';
+      try {
+        revision = await write(derivedStored);
+      } catch (error) {
+        if (!derivedStored) throw error;
+        // The derived copies couldn't be written (a database limit on the
+        // text, say): the live state is stored alone so it stays durable, and
+        // the derive is retried with the store backoff.
+        revision = await write(false);
+        derivedStored = false;
+        console.error('[collab] storing the derived copies of a live document failed; its live state was stored alone and the derive is retried');
+        testState.derivedFallbacks += 1;
       }
-      slot.revision = revision;
-      // A store of the state alone may hold blocks without ids: the estimate stands.
-      if (measured) account.rebase(measured.bytes, measured.covered);
-      slot.estimateBytes = state.byteLength * HEAP_FACTOR;
-      if (slot.lastEdit === edit) slot.lastEdit = null;
-      if (slot.changeCounter === counter) slot.stateDirty = false;
-      if (slot.retryTimer) clearTimeout(slot.retryTimer);
-      slot.retryTimer = null;
-      slot.retryAttempt = 0;
-      if (derived) {
-        const previousJson = slot.lastDerivedJson ?? derived.json;
-        slot.lastDerivedJson = derived.json;
-        slot.lastDerivedAt = Date.now();
-        if (slot.changeCounter === counter) slot.derivedDirty = false;
-        void queueListeners(slot.documentId, {
-          orgId: slot.orgId!, documentId: slot.documentId, editorIds: byCount(editors!), agentUserIds: [], actionIds: [],
-          previousJson, json: derived.json, sizeBytes: state.byteLength, at: new Date(),
-        });
-      }
-      scheduleDerive(slot);
-      if (mode === 'final' && slot.derivedDirty && !derived) {
-        testState.underivedFinals += 1;
-        return 'underived';
-      }
-      return 'ok';
     } catch {
       console.error('[collab] storing a live document failed; it stays loaded and the store is retried');
       testState.storeFailures += 1;
@@ -901,6 +950,42 @@ function createCollabServer(): CollabServer {
       scheduleRetry(slot);
       return 'failed';
     }
+    if (revision === null) {
+      // The row is gone: nothing can be stored, so nothing is kept back.
+      slot.stateDirty = false;
+      slot.derivedDirty = false;
+      return 'ok';
+    }
+    slot.revision = revision;
+    account.rebase(measured.bytes, measured.covered);
+    slot.estimateBytes = state.byteLength * HEAP_FACTOR;
+    if (slot.lastEdit === edit) slot.lastEdit = null;
+    if (slot.changeCounter === counter) slot.stateDirty = false;
+    if (derived && !derivedStored) {
+      // Durable, but its derived copies are still behind: retried with the backoff.
+      putEditorsBack(slot, editors!);
+      scheduleRetry(slot);
+    } else {
+      if (slot.retryTimer) clearTimeout(slot.retryTimer);
+      slot.retryTimer = null;
+      slot.retryAttempt = 0;
+    }
+    if (derived && derivedStored) {
+      const previousJson = slot.lastDerivedJson ?? derived.json;
+      slot.lastDerivedJson = derived.json;
+      slot.lastDerivedAt = Date.now();
+      if (slot.changeCounter === counter) slot.derivedDirty = false;
+      void queueListeners(slot.documentId, {
+        orgId: slot.orgId!, documentId: slot.documentId, editorIds: byCount(editors!), agentUserIds: [], actionIds: [],
+        previousJson, json: derived.json, sizeBytes: state.byteLength, at: new Date(),
+      });
+    }
+    scheduleDerive(slot);
+    if (mode === 'final' && slot.derivedDirty && !derivedStored) {
+      testState.underivedFinals += 1;
+      return 'underived';
+    }
+    return 'ok';
   }
 
   function storeExclusive(slot: DocSlot, document: HocuspocusDocument, mode: StoreMode): Promise<StoreOutcome> {
@@ -1037,18 +1122,45 @@ function createCollabServer(): CollabServer {
         // Settled before the writer lock is let go, so the next frame's measurement sees it applied.
         const applied = !connection.readOnly;
         admitted.account.settle(admitted.seq, applied);
-        // The reconcile: the frame was measured exactly with the state it
-        // landed on (nothing else applied in between: it held the writer lock).
+        // The reconcile: the frame was measured with the state it landed on
+        // (nothing else applied in between: it held the writer lock).
         if (applied && admitted.measured) admitted.account.rebase(admitted.measured.bytes, admitted.measured.covered);
+        // A frame Yjs only holds back fires no `update` event, yet it changed
+        // the state to store (encodeStateAsUpdate includes what is held back),
+        // and Hocuspocus acknowledged it: mark it, so a store doesn't skip it.
+        const [structs, deletions] = heldBackOf(payload.document);
+        if (applied && admitted.slot.loaded && (structs !== admitted.heldBack[0] || deletions !== admitted.heldBack[1])) {
+          admitted.slot.changeCounter += 1;
+          admitted.slot.stateDirty = true;
+        }
       }
       frameLocks.get(connection)?.();
       frameLocks.delete(connection);
     },
 
     async beforeHandleAwareness(payload) {
-      for (const [clientId, state] of payload.states) {
-        if (Buffer.byteLength(JSON.stringify(state ?? null)) > AWARENESS_STATE_MAX_BYTES) payload.states.delete(clientId);
+      // Each connection may hold awareness states for AWARENESS_CLIENTS_PER_CONNECTION
+      // client ids, the first it uses, and send at most AWARENESS_FRAME_MAX_BYTES of
+      // states in one frame; every other state, and every removal of a state it
+      // doesn't hold, is dropped (not applied, not re-broadcast).
+      const entry = entryOf(payload.context);
+      if (!entry || entry.closed) {
+        payload.states.clear();
+        payload.removedClients.clear();
+        return;
       }
+      let frameBytes = 0;
+      for (const [clientId, state] of payload.states) {
+        const bytes = Buffer.byteLength(JSON.stringify(state ?? null));
+        const owned = entry.awarenessClients.has(clientId)
+          || (entry.awarenessClients.size < AWARENESS_CLIENTS_PER_CONNECTION && Boolean(entry.awarenessClients.add(clientId)));
+        if (!owned || bytes > AWARENESS_STATE_MAX_BYTES || frameBytes + bytes > AWARENESS_FRAME_MAX_BYTES) {
+          payload.states.delete(clientId);
+          continue;
+        }
+        frameBytes += bytes;
+      }
+      for (const clientId of payload.removedClients) if (!entry.awarenessClients.has(clientId)) payload.removedClients.delete(clientId);
     },
 
     async onLoadDocument(payload) {
@@ -1185,7 +1297,7 @@ function createCollabServer(): CollabServer {
         const client = hocuspocus.handleConnection(peer.websocket as WebSocket, peer.request as Request, { socketKey: key });
         const entry: SocketEntry = {
           key, peer, client, closed: false, address: null, documentId: null, slot: null, ctx: null, accessGeneration: 0, connected: false,
-          expiryTimer: null,
+          expiryTimer: null, awarenessClients: new Set(),
         };
         sockets.set(key, entry);
         peers.set(peer, entry);
@@ -1283,33 +1395,42 @@ function createCollabServer(): CollabServer {
 
   /**
    * In `tx`: locks the row and runs the checks first; only then makes the
-   * change on `working` (mutate), normalizes and measures it, and stores it.
-   * `before` is the size the cap compares with. `reserve` runs right after
-   * the measurement, with nothing awaited since the copy was taken, and
-   * before the store. Returns what to apply live, and whether `state` is an
-   * exact normalized measurement (Yjs holds nothing back in the copy).
+   * change on `working` (mutate), normalizes and measures it, and stores it,
+   * then runs the pre-commit check. The size cap compares with the copy as
+   * it was, measured normalized too (normalizedBytes); the delta to apply
+   * live starts before that measurement, so it carries the ids it wrote.
+   * `reserve` runs right after the measurement, with nothing awaited since
+   * the copy was taken, and before the store. Content outside the schema is
+   * refused INVALID_CONTENT. Returns what to apply live, and `bound`, an
+   * upper bound on the result's normalized size (its size when exact).
    */
-  async function changeInTx(tx: Tx, i: WriteInput, working: Y.Doc | ((row: DocumentStateRow) => Y.Doc), before: (doc: Y.Doc) => number,
+  async function changeInTx(tx: Tx, i: WriteInput, working: Y.Doc | ((row: DocumentStateRow) => Y.Doc),
     reserve?: (delta: Uint8Array) => void) {
     const row = await lockDocumentState(tx, i.documentId, i.orgId);
     if (!row || row.isDeleted) throw new DocumentWriteRefused('FORBIDDEN');
     await i.check(tx, row);
     const doc = typeof working === 'function' ? working(row) : working;
-    const beforeBytes = before(doc);
     const vector = Y.encodeStateVector(doc);
+    const beforeBytes = normalizedBytes(doc).bytes;
     i.mutate(doc);
-    const derived = deriveContent(doc);
+    let derived: ReturnType<typeof deriveContent>;
+    try {
+      derived = deriveContent(doc);
+    } catch {
+      throw new DocumentWriteRefused('INVALID_CONTENT');
+    }
     markSizeWarning(doc, encodedStateBytes(doc));
     const state = Y.encodeStateAsUpdate(doc);
     if (!withinSizeCap(beforeBytes, state.byteLength)) throw new DocumentWriteRefused('TOO_LARGE');
     const delta = Y.encodeStateAsUpdate(doc, vector);
-    const exact = heldBackNothing(doc);
+    const bound = heldBackNothing(doc) ? state.byteLength : boundFor(doc, state.byteLength);
     reserve?.(delta);
     const revision = await writeStore(tx, {
       documentId: i.documentId, orgId: i.orgId, state, derived, editedBy: editorOf(i.actor), editedAt: new Date(),
     });
     if (revision === null) throw new DocumentWriteRefused('FORBIDDEN');
-    return { row, derived, state, revision, delta, exact };
+    await i.beforeCommit(tx);
+    return { row, derived, state, revision, delta, bound };
   }
 
   /**
@@ -1330,6 +1451,8 @@ function createCollabServer(): CollabServer {
         const counter = slot.changeCounter;
         const account = slot.size;
         const scratch = new Y.Doc();
+        // The scratch copy is a second copy of the document in memory while the write runs.
+        slot.scratchBytes = account.estimate * HEAP_FACTOR;
         // The reservation: the write's change is admitted (charged as its
         // delta against the live document) as soon as it is measured, before
         // its store is awaited; a write that then fails gives it back.
@@ -1341,7 +1464,7 @@ function createCollabServer(): CollabServer {
             written = await db.transaction((tx) => changeInTx(tx, i, () => {
               Y.applyUpdate(scratch, Y.encodeStateAsUpdate(document));
               return scratch;
-            }, encodedStateBytes, (delta) => {
+            }, (delta) => {
               reservation.seq = account.admit(chargeFor(delta, document));
               reservation.covered = account.covered(reservation.seq);
             }));
@@ -1351,10 +1474,10 @@ function createCollabServer(): CollabServer {
           }
           document.transact(() => Y.applyUpdate(document, written.delta), WRITER_ORIGIN);
           // The reconcile: the write normalized the whole copy it applied
-          // (block ids written back), so, unless Yjs holds something back, its
-          // size is an exact measurement covering the reservation.
+          // (block ids written back), so its size, exact unless Yjs holds
+          // something back (then boundFor), bounds the state covering the reservation.
           account.settle(reservation.seq);
-          if (written.exact) account.rebase(written.state.byteLength, reservation.covered);
+          account.rebase(written.bound, reservation.covered);
           slot.revision = written.revision;
           slot.lastDerivedJson = written.derived.json;
           slot.lastDerivedAt = Date.now();
@@ -1366,6 +1489,7 @@ function createCollabServer(): CollabServer {
           return { written, accumulated: takeEditors(slot), previousJson: previousJson ?? written.row.json };
         } finally {
           scratch.destroy();
+          slot.scratchBytes = 0;
         }
       });
       const { written } = result;
@@ -1384,11 +1508,10 @@ function createCollabServer(): CollabServer {
   async function rowWrite(i: WriteInput): Promise<Written> {
     const working = new Y.Doc();
     try {
-      // Measured normalized, as the result will be.
       const written = await db.transaction((tx) => changeInTx(tx, i, (row) => {
         applyRowToDoc(working, row);
         return working;
-      }, (doc) => normalizedBytes(doc).bytes));
+      }));
       return {
         result: { revision: written.revision, sizeBytes: written.state.byteLength },
         listeners: queueListeners(i.documentId, storedEventOf(i, new Map(), written.row.json, written.derived.json, written.state.byteLength)),
@@ -1458,7 +1581,7 @@ function createCollabServer(): CollabServer {
       if (!listenerRun.getStore()?.running) await listeners;
       return result;
     })();
-    activeWrites.add(run);
+    activeWrites.set(run, i.documentId);
     try {
       return await run;
     } finally {
@@ -1469,15 +1592,27 @@ function createCollabServer(): CollabServer {
   // ---------------------------------------------------------------------
   // Shutdown
 
-  /** Stores a changed document durably, retrying until `retryUntil`. False when it couldn't. */
+  /**
+   * Stores a changed document durably, retrying until `retryUntil`. False
+   * when it couldn't. Each attempt is waited for only until the deadline (a
+   * store can wait on the save mutex a hung write holds, or on the
+   * database); one left behind counts as stored only if nothing was changed.
+   */
   async function storeDurably(slot: DocSlot, document: HocuspocusDocument, retryUntil: number): Promise<boolean> {
     for (let attempt = 0; ; attempt += 1) {
-      const outcome = await storeExclusive(slot, document, 'final');
-      if (outcome !== 'failed' && !slot.stateDirty) {
+      const done: { outcome?: StoreOutcome } = {};
+      await settledBy([storeExclusive(slot, document, 'final').then((outcome) => { done.outcome = outcome; })], retryUntil);
+      const outcome = done.outcome;
+      if (outcome === undefined) return !slot.stateDirty;
+      const durable = outcome !== 'failed' && !slot.stateDirty;
+      // Derived copies the database refused (not content outside the schema,
+      // which no retry fixes) are tried again while time remains.
+      const derivable = outcome === 'underived' && slot.deriveFailedAt !== slot.changeCounter;
+      const delay = Math.min(1_000, 200 * 2 ** attempt);
+      if (durable && (!derivable || Date.now() + delay > retryUntil)) {
         if (outcome === 'underived') console.error('[collab] shutdown stored a document whose text could not be updated', logId(slot.documentId));
         return true;
       }
-      const delay = Math.min(1_000, 200 * 2 ** attempt);
       if (Date.now() + delay > retryUntil) return false;
       await sleep(delay);
     }
@@ -1509,20 +1644,21 @@ function createCollabServer(): CollabServer {
     // stored, retried until the deadline.
     for (;;) {
       await settleLoads(retryUntil);
-      const handling: Array<Promise<unknown>> = [];
-      for (const document of hocuspocus.documents.values()) {
-        for (const connection of document.getConnections()) handling.push(connection.waitForPendingMessages());
-      }
-      await Promise.allSettled(handling);
-      // A write includes its listeners; one that hangs is left behind at the deadline.
-      hungWrites = (await settledBy(activeWrites, retryUntil)).size;
       hocuspocus.flushPendingStores();
+      // Each document on its own: the frames it already took and the writes
+      // to it in progress finish, waited for only until the deadline, and
+      // then it is stored. A hung frame or write holds up its own document,
+      // never the others.
       await Promise.all([...docs.values()].map(async (slot) => {
         const document = hocuspocus.documents.get(slot.name);
-        if (slot.loaded && document && !unstored.has(slot.documentId) && !(await storeDurably(slot, document, retryUntil))) {
-          unstored.add(slot.documentId);
-        }
+        if (!slot.loaded || !document || unstored.has(slot.documentId)) return;
+        const own = [...activeWrites].filter(([, documentId]) => documentId === slot.documentId).map(([write]) => write);
+        await settledBy([...document.getConnections().map((connection) => connection.waitForPendingMessages()), ...own], retryUntil);
+        if (!(await storeDurably(slot, document, retryUntil))) unstored.add(slot.documentId);
       }));
+      // Every write, those to documents not loaded too. A write includes its
+      // listeners; one that hangs is left behind at the deadline.
+      hungWrites = (await settledBy(activeWrites.keys(), retryUntil)).size;
       const chains = new Map([...listenerChains].map(([documentId, chain]) => [chain, documentId] as const));
       for (const chain of await settledBy(chains.keys(), retryUntil)) hungListeners.add(chains.get(chain)!);
       const changed = [...docs.values()].filter((slot) => slot.loaded && slot.stateDirty && !unstored.has(slot.documentId));
@@ -1640,14 +1776,18 @@ export function getCollabServer(): CollabServer {
  * The one writer of document content outside live sockets (consult rule C2).
  * In one transaction holding the document row FOR UPDATE (never a drive): the
  * actor's role re-checked at write time (a person and a BYOA agent as
- * themselves, Defty, an actor with `askerId`, as the person who asked); a
+ * themselves; Defty, the only actor whose `askerId` may name someone else,
+ * as the person who asked), and again right before commit when an access
+ * loss may have committed meanwhile (the socket fence's guarantee); a
  * system actor passes `requiredRole: null` and its reason, and only a system
  * actor may; an agent's `agent_edit` refused on a drive set to suggestions
  * only; `expectedRevision` checked when given (every store bumps the
  * revision, and pending live changes are stored first). The 2 MB cap the
  * sockets apply. Throws DocumentWriteRefused: FORBIDDEN, REVISION_CHANGED,
- * TOO_LARGE, or BUSY (live editing's memory budget is spent, it is shutting
- * down, or a loaded document didn't become live; try again later). Runs the
+ * TOO_LARGE, INVALID_CONTENT (the document holds content outside the
+ * schema), or BUSY (live editing's memory budget is spent, it is shutting
+ * down, a loaded document didn't become live, or an access change is being
+ * applied; try again later). Runs the
  * stored listeners before it returns, after releasing the document's writer
  * lock; called from inside a stored listener while its run is in progress,
  * it returns once the write has applied and its listeners run after that run.
@@ -1664,7 +1804,13 @@ export async function writeDocument(i: {
 }): Promise<{ revision: number; sizeBytes: number }> {
   const requiredRole = i.requiredRole === undefined ? 'edit' : i.requiredRole;
   if (requiredRole === null && i.actor.kind !== 'system') throw new DocumentWriteRefused('FORBIDDEN');
-  const checkedAs = i.actor.askerId ?? i.actor.userId;
+  // Another person as the asker is honoured only for Defty (checked in the
+  // transaction); anyone else naming someone else is refused.
+  const askedBy = i.actor.askerId !== undefined && i.actor.askerId !== i.actor.userId ? i.actor.askerId : null;
+  if (askedBy !== null && i.actor.kind !== 'agent') throw new DocumentWriteRefused('FORBIDDEN');
+  const checkedAs = askedBy ?? i.actor.userId;
+  // The access generation the role is read at, for the pre-commit fence.
+  let generation = 0;
   const write = writers.get(getCollabServer())!;
   return write({
     documentId: i.documentId,
@@ -1672,6 +1818,12 @@ export async function writeDocument(i: {
     actor: i.actor,
     mutate: i.mutate,
     check: async (tx, row) => {
+      if (askedBy !== null) {
+        const [defty] = await tx.select({ id: users.id }).from(users)
+          .where(and(eq(users.id, i.actor.userId), eq(users.email, DEFTY_EMAIL), eq(users.kind, 'agent'))).limit(1);
+        if (!defty) throw new DocumentWriteRefused('FORBIDDEN');
+      }
+      generation = currentAccessGeneration();
       if (requiredRole !== null && !roleAtLeast(await documentRoleFor(checkedAs, i.orgId, i.documentId, tx), requiredRole)) {
         throw new DocumentWriteRefused('FORBIDDEN');
       }
@@ -1682,6 +1834,22 @@ export async function writeDocument(i: {
       }
       if (i.expectedRevision !== undefined && row.revision !== i.expectedRevision) throw new DocumentWriteRefused('REVISION_CHANGED');
     },
+    // The access fence a socket frame passes (rule C3), right before commit:
+    // only the document row is locked, so a drive or share loss can commit
+    // after the role was read. While its barrier is open (between its commit
+    // and finishAccessLoss) the write is refused BUSY; once the generation
+    // has moved, the role is read again in this transaction (which sees the
+    // committed loss) and a lost one is refused FORBIDDEN.
+    beforeCommit: async (tx) => {
+      await collabTestSeams.beforeWriteCommit?.(i.documentId);
+      if (requiredRole === null) return;
+      for (const userId of new Set([checkedAs, i.actor.userId])) {
+        if (accessLossBarrierCovers(i.orgId, i.documentId, userId)) throw new DocumentWriteRefused('BUSY');
+      }
+      if (currentAccessGeneration() !== generation && !roleAtLeast(await documentRoleFor(checkedAs, i.orgId, i.documentId, tx), requiredRole)) {
+        throw new DocumentWriteRefused('FORBIDDEN');
+      }
+    },
   });
 }
 
@@ -1691,18 +1859,22 @@ export async function writeDocument(i: {
  * `afterSizeCheck` runs (synchronously) after an update frame's size work,
  * just before the last expiry check; `liveDocumentWaitMs` is how long a write
  * waits for a document that has loaded to reach Hocuspocus's map (5 s; the
- * gap is normally a few ticks) before it is refused BUSY.
+ * gap is normally a few ticks) before it is refused BUSY;
+ * `beforeWriteCommit` runs in a write's transaction after its store, just
+ * before the pre-commit access fence.
  */
 export const collabTestSeams: {
   afterAuthenticate: ((documentId: string) => Promise<void>) | null;
   derivedEveryMs: number;
   afterSizeCheck: (() => void) | null;
   liveDocumentWaitMs: number;
+  beforeWriteCommit: ((documentId: string) => Promise<void>) | null;
 } = {
   afterAuthenticate: null,
   derivedEveryMs: 60_000,
   afterSizeCheck: null,
   liveDocumentWaitMs: 5_000,
+  beforeWriteCommit: null,
 };
 
 /** How each document held stands (no ids). */
@@ -1713,7 +1885,7 @@ function describeSlots(docs: Map<string, DocSlot>): string {
   })));
 }
 
-const testState = { peakDocuments: 0, peakReservedBytes: 0, storeFailures: 0, underivedFinals: 0 };
+const testState = { peakDocuments: 0, peakReservedBytes: 0, storeFailures: 0, underivedFinals: 0, derivedFallbacks: 0 };
 let testHandles: {
   docs: Map<string, DocSlot>;
   approxBytes(documentId: string): number | null;
@@ -1738,6 +1910,7 @@ export function collabStateForTest() {
     peakReservedBytes: testState.peakReservedBytes,
     storeFailures: testState.storeFailures,
     underivedFinals: testState.underivedFinals,
+    derivedFallbacks: testState.derivedFallbacks,
     approxBytes: (documentId: string) => handles?.approxBytes(documentId) ?? null,
     /** How many entries the document's size accounting keeps (collab/size-account.ts), or null when it isn't loaded. */
     accountRetained: (documentId: string) => handles?.accountRetained(documentId) ?? null,

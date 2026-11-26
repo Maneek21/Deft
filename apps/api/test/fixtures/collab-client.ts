@@ -245,6 +245,9 @@ export const collabFrames = {
   auth: (documentName: string, token: string) => concat(varString(documentName), [2], [0], varString(token)),
   update: (documentName: string, update: Uint8Array) => concat(varString(documentName), [0], [2], varBytes(update)),
   syncStep2: (documentName: string, update: Uint8Array) => concat(varString(documentName), [0], [1], varBytes(update)),
+  /** An awareness frame (y-protocols' awareness update): each state under its client id and clock. */
+  awareness: (documentName: string, states: Array<{ clientId: number; clock: number; state: unknown }>) => concat(varString(documentName), [1],
+    varBytes(concat(varUint(states.length), ...states.flatMap((s) => [varUint(s.clientId), varUint(s.clock), varString(JSON.stringify(s.state))])))),
 };
 
 /** True when `frame` is Hocuspocus's Authenticated message. */

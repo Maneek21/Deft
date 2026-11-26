@@ -18,10 +18,14 @@
 // logged and never stops the store or the next listener.
 //
 // Block ids (F1): the derived JSON passes through ensureBlockIds. When that
-// gives a block an id it didn't have, the ids are written back into the
-// Y.Doc in place (applyJsonToYDoc, origin SYSTEM_ORIGIN), so the stored JSON
-// and the live document agree. After that the ids are valid and unique, so
-// the next derive changes nothing and nothing is written back again.
+// gives a block an id it didn't have (missing, invalid, or a later
+// duplicate), only that `id` attribute is written back onto the block's
+// Y.XmlElement (collab/block-ids.ts, origin SYSTEM_ORIGIN), so the stored
+// JSON and the live document agree. Nothing else is written: the canonical
+// JSON is never re-applied, so text runs, attribute defaults and a client's
+// concurrent edits stay as they are. After that the ids are valid and
+// unique, so the next derive changes nothing and nothing is written back.
+// The stored content_json stays canonical (every attribute, defaults filled).
 //
 // Logs are fixed text: nothing a person wrote, and no ids.
 import { isDeepStrictEqual } from 'node:util';
@@ -29,8 +33,9 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import * as Y from 'yjs';
 import { documents } from '@deft/db/documents';
-import { applyJsonToYDoc, ensureBlockIds, jsonToText, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
+import { ensureBlockIds, jsonToText, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
 import { db } from '../lib/db.js';
+import { writeBackBlockIds } from './block-ids.js';
 import { COLLAB_LIMITS } from './limits.js';
 
 export type JSONContent = Parameters<typeof jsonToText>[0];
@@ -171,14 +176,14 @@ export async function writeInitialState(documentId: string, orgId: string, state
 export type DerivedContent = { json: JSONContent; text: string };
 
 /**
- * The document's JSON with block ids, and its text. New ids are written back
- * into `doc` (the header). Throws when the live state holds a node or mark
- * outside the schema (yDocToJson).
+ * The document's JSON with block ids, and its text. Ids it gave blocks are
+ * written back into `doc`, the `id` attribute alone (the header). Throws when
+ * the live state holds a node or mark outside the schema (yDocToJson).
  */
 export function deriveContent(doc: Y.Doc): DerivedContent {
   const json = yDocToJson(doc);
   const withIds = ensureBlockIds(json);
-  if (!isDeepStrictEqual(withIds, json)) doc.transact(() => applyJsonToYDoc(doc, withIds), SYSTEM_ORIGIN);
+  if (!isDeepStrictEqual(withIds, json)) writeBackBlockIds(doc, json, withIds, SYSTEM_ORIGIN);
   return { json: withIds, text: jsonToText(withIds) };
 }
 

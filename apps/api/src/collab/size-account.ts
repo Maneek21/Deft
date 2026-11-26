@@ -1,7 +1,8 @@
-// The size cap's accounting (plan Task F7, review rounds 4 and 5): one upper
-// bound on a live document's normalized size, the encoded size its Yjs state
-// has once the server has normalized it (the next derive writes every
-// missing block id back, and with it every non-null attribute default).
+// The size cap's accounting (plan Task F7, review rounds 4 and 5, the
+// consult): one upper bound on a live document's normalized size, the
+// encoded size its Yjs state has once the server has normalized it (the next
+// derive writes the `id` attribute, and nothing else, onto every block whose
+// id is missing, invalid or a later duplicate: collab/block-ids.ts).
 //
 // The invariant: the estimate is the last exact normalized measurement plus
 // the charge of every change admitted since that measurement. A change's
@@ -22,43 +23,56 @@
 // - A measurement records the cumulative charge it covers: everything
 //   applied when it was taken (the total minus what was still in flight); a
 //   scratch copy with an admitted change applied also covers that change.
-// - Only an exact measurement re-bases: the copy derived (no content outside
-//   the schema) and Yjs held nothing back, so its encoded size is the
-//   normalized size. Any exact measurement M covering C bounds the size from
-//   then on by M + (total − C), the changes since it on top; the estimate
-//   takes the smaller of that and what it is, so a measurement older than the
-//   current base never loosens it.
+// - A measurement re-bases with an upper bound on the normalized size of
+//   the state it measured: an exact one (the copy derived, so no content
+//   outside the schema, and Yjs held nothing back) with its encoded size; any
+//   other with boundFor, its encoded size plus ID_WRITEBACK_BYTES for every
+//   block still needing an id and every struct held back, so a document that
+//   can never be measured exactly is still re-based (the consult, finding 2).
+//   Any measurement M covering C bounds the size from then on by
+//   M + (total − C), the changes since it on top; the estimate takes the
+//   smaller of that and what it is, so an older or looser measurement never
+//   loosens it.
 //
 // Every path that changes the estimate goes through this file:
 // collab/server.ts charges socket frames and writer reservations, settles
-// them, and re-bases from loads, derived stores, measured frames (after they
-// are applied) and writes (after they are applied).
+// them, and re-bases from loads, stores, measured frames (after they are
+// applied) and writes (after they are applied).
 import * as Y from 'yjs';
+import { blocksNeedingIds, heldBackStructs } from './block-ids.js';
 import { fastAcceptBelowBytes } from './limits.js';
 
 /**
- * The most the server's normalization adds for one struct of a change (F1's
- * ensureBlockIds + applyJsonToYDoc: the block's id, and every non-null
- * attribute default the binding writes with it), or for one live struct a
- * change deletes. Measured 26 Nov 2026 (yjs 13.6.33, @deft/doc-schema), as
- * (normalized growth − update bytes) / (structs in the update + live structs
- * it deletes), for updates of 300 instances, with one block without an id in
- * each so the write-back runs:
- * - empty blocks: callout 72.1, heading and orderedList 68.1, details 66.1,
- *   paragraph, blockquote, lists, codeBlock, horizontalRule, table, image,
- *   taskView and tableOfContents 49.6–50.6; tableCell and tableHeader 39.2;
- *   nativeMention 37.2; taskItem 18.7; listItem, tableRow, hardBreak and
- *   detailsSummary/Content 0.2;
- * - text runs with an empty-attribute mark: link 33.4, the others 0.1;
- * - existing blocks: ids removed 8.9 (headings, paragraphs), every attribute
- *   removed 8.9, ids overwritten with invalid ones 2.8, new blocks taking
- *   existing ids 5.9;
- * - the worst ids a client can pick (client id 2^53 − 1, clocks past 2^21):
- *   callout 82.7, heading 78.7, paragraph 55.8.
- * Clocks can be pushed to 8-byte varints (about +16 bytes per struct
- * written back, so about 99 for a callout). Rounded up to 128.
+ * The most the server's normalization adds for one struct of a change, or
+ * for one live struct a change deletes. Normalization writes one `id`
+ * attribute onto a block that needs one (collab/block-ids.ts), and a struct
+ * can leave at most one block needing an id: a new block, an id attribute
+ * set to an invalid or taken value, an id attribute deleted.
+ *
+ * Measured 26 Nov 2026 (yjs 13.6.33, @deft/doc-schema), as (normalized
+ * growth − update bytes) / (structs in the update + live structs it
+ * deletes), for updates of 300 instances: one id written back is 49.6–50.6
+ * bytes per block for every block type, 55.8 from the worst ids a client can
+ * pick (client id 2^53 − 1, clocks past 2^21); clocks pushed to 8-byte
+ * varints add about 16. Kept at 128 from the round-5 measurement, when the
+ * derive still re-applied the canonical JSON and wrote every non-null
+ * attribute default too (callout 82.7 at worst); the id alone stays well
+ * under it, and the per-type unit test pins it for every node type and mark.
  */
 export const ID_WRITEBACK_BYTES = 128;
+
+/**
+ * An upper bound on the normalized size of `doc`, whose encoded size was
+ * measured as `bytes` (after whatever normalization could run on it): every
+ * block still needing an id and every struct Yjs holds back can add at most
+ * ID_WRITEBACK_BYTES once it is normalized. Exact when both counts are zero.
+ * Walks the Y tree, so it counts a state holding content outside the schema
+ * too (that content has to be removed, by a change that is charged, before
+ * anything is written back).
+ */
+export function boundFor(doc: Y.Doc, bytes: number): number {
+  return bytes + (blocksNeedingIds(doc) + heldBackStructs(doc)) * ID_WRITEBACK_BYTES;
+}
 
 /**
  * The structs a change carries plus the live structs its deletions remove:

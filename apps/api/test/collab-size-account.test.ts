@@ -16,8 +16,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as Y from 'yjs';
-import { applyJsonToYDoc, ensureBlockIds, getDocumentSchema, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
+import { BLOCK_ID_TYPES, ensureBlockIds, getDocumentSchema, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
 import { setCollabLimitsForTest } from '../src/collab/limits.js';
+import { deriveContent, markSizeWarning } from '../src/collab/persistence.js';
 import * as sizeAccount from '../src/collab/size-account.js';
 
 const { chargeFor, SizeAccount } = sizeAccount;
@@ -180,14 +181,13 @@ test('the account keeps the same few entries however many changes pass with noth
 
 const fragmentOf = (doc: Y.Doc) => doc.getXmlFragment('default');
 
-/** The encoded size `doc` has once normalized as the server does it (deriveContent: ids written back with every attribute default). */
+/** The encoded size `doc` has once normalized as the server does it (its own deriveContent and size warning). */
 function normalizedSize(doc: Y.Doc): number | null {
   const scratch = new Y.Doc();
   try {
     Y.applyUpdate(scratch, Y.encodeStateAsUpdate(doc));
-    const json = yDocToJson(scratch);
-    const withIds = ensureBlockIds(json);
-    if (JSON.stringify(withIds) !== JSON.stringify(json)) scratch.transact(() => applyJsonToYDoc(scratch, withIds));
+    deriveContent(scratch);
+    markSizeWarning(scratch, Y.encodeStateAsUpdate(scratch).byteLength);
     return Y.encodeStateAsUpdate(scratch).byteLength;
   } catch {
     // Content outside the schema: nothing can be written back.
@@ -229,8 +229,7 @@ function chargeAndGrowth(start: Y.Doc, change: (doc: Y.Doc) => void, o: { worstI
 /** A normalized document of `n` blocks of `type`, ids written back by the document's own client (consecutive clocks). */
 function normalizedBlocks(type: string, n: number): Y.Doc {
   const doc = jsonToYDoc({ type: 'doc', content: Array.from({ length: n }, () => ({ type })) });
-  const withIds = ensureBlockIds(yDocToJson(doc));
-  doc.transact(() => applyJsonToYDoc(doc, withIds));
+  deriveContent(doc);
   return doc;
 }
 
@@ -295,4 +294,126 @@ test('for every node type and mark in the schema, and for changes to existing id
   base.destroy();
   assert.ok(checked.length > 30, `scenarios that normalize: ${checked.length}`);
   assert.deepEqual(short, [], short.join('\n'));
+});
+
+// ---------------------------------------------------------------------------
+// F7 consult
+
+/** Appends `n` runs of text, alternately bold and plain. */
+function formattedRuns(text: Y.XmlText, n: number): void {
+  for (let k = 0; k < n; k += 1) text.insert(text.length, `w${k} `, k % 2 ? { bold: {} } : {});
+}
+
+test('the derive writes back only ids, exactly the ones ensureBlockIds gave, and leaves text runs as they are', () => {
+  const doc = new Y.Doc();
+  const fragment = fragmentOf(doc);
+  // Two neighbouring texts, as a deleted hard break leaves them, each 500 formatted runs.
+  const kept = new Y.XmlElement('paragraph');
+  kept.setAttribute('id', 'kept-1');
+  const first = new Y.XmlText();
+  const second = new Y.XmlText();
+  kept.insert(0, [first, second]);
+  fragment.push([kept]);
+  formattedRuns(first, 500);
+  formattedRuns(second, 500);
+  // Blocks needing an id: none, an invalid one, a later duplicate, a list and a block inside it.
+  const missing = new Y.XmlElement('heading');
+  const invalid = new Y.XmlElement('paragraph');
+  invalid.setAttribute('id', 'has space');
+  const original = new Y.XmlElement('paragraph');
+  original.setAttribute('id', 'dup-1');
+  const duplicate = new Y.XmlElement('paragraph');
+  duplicate.setAttribute('id', 'dup-1');
+  const list = new Y.XmlElement('bulletList');
+  const item = new Y.XmlElement('listItem');
+  const nested = new Y.XmlElement('paragraph');
+  item.insert(0, [nested]);
+  list.insert(0, [item]);
+  fragment.push([missing, invalid, original, duplicate, list]);
+  const runsBefore = [JSON.stringify(first.toDelta()), JSON.stringify(second.toDelta())];
+  const before = Y.encodeStateAsUpdate(doc).byteLength;
+
+  const derived = deriveContent(doc);
+  const growth = Y.encodeStateAsUpdate(doc).byteLength - before;
+  assert.ok(growth <= 5 * sizeAccount.ID_WRITEBACK_BYTES, `writing 5 ids back grew the state by ${growth} bytes`);
+  assert.deepEqual([JSON.stringify(first.toDelta()), JSON.stringify(second.toDelta())], runsBefore, 'the text runs are untouched');
+  assert.equal(original.getAttribute('id'), 'dup-1', 'the first holder keeps its id');
+  // The live ids are exactly the derived JSON's, block for block.
+  const liveIds = [kept, missing, invalid, original, duplicate, list].map((el) => el.getAttribute('id'));
+  assert.deepEqual(liveIds, (derived.json.content ?? []).map((node) => node.attrs?.id));
+  assert.equal(nested.getAttribute('id'), derived.json.content![5]!.content![0]!.content![0]!.attrs!.id, 'a block inside a list gets its id');
+  assert.equal(item.getAttribute('id'), undefined, 'a list item carries no block id');
+  // Read back, it derives to exactly the stored JSON, so it is never seen as behind.
+  assert.deepEqual(ensureBlockIds(yDocToJson(doc)), derived.json);
+  const settled = Y.encodeStateAsUpdate(doc).byteLength;
+  deriveContent(doc);
+  assert.equal(Y.encodeStateAsUpdate(doc).byteLength, settled, 'a second derive writes nothing');
+  doc.destroy();
+});
+
+test('the bound for a measurement that can\'t be exact is at least the normalized size, for every block type', () => {
+  const N = 300;
+  const short: string[] = [];
+  for (const type of BLOCK_ID_TYPES) {
+    for (const nested of [false, true]) {
+      const doc = new Y.Doc();
+      const fragment = fragmentOf(doc);
+      for (let k = 0; k < N; k += 1) {
+        const block = new Y.XmlElement(type);
+        if (!nested) fragment.push([block]);
+        else {
+          // Inside a list item, as blocks also are.
+          const list = new Y.XmlElement('bulletList');
+          list.setAttribute('id', `list-${k}`);
+          const item = new Y.XmlElement('listItem');
+          item.insert(0, [block]);
+          list.insert(0, [item]);
+          fragment.push([list]);
+        }
+      }
+      const bound = sizeAccount.boundFor(doc, Y.encodeStateAsUpdate(doc).byteLength);
+      const normalized = normalizedSize(doc);
+      if (normalized !== null && bound < normalized) short.push(`${N} empty ${type}${nested ? ' in list items' : ''}: bound ${bound}, normalized ${normalized}`);
+      doc.destroy();
+    }
+  }
+  assert.deepEqual(short, [], short.join('\n'));
+});
+
+test('the bound covers a document with structs held back and a block outside the schema, once both are resolved', () => {
+  const doc = new Y.Doc();
+  const fragment = fragmentOf(doc);
+  // A block the schema doesn't know (no derive can run), and 300 paragraphs without ids.
+  fragment.push([new Y.XmlElement('notInTheSchema')]);
+  for (let k = 0; k < 300; k += 1) fragment.push([new Y.XmlElement('paragraph')]);
+  // Another client's 200 headings, held back behind a struct that hasn't arrived.
+  const ghost = new Y.Doc();
+  Y.applyUpdate(ghost, Y.encodeStateAsUpdate(doc));
+  const start = Y.encodeStateVector(ghost);
+  ghost.transact(() => { const p = new Y.XmlElement('paragraph'); fragmentOf(ghost).push([p]); });
+  const withheld = Y.encodeStateAsUpdate(ghost, start);
+  const afterWithheld = Y.encodeStateVector(ghost);
+  ghost.transact(() => { for (let k = 0; k < 200; k += 1) fragmentOf(ghost).push([new Y.XmlElement('heading')]); });
+  Y.applyUpdate(doc, Y.encodeStateAsUpdate(ghost, afterWithheld));
+  assert.ok(doc.store.pendingStructs !== null, 'the headings are held back');
+  assert.equal(normalizedSize(doc), null, 'nothing can be normalized yet');
+
+  const bound = sizeAccount.boundFor(doc, Y.encodeStateAsUpdate(doc).byteLength);
+  // Later frames, each charged when admitted: the missing struct, then the odd block removed.
+  const completing = sizeAccount.chargeFor(withheld, doc);
+  Y.applyUpdate(doc, withheld);
+  const vector = Y.encodeStateVector(doc);
+  const remover = new Y.Doc();
+  Y.applyUpdate(remover, Y.encodeStateAsUpdate(doc));
+  fragmentOf(remover).delete(0, 1);
+  const removal = Y.encodeStateAsUpdate(remover, vector);
+  const removed = sizeAccount.chargeFor(removal, doc);
+  Y.applyUpdate(doc, removal);
+  assert.equal(doc.store.pendingStructs, null, 'nothing is held back any more');
+  const normalized = normalizedSize(doc)!;
+  assert.ok(bound + completing + removed >= normalized,
+    `bound ${bound} + charges ${completing} and ${removed} is below the normalized size ${normalized}`);
+  doc.destroy();
+  ghost.destroy();
+  remover.destroy();
 });
