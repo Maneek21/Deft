@@ -183,7 +183,7 @@ test('an update with an older or the same version names both versions and sugges
   }));
   assert.equal(older.status, 409);
   assert.equal(older.code, 'MODULE_UPDATE_NOT_AVAILABLE');
-  assert.equal(older.message, 'The installed app is 1.2.0 and this file is 1.0.5. Give the file a higher version, such as 1.2.1.');
+  assert.equal(older.message, 'The installed app is 1.2.0 and this file is 1.0.5.\nGive the file a higher version, such as 1.2.1.');
   const changed = hiring('1.2.0', [...baseFields, { key: 'phone', label: 'Phone', type: 'text' }]);
   const same = await refusal(upgradeModuleInstallationToManifest(actor, 'misfits', changed, {
     source: 'sideloaded',
@@ -191,7 +191,7 @@ test('an update with an older or the same version names both versions and sugges
   }));
   assert.equal(same.status, 409);
   assert.equal(same.code, 'MODULE_UPDATE_NOT_AVAILABLE');
-  assert.equal(same.message, 'The installed app is 1.2.0 and this file is also 1.2.0. Give the file a higher version, such as 1.2.1.');
+  assert.equal(same.message, 'The installed app is 1.2.0 and this file is also 1.2.0.\nGive the file a higher version, such as 1.2.1.');
   const identical = await refusal(upgradeModuleInstallationToManifest(actor, 'misfits', hiring('1.2.0', baseFields), {
     source: 'sideloaded',
     expected_active_manifest_digest: current.manifest_digest,

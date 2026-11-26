@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { describeVersionNotHigher } from '@deft/shared/modules';
 import {
   ModuleManifestError,
   formatModuleManifestError,
@@ -72,8 +73,14 @@ test('moduleApiError shows the server lines, at most three, never raw JSON', asy
     'This name belongs to an app that ships with Deft. Choose another slug and id.',
   );
   // A version refusal says which version to use; refreshing would not help.
-  const version = 'The installed app is 1.2.0 and this file is 1.0.5. Give the file a higher version, such as 1.2.1.';
+  const version = 'The installed app is 1.2.0 and this file is 1.0.5.\nGive the file a higher version, such as 1.2.1.';
   assert.equal(await moduleApiError(jsonResponse(409, { error: version, code: 'MODULE_UPDATE_NOT_AVAILABLE' }), 'Failed'), version);
+  // Versions may be 64 characters long; the suggested version is still shown whole.
+  const long = `1.${'9'.repeat(60)}.0`;
+  const longVersion = describeVersionNotHigher(long, long);
+  const longShown = await moduleApiError(jsonResponse(409, { error: longVersion, code: 'MODULE_UPDATE_NOT_AVAILABLE' }), 'Failed');
+  assert.equal(longShown, longVersion);
+  assert.ok(longShown.endsWith(`such as 1.${'9'.repeat(60)}.1.`), longShown);
 });
 
 test('appApiError uses the caller text for a switched-off feature', async () => {

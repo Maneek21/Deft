@@ -48,7 +48,7 @@ for (const [name, installed, uploaded] of [
 }
 
 test('version refusal preserves server advice without refresh instructions', async () => {
-  const advice = 'The installed app is 3.8.12 and this file is 2.99.99. Give the file a higher version, such as 3.8.13.';
+  const advice = 'The installed app is 3.8.12 and this file is 2.99.99.\nGive the file a higher version, such as 3.8.13.';
   const response = (code: string, error: string) => new Response(JSON.stringify({ code, error }), { status: 409 });
   const message = await moduleApiError(response('MODULE_UPDATE_NOT_AVAILABLE', advice), 'Cannot update');
   assert.equal(message, advice);

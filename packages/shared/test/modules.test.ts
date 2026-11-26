@@ -860,11 +860,11 @@ describe('an update whose version is not higher than the installed app', () => {
     const { describeVersionNotHigher, nextPatchVersion } = await import('../src/modules.js');
     assert.equal(
       describeVersionNotHigher('1.2.0', '1.0.5'),
-      'The installed app is 1.2.0 and this file is 1.0.5. Give the file a higher version, such as 1.2.1.',
+      'The installed app is 1.2.0 and this file is 1.0.5.\nGive the file a higher version, such as 1.2.1.',
     );
     assert.equal(
       describeVersionNotHigher('1.2.0', '1.2.0'),
-      'The installed app is 1.2.0 and this file is also 1.2.0. Give the file a higher version, such as 1.2.1.',
+      'The installed app is 1.2.0 and this file is also 1.2.0.\nGive the file a higher version, such as 1.2.1.',
     );
     assert.equal(nextPatchVersion('1.2.3'), '1.2.4');
     assert.equal(nextPatchVersion('1.2.3-beta.1'), '1.2.3');

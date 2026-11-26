@@ -888,10 +888,14 @@ export function nextPatchVersion(installed: string): string | null {
   return `${major}.${minor}.${BigInt(patch!) + 1n}`;
 }
 
-/** Why a file whose version is not higher than the installed app's cannot update it, and what to use instead. */
+/**
+ * Why a file whose version is not higher than the installed app's cannot
+ * update it, and what to use instead. Two lines, so that even 64-character
+ * versions keep each line short enough to be shown whole.
+ */
 export function describeVersionNotHigher(installed: string, file: string): string {
   const next = nextPatchVersion(installed);
-  return `The installed app is ${installed} and this file is ${file === installed ? 'also ' : ''}${file}. `
+  return `The installed app is ${installed} and this file is ${file === installed ? 'also ' : ''}${file}.\n`
     + `Give the file a higher version${next ? `, such as ${next}` : ''}.`;
 }
 

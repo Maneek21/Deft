@@ -183,6 +183,7 @@ jobs:
           src/lib/modules.test.ts
           src/lib/upload-errors-readable.test.ts
           src/lib/upload-errors-hostile.test.ts
+          test/upload-refusal-messages.test.tsx
           src/lib/module-describe.test.ts
           src/lib/app-templates.test.ts
           src/lib/module-version-bump.test.ts
