@@ -7,7 +7,8 @@
 // must coordinate with, and that module exports no other way to change a
 // document: the write machinery behind it isn't reachable. Its contract
 // (roles, suggest-only drives, expectedRevision, the size cap, BUSY, the
-// stored listeners) is documented there.
+// stored listeners, and `inTransaction` for work that commits with the
+// content) is documented there.
 export {
-  DocumentWriteRefused, writeDocument, type DocumentWriteReason, type DocumentWriteRefusalCode,
+  DocumentWriteRefused, writeDocument, type DocumentWriteInTransaction, type DocumentWriteReason, type DocumentWriteRefusalCode,
 } from '../collab/server.js';

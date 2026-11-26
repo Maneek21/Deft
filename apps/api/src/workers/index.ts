@@ -246,6 +246,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/embed-content.js');
       return mod.handleEmbedContent;
     }
+    case 'document-attachments-reconcile': {
+      const mod = await import('./handlers/document-attachments-reconcile.js');
+      return mod.handleDocumentAttachmentsReconcile;
+    }
     case 'memory-extract': {
       const mod = await import('./handlers/memory-extract.js');
       return mod.handleMemoryExtract;

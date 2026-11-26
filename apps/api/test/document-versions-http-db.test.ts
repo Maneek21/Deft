@@ -21,6 +21,7 @@ import { closeDb } from '../src/lib/db.js';
 import { writeDocument } from '../src/lib/document-writer.js';
 import { createVersion, setVersionClockForTest, startDocumentVersioning } from '../src/lib/document-versions.js';
 import { documentRoutes } from '../src/routes/documents.js';
+import { _getAgentJobHandlerForTest } from '../src/workers/index.js';
 import { connectCollab, pollUntil, startCollabTestServer, tokenFor, type CollabTestClient, type CollabTestServer } from './fixtures/collab-client.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -56,6 +57,7 @@ after(async () => {
   restoreLimits?.();
   await srv?.close();
   if (fx) {
+    await fx.client.query('DELETE FROM job_queue WHERE org_id = $1', [fx.orgId]);
     await fx.client.query('DELETE FROM document_attachments WHERE org_id = $1', [fx.orgId]);
     await fx.client.query('DELETE FROM files WHERE id = ANY($1::text[])', [fileIds]);
     await fx.teardown();
@@ -216,14 +218,13 @@ test('naming a version creates a named version', { skip: !url && SKIP }, async (
   const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Proposal', json: canonical(paragraphs('Draft')) });
   const events = storedEvents(t, doc);
   at('2026-11-26T09:55:00.000Z');
-  // The first live store after a load is derived at once (and saves an automatic version)...
+  // An edit the server has accepted, named before the store debounce (2 s) has stored it anywhere.
   const editor = await open(t, doc, people.member);
-  editor.typeText('Typed first');
-  await pollUntil(() => events.some((e) => jsonToText(e.json).includes('Typed first')), 'the first live edit is derived', 10_000);
-  // ...a later one is stored (ydoc_state) but not yet derived: content_json lags by up to a minute.
   editor.typeText('Typed just now');
-  await pollUntil(async () => stateText((await stored(doc)).ydoc_state).includes('Typed just now'), 'the live state is stored', 10_000);
-  assert.ok(!(await stored(doc)).content_text.includes('Typed just now'), 'the derived copy still lags');
+  await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'the server accepted the edit');
+  const unstored = await stored(doc);
+  assert.ok(!stateText(unstored.ydoc_state).includes('Typed just now') && !unstored.content_text.includes('Typed just now'),
+    'neither stored copy holds the edit yet');
 
   at('2026-11-26T10:00:00.000Z');
   const created = await call(people.member2, 'POST', listPath(doc), { name: '  Sent to client, v2  ' });
@@ -239,12 +240,15 @@ test('naming a version creates a named version', { skip: !url && SKIP }, async (
   assert.equal(shown.body.version.id, created.body.version.id);
   assert.equal(shown.body.version.name, 'Sent to client, v2');
   const text = jsonToText(shown.body.version.content_json);
-  assert.ok(text.includes('Draft') && text.includes('Typed just now'), `the version holds the live state, not the lagging copy (${text})`);
+  assert.equal(text, 'Draft\n\nTyped just now', 'the version holds every edit the server accepted, stored or not');
 
+  // The edit's own store comes later, and saves an automatic version then.
+  at('2026-11-26T10:01:00.000Z');
+  await pollUntil(() => events.some((e) => jsonToText(e.json).includes('Typed just now')), 'the edit is stored and derived', 10_000);
   const listed = await call(people.member, 'GET', listPath(doc));
   assert.equal(listed.status, 200);
   assert.deepEqual(listed.body.versions.map((v: { kind: string; name: string | null }) => [v.kind, v.name]),
-    [['named', 'Sent to client, v2'], ['auto', null]], 'the named version, then the automatic one from the first edit');
+    [['auto', null], ['named', 'Sent to client, v2']], 'the automatic version from the store, then the named one');
 
   for (const body of [{}, { name: '' }, { name: '   ' }, { name: 'x'.repeat(201) }, { name: 7 }]) {
     const refused = await call(people.member, 'POST', listPath(doc), body);
@@ -280,10 +284,14 @@ test('restore creates a restore version and the live document shows the restored
   assert.equal((await stored(doc)).content_text, restoredText);
 
   const rows = await versionRows(doc);
-  assert.deepEqual(rows.map((r) => r.kind), ['restore', 'auto', 'named', 'auto'], 'one restore version, the state before it, and the history kept');
-  const [restore, before, kept] = rows;
+  assert.deepEqual(rows.map((r) => [r.kind, r.name]), [
+    ['restore', 'Restored from 26 Nov 2026, 14:05 UTC'],
+    ['restore', 'Before restore from 26 Nov 2026, 14:05 UTC'],
+    ['named', 'Before the rewrite'],
+    ['auto', null],
+  ], 'the restore, the state before it, and the history kept; no automatic version inside the window');
+  const [restore, before, kept, automatic] = rows;
   assert.equal(restore!.id, restored.body.version_id);
-  assert.equal(restore!.name, 'Restored from 26 Nov 2026, 14:05 UTC', 'named after the restored version’s time');
   assert.equal(restore!.created_by, people.member2);
   assert.equal(restore!.at, '2026-11-26T14:09:00.000Z');
   assert.equal(jsonToText(restore!.content_json), restoredText);
@@ -292,15 +300,22 @@ test('restore creates a restore version and the live document shows the restored
   assert.equal(jsonToText(before!.content_json), `${restoredText}\n\nTyped after the version`, 'the state before the restore is kept');
   assert.equal(before!.at, '2026-11-26T14:08:59.999Z');
   assert.equal(before!.created_by, null);
+  assert.deepEqual(before!.edit_details, { before_restore_of: named.body.version.id });
   // History is never rewritten.
   assert.equal(kept!.id, original.id);
   assert.deepEqual(kept!.content_json, original.content_json);
-  assert.equal(kept!.name, 'Before the rewrite');
+  assert.equal(automatic!.at, '2026-11-26T14:00:00.000Z');
 
   // The live document keeps working after the restore.
   editor.typeText('Typed after the restore');
   await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'the next edit is accepted');
   assert.ok(editor.text().startsWith(restoredText));
+
+  // The restore didn't move the automatic deadline: 10 minutes after 14:00, the next edit saves one.
+  at('2026-11-26T14:10:00.000Z');
+  await edit(doc, 'Edited at 14:10');
+  const autos = (await versionRows(doc)).filter((r) => r.kind === 'auto').map((r) => r.at);
+  assert.deepEqual(autos, ['2026-11-26T14:10:00.000Z', '2026-11-26T14:00:00.000Z']);
 });
 
 test('history needs can edit: a commenter and a guest get 403', { skip: !url && SKIP }, async () => {
@@ -454,6 +469,119 @@ test('a restore over the size cap is refused with 413 and changes nothing', { sk
   assert.equal(after.revision, before.revision, 'the document is unchanged');
   assert.equal(after.content_text, 'Small now');
   assert.deepEqual((await versionRows(doc)).map((r) => r.id), [big.id], 'no restore version and no other version was saved');
+});
+
+/** Adds a CHECK constraint that refuses every new or changed `table` row of the document (an injected failure); returns the drop. */
+async function failRowsOf(table: 'document_versions' | 'document_attachments', documentId: string) {
+  const constraint = `f8_fault_${table}_${documentId.replaceAll('-', '').slice(0, 12)}`;
+  await fx!.client.query(`ALTER TABLE ${table} ADD CONSTRAINT ${constraint} CHECK (document_id <> '${documentId}') NOT VALID`);
+  let dropped = false;
+  return async () => {
+    if (dropped) return;
+    dropped = true;
+    await fx!.client.query(`ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${constraint}`);
+  };
+}
+
+test('a restore whose history can’t be saved changes nothing: content, stored state and the live document stay, and no history row exists', { skip: !url && SKIP }, async (t) => {
+  const { people } = fx!;
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'All or nothing', json: canonical(paragraphs('Kept as it is')) });
+  const old = await insertVersion(doc, canonical(paragraphs('Old content')), 'Old');
+  const events = storedEvents(t, doc);
+  at('2026-11-26T16:00:00.000Z');
+  const editor = await open(t, doc, people.member);
+  editor.typeText('Typed and stored');
+  await pollUntil(() => events.some((e) => jsonToText(e.json).includes('Typed and stored')), 'the live edit is stored and derived', 10_000);
+  const before = await stored(doc);
+  const historyBefore = (await versionRows(doc)).map((r) => r.id);
+
+  const drop = await failRowsOf('document_versions', doc);
+  t.after(drop);
+  at('2026-11-26T16:05:00.000Z');
+  const refused = await call(people.member2, 'POST', `${listPath(doc)}/${old}/restore`);
+  await drop();
+  assert.equal(refused.status, 500, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, 'INTERNAL_ERROR');
+
+  const after = await stored(doc);
+  assert.equal(after.revision, before.revision, 'the store rolled back with the history');
+  assert.equal(after.content_text, before.content_text);
+  assert.ok(after.ydoc_state!.equals(before.ydoc_state!), 'the stored state is unchanged');
+  // A round trip: anything the server sent before acknowledging this probe has arrived.
+  editor.typeText('Probe');
+  await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'the probe is accepted');
+  assert.equal(editor.text(), 'Kept as it is\n\nTyped and stored\n\nProbe', 'the live document never took the restore');
+  assert.deepEqual((await versionRows(doc)).map((r) => r.id), historyBefore, 'no history row exists');
+});
+
+test('a failed in_current update queues a reconcile job, which puts the flags right with no further edits', { skip: !url && SKIP }, async (t) => {
+  const { people } = fx!;
+  const [kept, removed] = [await insertFile(), await insertFile()];
+  const doc = await fx!.insertDocument({
+    driveId: fx!.workspaceDriveId, title: 'Reconcile', json: canonical({ type: 'doc', content: [image(kept, 'kept'), image(removed, 'removed')] }),
+  });
+  for (const file of [kept, removed]) await attach(doc, file);
+
+  // The listener's update fails after the content has committed.
+  const drop = await failRowsOf('document_attachments', doc);
+  t.after(drop);
+  at('2026-11-26T16:30:00.000Z');
+  await writeDocument({
+    orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: people.member }, reason: 'import',
+    mutate: (d) => {
+      const fragment = d.getXmlFragment('default');
+      const index = fragment.toArray().findIndex((node) => node instanceof Y.XmlElement && node.getAttribute('fileId') === removed);
+      fragment.delete(index, 1);
+    },
+  });
+  await drop();
+  assert.deepEqual(await inCurrent(doc), { [kept]: true, [removed]: true }, 'the flags are wrong until the job runs');
+
+  const { rows: jobs } = await fx!.client.query(`SELECT id, name, data, org_id, dedupe_key, status FROM job_queue
+    WHERE org_id = $1 AND name = 'document-attachments-reconcile' AND data->>'document_id' = $2`, [fx!.orgId, doc]);
+  assert.equal(jobs.length, 1, 'one durable job was queued');
+  const job = jobs[0] as { id: string; name: string; data: Record<string, unknown>; org_id: string; dedupe_key: string; status: string };
+  assert.equal(job.status, 'pending');
+  assert.equal(job.dedupe_key, `document-attachments-reconcile:${doc}:${(await stored(doc)).revision}`, 'keyed by document and revision (rule C1)');
+
+  const handler = await _getAgentJobHandlerForTest('document-attachments-reconcile');
+  assert.ok(handler, 'the job has a handler');
+  await handler({ id: job.id, name: job.name, data: job.data, attempts: 1, orgId: job.org_id });
+  assert.deepEqual(await inCurrent(doc), { [kept]: true, [removed]: false }, 'recomputed from the stored content');
+  await handler({ id: job.id, name: job.name, data: job.data, attempts: 2, orgId: job.org_id });
+  assert.deepEqual(await inCurrent(doc), { [kept]: true, [removed]: false }, 'running it again changes nothing');
+});
+
+test('restore brings back the version’s title: the document and the restore version carry it', { skip: !url && SKIP }, async (t) => {
+  const { people } = fx!;
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Historical title', json: canonical(paragraphs('Historical text')) });
+  // An automatic version at 16:58 keeps the live edit's store (if it lands first) inside the window.
+  at('2026-11-26T16:58:00.000Z');
+  await edit(doc, 'Second line');
+  at('2026-11-26T17:00:00.000Z');
+  const named = await call(people.member, 'POST', listPath(doc), { name: 'Historical' });
+  assert.equal(named.status, 201);
+  assert.equal(named.body.version.title, 'Historical title');
+  const renamed = await call(people.member, 'PATCH', `/api/documents/${doc}`, { title: 'New title' });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+  const editor = await open(t, doc, people.member);
+  editor.typeText('Live edit');
+  await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'the live edit is accepted');
+
+  at('2026-11-26T17:05:00.000Z');
+  const restored = await call(people.member2, 'POST', `${listPath(doc)}/${named.body.version.id}/restore`);
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  await pollUntil(() => editor.text() === 'Historical text\n\nSecond line', `the content came back (${editor.text()})`);
+  const { rows: [row] } = await fx!.client.query('SELECT title FROM documents WHERE id = $1', [doc]);
+  assert.equal((row as { title: string }).title, 'Historical title', 'the document has its old title back');
+  const rows = await versionRows(doc);
+  const restore = rows.find((r) => r.id === restored.body.version_id)!;
+  assert.equal(restore.name, 'Restored from 26 Nov 2026, 17:00 UTC');
+  assert.equal(restore.title, 'Historical title', 'the restore version records the restored title');
+  const before = rows.find((r) => r.name === 'Before restore from 26 Nov 2026, 17:00 UTC');
+  assert.ok(before, 'the state before the restore was kept');
+  assert.equal(before.title, 'New title', 'and it keeps the title it had');
+  assert.ok(jsonToText(before.content_json).includes('Live edit'));
 });
 
 test('history answers 404 before 403: a document the caller can’t see is 404 on every route, whatever the version', { skip: !url && SKIP }, async () => {

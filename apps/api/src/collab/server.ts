@@ -112,7 +112,10 @@
 // run, except when called while a listener run it was started from is still
 // in progress: that write's listeners run after the run. writeDocument locks only the
 // document row (never a drive), so it can't wait in a cycle with a move or a
-// delete, which lock the drive and then the document.
+// delete, which lock the drive and then the document. A caller's work that
+// must commit with the content runs inside the write (`inTransaction`).
+// readCurrentDocument reads a document's current state, live when it is
+// loaded, and writes nothing.
 //
 // Shutdown (destroy): admissions stop (upgrades ended, connecting refused,
 // writes refused with BUSY) and incoming frames are dropped. Then passes run
@@ -140,6 +143,7 @@ import { and, eq } from 'drizzle-orm';
 import * as Y from 'yjs';
 import { drives } from '@deft/db/documents';
 import { users } from '@deft/db/schema';
+import { ensureBlockIds, yDocToJson } from '@deft/doc-schema';
 import { db } from '../lib/db.js';
 import { documentRoleFor, roleAtLeast, type DocRole } from '../lib/document-access.js';
 import { accessLossBarrierCovers, currentAccessGeneration } from '../lib/document-access-change.js';
@@ -210,7 +214,15 @@ type WriteInput = {
   check: (tx: Tx, row: DocumentStateRow) => Promise<void>;
   /** Runs in the same transaction after the store, right before it commits; throws DocumentWriteRefused to refuse. */
   beforeCommit: (tx: Tx) => Promise<void>;
+  /** The caller's own work in the write's transaction, after the store and before beforeCommit (writeDocument's `inTransaction`). */
+  inTransaction?: DocumentWriteInTransaction;
 };
+/**
+ * writeDocument's `inTransaction`: `beforeJson` is the content the change was
+ * made on (null when it holds content outside the schema), `afterJson` the
+ * content stored.
+ */
+export type DocumentWriteInTransaction = (tx: Tx, content: { beforeJson: JSONContent | null; afterJson: JSONContent }) => Promise<void>;
 type WriteResult = { revision: number; sizeBytes: number };
 /** A write that has applied, with its listener run (queued in order, awaited once the writer lock is released). */
 type Written = { result: WriteResult; listeners: Promise<void> };
@@ -440,6 +452,15 @@ const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolv
 /** True when Yjs holds nothing back in `doc` (no structs or deletions waiting for a missing clock). */
 const heldBackNothing = (doc: Y.Doc) => doc.store.pendingStructs === null && doc.store.pendingDs === null;
 
+/** `doc`'s content with block ids, changing nothing, or null when it holds content outside the schema. */
+function jsonOrNull(doc: Y.Doc): JSONContent | null {
+  try {
+    return ensureBlockIds(yDocToJson(doc));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Waits until every one of `work` has settled or the clock reaches `until`,
  * whichever is first. Returns the ones still running.
@@ -456,6 +477,8 @@ async function settledBy<T>(work: Iterable<Promise<T>>, until: number): Promise<
 
 /** The unchecked write machinery of each server, reachable only through writeDocument. */
 const writers = new WeakMap<CollabServer, (i: WriteInput) => Promise<WriteResult>>();
+/** Each server's read of a loaded document's live state (readCurrentDocument): null when it isn't loaded in that workspace. */
+const liveReaders = new WeakMap<CollabServer, (documentId: string, orgId: string) => Uint8Array | null>();
 
 function createCollabServer(): CollabServer {
   const sockets = new Map<string, SocketEntry>();
@@ -1412,6 +1435,7 @@ function createCollabServer(): CollabServer {
     const doc = typeof working === 'function' ? working(row) : working;
     const vector = Y.encodeStateVector(doc);
     const beforeBytes = normalizedBytes(doc).bytes;
+    const beforeJson = i.inTransaction ? jsonOrNull(doc) : null;
     i.mutate(doc);
     let derived: ReturnType<typeof deriveContent>;
     try {
@@ -1429,6 +1453,8 @@ function createCollabServer(): CollabServer {
       documentId: i.documentId, orgId: i.orgId, state, derived, editedBy: editorOf(i.actor), editedAt: new Date(),
     });
     if (revision === null) throw new DocumentWriteRefused('FORBIDDEN');
+    // A failure here rolls the store back too, and the live copy never takes the change (applied only after commit).
+    await i.inTransaction?.(tx, { beforeJson, afterJson: derived.json });
     await i.beforeCommit(tx);
     return { row, derived, state, revision, delta, bound };
   }
@@ -1721,6 +1747,11 @@ function createCollabServer(): CollabServer {
   };
 
   writers.set(server, write);
+  liveReaders.set(server, (documentId, orgId) => {
+    const slot = docs.get(documentId);
+    const document = slot?.loaded && slot.orgId === orgId ? hocuspocus.documents.get(slot.name) : undefined;
+    return document ? Y.encodeStateAsUpdate(document) : null;
+  });
   testHandles = {
     docs,
     approxBytes: (documentId) => docs.get(documentId)?.size.estimate ?? null,
@@ -1773,6 +1804,30 @@ export function getCollabServer(): CollabServer {
 }
 
 /**
+ * The document's current state as one Yjs update, read-only: a document
+ * loaded in this process is encoded from its live copy synchronously, so it
+ * holds every update the server has applied, stored or not; otherwise the
+ * row's stored state, or, before the first live load, the state built from
+ * content_json as a load builds it. Null when the row isn't in `orgId`.
+ * Checks no access (callers do), takes no lock and writes nothing, so it is
+ * not a writer (rule C2).
+ */
+export async function readCurrentDocument(documentId: string, orgId: string): Promise<Uint8Array | null> {
+  const live = instance ? liveReaders.get(instance)?.(documentId, orgId) : null;
+  if (live) return live;
+  const row = await readDocumentState(documentId, orgId);
+  if (!row) return null;
+  if (row.state) return row.state;
+  const built = new Y.Doc();
+  try {
+    applyRowToDoc(built, row);
+    return Y.encodeStateAsUpdate(built);
+  } finally {
+    built.destroy();
+  }
+}
+
+/**
  * The one writer of document content outside live sockets (consult rule C2).
  * In one transaction holding the document row FOR UPDATE (never a drive): the
  * actor's role re-checked at write time (a person and a BYOA agent as
@@ -1790,6 +1845,17 @@ export function getCollabServer(): CollabServer {
  * stored listeners before it returns, after releasing the document's writer
  * lock; called from inside a stored listener while its run is in progress,
  * it returns once the write has applied and its listeners run after that run.
+ *
+ * `inTransaction` is the caller's own work that must commit or roll back
+ * with the content (a restore's history rows, F8). It runs in the write's
+ * transaction, with the document row still locked, after the store and
+ * before the pre-commit access fence, with the content the change was made
+ * on (`beforeJson`, pending live edits included; null when it holds content
+ * outside the schema) and the content stored (`afterJson`). Whatever it
+ * throws rolls the whole write back and is thrown from writeDocument as it
+ * is: the live copy takes a change only after the commit, so nobody sees it
+ * and no listener runs. Keep it short: socket updates to the document wait
+ * while it runs.
  */
 export async function writeDocument(i: {
   orgId: string;
@@ -1800,6 +1866,7 @@ export async function writeDocument(i: {
   requiredRole?: DocRole | null;
   mutate: (doc: Y.Doc) => void;
   reason: DocumentWriteReason;
+  inTransaction?: DocumentWriteInTransaction;
 }): Promise<{ revision: number; sizeBytes: number }> {
   const requiredRole = i.requiredRole === undefined ? 'edit' : i.requiredRole;
   if (requiredRole === null && i.actor.kind !== 'system') throw new DocumentWriteRefused('FORBIDDEN');
@@ -1816,6 +1883,7 @@ export async function writeDocument(i: {
     orgId: i.orgId,
     actor: i.actor,
     mutate: i.mutate,
+    inTransaction: i.inTransaction,
     check: async (tx, row) => {
       if (askedBy !== null) {
         const [defty] = await tx.select({ id: users.id }).from(users)
