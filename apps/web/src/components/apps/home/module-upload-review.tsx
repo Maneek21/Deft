@@ -13,6 +13,7 @@ export function ModuleUploadReview({
   preview,
   decision,
   busy,
+  locked = false,
   onCancel,
   onConfirm,
   summary,
@@ -20,6 +21,8 @@ export function ModuleUploadReview({
   preview: ModuleManifestPreview;
   decision: ModuleManifestUploadDecision;
   busy: boolean;
+  /** True while any other action on the page runs: confirming waits. */
+  locked?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
   /** A plain-words description of the file, when one is available. */
@@ -101,7 +104,7 @@ export function ModuleUploadReview({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || locked}
             className="flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 text-[0.8125rem] font-medium text-white disabled:opacity-50"
             style={{ background: 'var(--primary-container)' }}
           >

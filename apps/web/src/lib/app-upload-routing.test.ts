@@ -158,3 +158,8 @@ test('review fixes: size wording, BOM, app files win over a stray package_format
   const packagesOff = buildAppsHome({ modules: [part], bundled: [], apps: [] });
   assert.deepEqual(packagesOff.installed.map((item) => `${item.kind}:${item.name}`), ['module:Inbox']);
 });
+
+test('module sizes just over the limit round up to whole kilobytes', () => {
+  const big = JSON.stringify({ ...hiring, description: 'x'.repeat(MODULE_MANIFEST_MAX_BYTES) });
+  assert.throws(() => classifyAppUpload(big, { appPackagesEnabled: true }), /This app file is \d+ KB\. App files must be 128 KB or smaller/);
+});

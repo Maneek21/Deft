@@ -24,8 +24,10 @@ export const APP_UPLOAD_MAX_BYTES = Math.max(APP_PACKAGE_MAX_BYTES, MODULE_MANIF
 /** Sizes for people: whole numbers when exact, else rounded up to one decimal so a file just over a limit never reads as equal to it. */
 function formatBytes(bytes: number): string {
   const [value, unit] = bytes >= 1024 * 1024 ? [bytes / (1024 * 1024), 'MB'] : [bytes / 1024, 'KB'];
-  const shown = Number.isInteger(value) ? String(value) : (Math.ceil(value * 10) / 10).toFixed(1);
-  return `${shown === '0.0' ? '0.1' : shown} ${unit}`;
+  if (Number.isInteger(value)) return `${value} ${unit}`;
+  // KB round up to whole numbers (129 KB, never 1024.0 KB); MB keep one decimal (1.1 MB).
+  if (unit === 'KB') return Math.ceil(value) >= 1024 ? '1.1 MB' : `${Math.ceil(value)} KB`;
+  return `${(Math.ceil(value * 10) / 10).toFixed(1)} MB`;
 }
 
 /** Checks a chosen file before it is read. Throws readable text. */
@@ -196,7 +198,7 @@ export function buildAppsHome(input: {
   return {
     installed: items.filter((item) => matches(item.kind === 'module'
       ? [item.name, item.module.slug, item.description]
-      : [item.name, item.app.app_id, item.description])),
+      : [item.name, item.app.app_id, item.description, ...item.parts.map((part) => part.manifest.name)])),
     available: available.filter((module) => matches([module.name, module.slug, module.description])),
     total: items.length + available.length,
   };

@@ -91,3 +91,9 @@ test('while any action runs, every tile control waits', () => {
   assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="Install Contacts"/);
   assert.match(html, /<select[^>]*disabled=""/);
 });
+
+test('an open review cannot be confirmed while another action runs', async () => {
+  const preview = await previewModuleManifestJson(JSON.stringify({ schema_version: '1', id: 'workspace.hiring', slug: 'hiring', version: '1.0.0', name: 'Hiring pipeline', collections: [{ key: 'candidates', name: 'Candidates', fields: [{ key: 'name', label: 'Name', type: 'text' }] }] }));
+  const html = renderToStaticMarkup(<ModuleUploadReview preview={preview} decision={{ mode: 'install', target: null }} busy={false} locked onCancel={noop} onConfirm={noop} />);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Install Hiring pipeline/);
+});

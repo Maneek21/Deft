@@ -257,7 +257,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   };
 
   const selectedParts = selectedApp ? installedModules.modules.filter((module) => module.owningAppInstallationId === selectedApp.id) : [];
-  const focusUpload = () => { requestAnimationFrame(() => document.getElementById('apps-upload-button')?.focus()); };
+  const focusUpload = () => { requestAnimationFrame(() => (document.getElementById('apps-upload-button') ?? document.getElementById('apps-back-link'))?.focus()); };
   // When an action removes the focused control (a review card closing), move focus to the result.
   useEffect(() => {
     if (message && (document.activeElement === document.body || document.activeElement === null)) messageRef.current?.focus();
@@ -281,15 +281,15 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
           <div className="flex items-start justify-between gap-3"><div><h2 className="text-sm font-semibold">One-time Codex pairing</h2><p className="mt-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>Enter this only in the CLI prompt. It expires at {new Date(pairing.expires_at).toLocaleTimeString()} and cannot be replayed.</p></div><button type="button" onClick={() => setPairing(null)} aria-label="Dismiss pairing" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md"><X size={16} aria-hidden /></button></div>
           <div className="mt-3 flex items-center gap-2"><code className="rounded-lg px-3 py-2 text-base font-semibold tracking-widest" style={{ background: 'var(--surface-container-high)' }}>{pairing.code}</code><button type="button" className="deft-pill min-h-11" onClick={() => void navigator.clipboard.writeText(pairing.code).then(() => setCopied(true), () => setCopied(false))}>{copied ? <Check size={13} aria-hidden /> : <Copy size={13} aria-hidden />} {copied ? 'Copied' : 'Copy'}</button></div>
         </section>}
-        {pendingModule && <ModuleUploadReview preview={pendingModule.preview} decision={pendingModule.decision} busy={busy === pendingModule.preview.slug} onCancel={() => { setPendingModule(null); focusUpload(); }} onConfirm={() => void confirmModule()} />}
-        {pending && <InspectionCard pending={pending.inspection} upgradeTarget={pending.upgradeTarget} busy={busy === 'stage'} onCancel={() => { setPending(null); focusUpload(); }} onStage={() => void stage()} />}
+        {pendingModule && <ModuleUploadReview preview={pendingModule.preview} decision={pendingModule.decision} busy={busy === pendingModule.preview.slug} locked={busy !== null} onCancel={() => { setPendingModule(null); focusUpload(); }} onConfirm={() => void confirmModule()} />}
+        {pending && <InspectionCard pending={pending.inspection} upgradeTarget={pending.upgradeTarget} busy={busy === 'stage'} locked={busy !== null} onCancel={() => { setPending(null); focusUpload(); }} onStage={() => void stage()} />}
         {selectedId ? (
           isLoading ? <div className="flex min-h-48 items-center justify-center"><Loader2 className="animate-spin" role="img" aria-label="Loading apps" /></div>
           : error ? <EmptyState icon={<AppWindow size={20} />} title="Apps did not load" description={error instanceof Error ? error.message : 'Try again.'} action={{ label: 'Try again', onClick: () => void mutate() }} />
-          : !selectedApp ? <div className="space-y-3"><p>This app is unavailable in this workspace.</p><Link href="/settings/apps" className="deft-pill min-h-11">All apps</Link></div>
+          : !selectedApp ? <div className="space-y-3"><p>{isGuest ? 'Apps aren’t available to guests.' : 'This app is unavailable in this workspace.'}</p><Link href="/settings/apps" className="deft-pill min-h-11">All apps</Link></div>
           : <>
-            <Link href="/settings/apps" className="deft-pill min-h-11">← All apps</Link>
-            <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy === selectedApp.id} onActivate={() => void activate(selectedApp)} onEnable={() => void enable(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage({ kind: 'package', app: selectedApp })} attachmentUpgrade={attachmentUpgrade?.installation_id===selectedApp.id?attachmentUpgrade.target:undefined} />
+            <Link id="apps-back-link" href="/settings/apps" className="deft-pill min-h-11">← All apps</Link>
+            <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy !== null} onActivate={() => void activate(selectedApp)} onEnable={() => void enable(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage({ kind: 'package', app: selectedApp })} attachmentUpgrade={attachmentUpgrade?.installation_id===selectedApp.id?attachmentUpgrade.target:undefined} />
             {canManage && ['3', '4', '5', '6', '7'].includes(selectedApp.manifest.schema_version) && <InstallationUpgradeTrust key={selectedApp.id} installationId={selectedApp.id} />}
             {canManage && selectedParts.length > 0 && <section aria-labelledby="package-parts-title" className="rounded-xl p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--ghost-border)' }}>
               <h2 id="package-parts-title" className="text-sm font-semibold">Defty and agents</h2>
@@ -326,7 +326,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   </div>;
 }
 
-function InspectionCard({ pending, upgradeTarget, busy, onCancel, onStage }: { pending: AppInspection; upgradeTarget: AppInstallation | null; busy: boolean; onCancel: () => void; onStage: () => void }) {
+function InspectionCard({ pending, upgradeTarget, busy, locked = false, onCancel, onStage }: { pending: AppInspection; upgradeTarget: AppInstallation | null; busy: boolean; locked?: boolean; onCancel: () => void; onStage: () => void }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => { headingRef.current?.focus(); }, []);
   const connectedManifest = isConnectedAppManifest(pending.manifest) ? pending.manifest : null;
@@ -340,7 +340,7 @@ function InspectionCard({ pending, upgradeTarget, busy, onCancel, onStage }: { p
     {upgradeTarget && <p className="mt-3 rounded-lg px-3 py-2 text-[11px]" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}>This stages {pending.manifest.version} beside active {upgradeTarget.version}. The active version and authority remain unchanged until an owner completes the exact upgrade review.</p>}
     <div className="mt-4"><h3 className="text-xs font-semibold">Exact included Modules</h3><ul className="mt-2 space-y-1">{pending.manifest.modules.map((module) => <li key={`${module.module_id}@${module.version}`} className="rounded-md px-2 py-1.5 font-mono text-[10px]" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}>{module.module_id}@{module.version} · {module.manifest_digest}</li>)}</ul></div>
     <div className="mt-4 rounded-lg p-3" style={{ background: 'var(--surface-container-high)' }}><p className="flex items-center gap-2 text-xs font-semibold"><Check size={14} style={{ color: 'var(--status-green)' }} /> {connected || runtime || pending.manifest.schema_version === '6' ? 'No authority before review' : 'No connected permissions'}</p><p className="mt-1 text-[11px]" style={{ color: 'var(--on-surface-variant)' }}>{connectedManifest ? `Staging grants no authority. Owners must bind ${connectedManifest.connector_requirements.length} connector requirement${connectedManifest.connector_requirements.length === 1 ? '' : 's'} and accept Deft’s host policy before activation.` : pending.manifest.schema_version === '6' ? 'Declared native actions do not grant access. Exact App review and current Calendar owner binding consent govern native effects.' : runtime ? 'Staging grants no Runtime authority. An owner must review the exact version, grant and host policy before activation.' : `Staging grants no authority and adds no navigation. Activation installs ${pending.manifest.modules.length} exact Module artifact${pending.manifest.modules.length === 1 ? '' : 's'}.`}</p></div>
-    <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" className="deft-pill min-h-11" onClick={onCancel}>Cancel</button><button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={busy} onClick={onStage}>{busy && <Loader2 size={13} className="animate-spin" />} {upgradeTarget ? 'Stage upgrade for review' : connected || runtime || pending.manifest.schema_version === '6' ? 'Stage for review' : 'Stage with no rights'}</button></div>
+    <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onCancel}>Cancel</button><button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={busy || locked} onClick={onStage}>{busy && <Loader2 size={13} className="animate-spin" />} {upgradeTarget ? 'Stage upgrade for review' : connected || runtime || pending.manifest.schema_version === '6' ? 'Stage for review' : 'Stage with no rights'}</button></div>
   </section>;
 }
 
