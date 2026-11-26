@@ -131,7 +131,7 @@ function assertModuleEmployeeActionPolicy(
 ): void {
   if (policy.unhealthy) {
     throw new Error(
-      `Agent employee is unhealthy and cannot execute module writes${policy.unhealthyReason ? `: ${policy.unhealthyReason}` : ''}`,
+      `Agent employee is unhealthy and cannot change app records${policy.unhealthyReason ? `: ${policy.unhealthyReason}` : ''}`,
     );
   }
   if (isAgentToolDisabled(policy.disabledTools, action)) {
@@ -319,7 +319,7 @@ async function authoritativeBulkProposalParams(
     { moduleId: input.module_id },
   );
   const collection = installation.manifest.collections.find((item) => item.key === input.collection_key);
-  if (!collection) throw new Error('Module collection is unavailable');
+  if (!collection) throw new Error('This record type is unavailable');
   return {
     module_id: input.module_id,
     module_name: installation.manifest.name,
@@ -628,7 +628,7 @@ export async function claimModuleAgentAction(params: {
 }): Promise<{ action: typeof agentActions.$inferSelect; reused: boolean }> {
   const idempotencyKey = params.input.idempotency_key;
   if (typeof idempotencyKey !== 'string') {
-    throw new Error('Module mutations require an idempotency key');
+    throw new Error('App record changes require an idempotency key');
   }
   const actor = agentModuleDigestActor(params.orgId, params.userId, params.agentEmployeeId);
   const idempotencyDigest = moduleIdempotencyDigest(actor, idempotencyKey);
@@ -665,7 +665,7 @@ export async function claimModuleAgentAction(params: {
         existingParams.idempotency_key === idempotencyKey
         && !sameModuleActionInput(existingParams, params.input)
       ) {
-        throw new Error('Idempotency key was already used for a different module mutation');
+        throw new Error('Idempotency key was already used for a different app record change');
       }
       const expectedInputDigest = moduleMutationInputDigest(
         params.action === 'module_record_create' ? 'create'
@@ -678,7 +678,7 @@ export async function claimModuleAgentAction(params: {
         && typeof existingParams.input_digest === 'string'
         && existingParams.input_digest !== expectedInputDigest
       ) {
-        throw new Error('Idempotency key was already used for a different module mutation');
+        throw new Error('Idempotency key was already used for a different app record change');
       }
       return { action: existing, reused: true };
     }
@@ -859,7 +859,7 @@ export async function claimModuleBulkCreateAgentAction(params: {
           ) as ModuleRecordBulkCreateParams,
         );
       if (existingInputDigest !== inputDigest) {
-        throw new Error('Idempotency key was already used for a different module bulk create');
+        throw new Error('Idempotency key was already used for a different batch of app records');
       }
       const partialResult = existing.result && typeof existing.result === 'object'
         ? existing.result as Record<string, unknown>
@@ -999,7 +999,7 @@ export async function claimModuleTaskLinkAgentAction(params: {
         ? existingParams.input_digest
         : moduleTaskLinkInputDigest(existingParams);
       if (existingInputDigest !== inputDigest) {
-        throw new Error('Idempotency key was already used for a different module task-link mutation');
+        throw new Error('Idempotency key was already used for a different task link change');
       }
       return { action: existing, reused: true };
     }
@@ -1474,7 +1474,7 @@ export async function preflightPlanActionInput(
           .from(moduleRecords)
           .where(and(eq(moduleRecords.id, recordId), eq(moduleRecords.org_id, orgId)))
           .limit(1);
-        if (!record) throw new Error('Module record not found');
+        if (!record) throw new Error('Record not found');
         return { installationId: record.installation_id };
       })();
     // A completed update/archive has necessarily made its reviewed revision
@@ -4075,7 +4075,7 @@ async function executeActionDirectLocked(
         actionId: actionRecord.id,
         success: false,
         result: null,
-        error: terminalAction?.error ?? 'Module action was terminalized before execution completed',
+        error: terminalAction?.error ?? 'The app record action ended before it finished',
       };
     }
     const reviewedBy = terminalAction.approved_by_user_id ?? null;
@@ -4109,7 +4109,7 @@ async function executeActionDirectLocked(
         actionId: actionRecord.id,
         success: false,
         result: null,
-        error: terminalAction?.error ?? 'Module task-link action was terminalized before execution completed',
+        error: terminalAction?.error ?? 'The task link action ended before it finished',
       };
     }
     const reviewedBy = terminalAction.approved_by_user_id ?? null;

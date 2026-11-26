@@ -188,7 +188,7 @@ test(`App actions create governed Runs once and fail closed (${directRelations ?
   await activateAppInstallation(owner, dependency.id, dependency.package_digest);
 
   const connectedPackage = await (directRelations ? buildDirectRelationConnectedAppPackage() : buildPhase5ConnectedAppPackage());
-  const connected = await stageAppPackage(owner, connectedPackage.json);
+  const connected = await stageAppPackage(owner, connectedPackage.json, { firstPartyPackage: true });
   const [connectedVersion] = await db.select().from(appVersions).where(and(
     eq(appVersions.org_id, orgId),
     eq(appVersions.id, connected.version_id),

@@ -21,15 +21,22 @@ import {
   type DeftAppPackageV0,
 } from '@deft/app-kit/core';
 import {
+  isFirstPartyReservedId,
   parseSupportedDeftModuleManifest as parseDeftModuleManifest,
   type ModuleActor,
 } from '@deft/shared/modules';
+import {
+  cleanIssueText,
+  formatManifestError,
+  type ReadableIssueOptions,
+} from '@deft/shared/module-issues';
 import { db } from './db.js';
 import { getIO } from '../socket.js';
 import {
   assertCurrentModuleManagerWithExecutor,
   installModuleFromManifestWithExecutor,
   invalidateModuleCatalogCaches,
+  moduleIdentityReservation,
   type ModuleLifecyclePostCommit,
 } from './module-service.js';
 import { AppError } from './app-errors.js';
@@ -171,38 +178,95 @@ function assertAppProtocolOperationSupported(
   );
 }
 
+/**
+ * Validator output becomes at most three plain lines that name the path.
+ * Raw validator JSON never reaches the response.
+ */
+function invalidAppPackage(error: unknown, options: ReadableIssueOptions = {}): AppError {
+  const readable = formatManifestError(error, {
+    subject: 'App package',
+    fallback: 'App package is not valid',
+    ...options,
+  });
+  return new AppError(readable.message, 'APP_INVALID_PACKAGE', 400, {
+    issues: readable.issues,
+    lines: readable.lines,
+  });
+}
+
+/**
+ * App Kit reports an invalid module artifact with its own issue shape
+ * (artifact_path, field_path, reason). Re-check that artifact with the shared
+ * parser so the person gets the same path-naming lines as a module upload,
+ * prefixed with the file inside the package. Null when that does not apply.
+ */
+function moduleArtifactRefusal(packageJson: string, error: unknown): AppError | null {
+  const issues = error && typeof error === 'object' ? (error as { issues?: unknown }).issues : undefined;
+  if (!Array.isArray(issues)) return null;
+  const artifactPath = issues
+    .map((issue) => (issue && typeof issue === 'object' ? (issue as { artifact_path?: unknown }).artifact_path : undefined))
+    .find((path): path is string => typeof path === 'string');
+  if (!artifactPath) return null;
+  const raw = parseJsonOrUndefined(packageJson) as { artifacts?: unknown } | undefined;
+  const artifact = Array.isArray(raw?.artifacts)
+    ? (raw.artifacts as Array<{ path?: unknown; content?: unknown }>).find((item) => item?.path === artifactPath)
+    : undefined;
+  if (!artifact || typeof artifact.content !== 'string') return null;
+  const input = parseJsonOrUndefined(artifact.content);
+  try {
+    parseDeftModuleManifest(input);
+    return null;
+  } catch (moduleError) {
+    return invalidAppPackage(moduleError, {
+      input,
+      source: artifact.content,
+      prefix: `App file ${cleanIssueText(artifactPath, 80)}`,
+    });
+  }
+}
+
+function parseJsonOrUndefined(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function inspectAppPackageJson(value: string): Promise<InspectedAppPackage> {
   let verified: Awaited<ReturnType<typeof verifyDeftAppPackageJson>>;
   try {
     verified = await verifyDeftAppPackageJson(value);
   } catch (error) {
-    throw new AppError(
-      error instanceof Error ? error.message : 'Invalid App package',
-      'APP_INVALID_PACKAGE',
-      400,
-    );
+    throw moduleArtifactRefusal(value, error)
+      ?? invalidAppPackage(error, { input: parseJsonOrUndefined(value), source: value });
   }
   const protocol = verified.package.manifest.compatibility.app_protocol;
   assertAppProtocolOperationSupported(protocol, 'inspect');
   const packageValue = verified.package;
-  try {
-    for (const reference of packageValue.manifest.modules) {
-      const artifact = packageValue.artifacts.find((item) => item.path === reference.manifest_path);
-      if (!artifact) throw new Error(`Missing artifact ${reference.manifest_path}`);
-      const moduleManifest = parseDeftModuleManifest(JSON.parse(artifact.content) as unknown);
-      const collections = new Set(moduleManifest.collections.map((collection) => collection.key));
-      for (const item of verified.package.manifest.navigation.filter((nav) => nav.module_id === reference.module_id)) {
-        if (!collections.has(item.collection_key)) {
-          throw new Error(`Navigation references unknown collection ${item.collection_key}`);
-        }
+  for (const reference of packageValue.manifest.modules) {
+    const artifact = packageValue.artifacts.find((item) => item.path === reference.manifest_path);
+    if (!artifact) {
+      throw invalidAppPackage(new Error(`Missing app file ${cleanIssueText(reference.manifest_path, 80)}`));
+    }
+    let moduleManifest: ReturnType<typeof parseDeftModuleManifest>;
+    try {
+      moduleManifest = parseDeftModuleManifest(JSON.parse(artifact.content) as unknown);
+    } catch (error) {
+      throw invalidAppPackage(error, {
+        input: parseJsonOrUndefined(artifact.content),
+        source: artifact.content,
+        prefix: `App file ${artifact.path}`,
+      });
+    }
+    const collections = new Set(moduleManifest.collections.map((collection) => collection.key));
+    for (const item of verified.package.manifest.navigation.filter((nav) => nav.module_id === reference.module_id)) {
+      if (!collections.has(item.collection_key)) {
+        throw invalidAppPackage(new Error(
+          `Navigation names an unknown record type ${cleanIssueText(item.collection_key, 60)}`,
+        ));
       }
     }
-  } catch (error) {
-    throw new AppError(
-      error instanceof Error ? error.message : 'Invalid App package',
-      'APP_INVALID_PACKAGE',
-      400,
-    );
   }
   return {
     manifest: packageValue.manifest,
@@ -214,14 +278,78 @@ export async function inspectAppPackageJson(value: string): Promise<InspectedApp
   };
 }
 
+/**
+ * A new App may not take an id kept for apps made by Deft (com.deft.*,
+ * io.deft.*), and none of its modules may take a bundled module's slug or id
+ * or a first-party module id. Installs cannot be removed, so either would
+ * block the real app in this workspace for good.
+ *
+ * Carrying a shipped bundled manifest unchanged is refused too: activating
+ * such an App would install bundled Contacts as App-owned (blocking the
+ * one-click install and every later bundled update) or adopt an installed
+ * Contacts (moving its ownership and on/off switch to the App).
+ *
+ * Only a first-party package passes (`reviewedFirstPartyEntry`): Email through
+ * the reviewed Protocol 7 entry point, or a package the host itself stages
+ * with `firstPartyPackage` (no HTTP route sets that). Customer uploads, the
+ * plain stage route and the developer install path never do.
+ */
+export function assertAppIdentityNotReserved(
+  inspected: Pick<InspectedAppPackage, 'manifest' | 'package'>,
+  options: { reviewedFirstPartyEntry: boolean },
+): void {
+  if (!options.reviewedFirstPartyEntry && isFirstPartyReservedId(inspected.manifest.id)) {
+    throw new AppError(
+      'App ids that start with com.deft. or io.deft. are kept for apps made by Deft. Choose another id, such as com.example.my-app.',
+      'MODULE_IDENTITY_RESERVED',
+      409,
+    );
+  }
+  assertIncludedModulesNotReserved(inspected, options);
+}
+
+/**
+ * The reviewed attachment entry trusts only the Email App's own shape: a
+ * Protocol 7 package with id io.deft.email. Any other package on that route
+ * (another id, or another protocol) gets no first-party exemption.
+ */
+function isReviewedEmailEntry(inspected: Pick<InspectedAppPackage, 'manifest'>, attachmentStage: boolean): boolean {
+  return attachmentStage
+    && inspected.manifest.schema_version === '7'
+    && inspected.manifest.id === FIRST_PARTY_EMAIL_APP_ID;
+}
+
+const FIRST_PARTY_EMAIL_APP_ID = 'io.deft.email';
+
+function assertIncludedModulesNotReserved(
+  inspected: Pick<InspectedAppPackage, 'manifest' | 'package'>,
+  options: { reviewedFirstPartyEntry: boolean },
+): void {
+  for (const reference of inspected.manifest.modules) {
+    const artifact = inspected.package.artifacts.find((item) => item.path === reference.manifest_path);
+    if (!artifact) continue;
+    const moduleManifest = parseDeftModuleManifest(JSON.parse(artifact.content) as unknown);
+    const reason = moduleIdentityReservation(moduleManifest, {
+      allowExactBundledCopy: options.reviewedFirstPartyEntry,
+    });
+    if (reason) throw new AppError(reason, 'MODULE_IDENTITY_RESERVED', 409);
+  }
+}
+
 export async function stageAppPackage(
   actor: ModuleActor,
   packageJson: string,
   options: { guard?: (tx: CoreDatabaseTransaction) => Promise<void>;
-    attachmentStage?: boolean; attachmentComposition?: boolean } = {},
+    attachmentStage?: boolean; attachmentComposition?: boolean;
+    /** Host-only: a first-party package the host stages itself. No HTTP route sets this. */
+    firstPartyPackage?: boolean } = {},
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
+  assertAppIdentityNotReserved(inspected, {
+    reviewedFirstPartyEntry: options.firstPartyPackage === true
+      || isReviewedEmailEntry(inspected, options.attachmentStage === true),
+  });
   if (inspected.manifest.schema_version === '7') {
     if (options.attachmentStage !== true) throw new AppError('Attachment staging requires its reviewed host entry point', 'APP_PROTOCOL_UNSUPPORTED', 409);
     assertAttachmentManifestAdmission(inspected.manifest, options.attachmentComposition === true);
@@ -319,7 +447,9 @@ export async function stageAppUpgrade(
   installationId: string,
   packageJson: string,
   expectedLifecycleEpoch: number,
-  options: RuntimeAppReviewOptions & { runtimeUpgrade?: boolean; nativeUpgrade?: boolean; attachmentCompositionUpgrade?: boolean } = {},
+  options: RuntimeAppReviewOptions & { runtimeUpgrade?: boolean; nativeUpgrade?: boolean; attachmentCompositionUpgrade?: boolean;
+    /** Host-only: a first-party package the host stages itself. No HTTP route sets this. */
+    firstPartyPackage?: boolean } = {},
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
@@ -350,6 +480,19 @@ export async function stageAppUpgrade(
     }
     if (installation.app_id !== inspected.manifest.id) {
       throw new AppError('Upgrade App identity does not match the installation', 'APP_INVALID_PACKAGE', 409);
+    }
+    // An update may keep the apps it already owns, but may not add a bundled
+    // or first-party one unless it is a first-party package (see
+    // assertAppIdentityNotReserved).
+    if (options.firstPartyPackage !== true && !attachmentUpgrade) {
+      const owned = new Set((await tx.select({ module_id: appModuleBindings.module_id }).from(appModuleBindings).where(and(
+        eq(appModuleBindings.org_id, actor.org_id),
+        eq(appModuleBindings.app_installation_id, installation.id),
+      ))).map((row) => row.module_id));
+      assertIncludedModulesNotReserved({
+        manifest: { ...inspected.manifest, modules: inspected.manifest.modules.filter((reference) => !owned.has(reference.module_id)) },
+        package: inspected.package,
+      }, { reviewedFirstPartyEntry: false });
     }
     const [activeVersion] = await tx.select().from(appVersions).where(and(
       eq(appVersions.org_id, actor.org_id),

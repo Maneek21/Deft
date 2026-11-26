@@ -179,6 +179,9 @@ jobs:
           src/components/apps/home/apps-home.test.tsx
           src/lib/settings-navigation.test.ts
           src/lib/module-navigation.test.ts
+          src/lib/modules.test.ts
+          src/lib/upload-errors-readable.test.ts
+          src/lib/upload-errors-hostile.test.ts
           src/lib/api-retry.test.ts
           src/lib/api-auth.test.ts
           src/lib/setup-link.test.ts

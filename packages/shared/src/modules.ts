@@ -54,6 +54,20 @@ const ICON_TOKEN_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 
+/**
+ * Module and App ids in these namespaces belong to apps made by Deft, such as
+ * bundled Contacts (com.deft.contacts) and Email (io.deft.email). A workspace
+ * cannot uninstall, so an upload that took one would block the real app.
+ */
+export const FIRST_PARTY_ID_NAMESPACES = Object.freeze(['com.deft', 'io.deft'] as const);
+
+export function isFirstPartyReservedId(id: string): boolean {
+  const normalized = id.trim().toLowerCase();
+  return FIRST_PARTY_ID_NAMESPACES.some((namespace) => (
+    normalized === namespace || normalized.startsWith(`${namespace}.`)
+  ));
+}
+
 export const MODULE_RESERVED_FIELD_KEYS = Object.freeze([
   '__proto__',
   'constructor',
@@ -605,7 +619,7 @@ export const ModuleCollectionSchema = z
           for (const [filterIndex, filter] of preset.filters.entries()) {
             const field = fieldByKey.get(filter.field);
             if (!field) {
-              ctx.addIssue({ code: 'custom', path: ['views', viewIndex, 'quick_filters', presetIndex], message: 'Quick filter must reference a non-reference collection field' });
+              ctx.addIssue({ code: 'custom', path: ['views', viewIndex, 'quick_filters', presetIndex], message: 'Quick filter must use a field of this record type that is not a link' });
               continue;
             }
             const issue = moduleFilterCompatibilityIssue(field, filter);
@@ -717,7 +731,7 @@ function validateLatestRelated(
       });
       if (relation?.type !== 'relation' || relation.target_collection !== collection.key
         || !date || !['date', 'datetime'].includes(date.type) || !validMatches) {
-        ctx.addIssue({ code: 'custom', path: ['collections', collectionIndex, 'latest_related', index], message: 'Latest related summary requires a direct relation to this collection, a date field and declared select values' });
+        ctx.addIssue({ code: 'custom', path: ['collections', collectionIndex, 'latest_related', index], message: 'Latest related summary needs a direct link to this record type, a date field and declared select values' });
       }
     }
   }
@@ -745,7 +759,7 @@ export const DeftModuleManifestV1Schema = z
       manifest.collections.map((collection) => collection.key),
       ['collections'],
       ctx,
-      'Collection keys',
+      'Record type keys',
     );
 
     const collectionByKey = new Map(
@@ -757,7 +771,7 @@ export const DeftModuleManifestV1Schema = z
           ctx.addIssue({
             code: 'custom',
             path: ['collections', collectionIndex, 'fields', fieldIndex, 'target_collection'],
-            message: `Relation target collection does not exist: ${field.target_collection}`,
+            message: `The linked record type does not exist: ${field.target_collection}`,
           });
         }
       });
@@ -769,7 +783,7 @@ export const DeftModuleManifestV1Schema = z
         ctx.addIssue({
           code: 'custom',
           path: ['navigation', 'default_collection'],
-          message: 'Default collection must reference a declared collection',
+          message: 'The default record type must be one this app declares',
         });
       } else if (
         manifest.navigation.default_view
@@ -778,7 +792,7 @@ export const DeftModuleManifestV1Schema = z
         ctx.addIssue({
           code: 'custom',
           path: ['navigation', 'default_view'],
-          message: 'Default view must belong to the default collection',
+          message: 'The default view must belong to the default record type',
         });
       }
     }
@@ -806,7 +820,7 @@ export const DeftModuleManifestV2Schema = z
       manifest.collections.map((collection) => collection.key),
       ['collections'],
       ctx,
-      'Collection keys',
+      'Record type keys',
     );
     const collectionByKey = new Map(
       manifest.collections.map((collection) => [collection.key, collection]),
@@ -822,7 +836,7 @@ export const DeftModuleManifestV2Schema = z
           ctx.addIssue({
             code: 'custom',
             path: ['collections', collectionIndex, 'fields', fieldIndex],
-            message: `Reference target collection does not exist: ${target.resource_type}`,
+            message: `The linked record type does not exist: ${target.resource_type}`,
           });
         }
       });
@@ -833,7 +847,7 @@ export const DeftModuleManifestV2Schema = z
         ctx.addIssue({
           code: 'custom',
           path: ['navigation', 'default_collection'],
-          message: 'Default collection must reference a declared collection',
+          message: 'The default record type must be one this app declares',
         });
       } else if (
         manifest.navigation.default_view
@@ -842,7 +856,7 @@ export const DeftModuleManifestV2Schema = z
         ctx.addIssue({
           code: 'custom',
           path: ['navigation', 'default_view'],
-          message: 'Default view must belong to the default collection',
+          message: 'The default view must belong to the default record type',
         });
       }
     }
@@ -868,14 +882,14 @@ export function parseDeftModuleManifest(value: unknown): DeftModuleManifestV1 {
   const parsed = DeftModuleManifestV1Schema.parse(value);
   const serialized = JSON.stringify(parsed);
   if (new TextEncoder().encode(serialized).byteLength > MODULE_LIMITS.manifest_bytes) {
-    throw new Error(`Manifest exceeds ${MODULE_LIMITS.manifest_bytes} bytes`);
+    throw new Error(`The app file is larger than ${MODULE_LIMITS.manifest_bytes} bytes`);
   }
   return parsed;
 }
 
 export function parseDeftModuleManifestJson(value: string): DeftModuleManifestV1 {
   if (new TextEncoder().encode(value).byteLength > MODULE_LIMITS.manifest_bytes) {
-    throw new Error(`Manifest exceeds ${MODULE_LIMITS.manifest_bytes} bytes`);
+    throw new Error(`The app file is larger than ${MODULE_LIMITS.manifest_bytes} bytes`);
   }
 
   let parsed: unknown;
@@ -891,14 +905,14 @@ export function parseSupportedDeftModuleManifest(value: unknown): DeftModuleMani
   const parsed = DeftModuleManifestSchema.parse(value);
   const serialized = JSON.stringify(parsed);
   if (new TextEncoder().encode(serialized).byteLength > MODULE_LIMITS.manifest_bytes) {
-    throw new Error(`Manifest exceeds ${MODULE_LIMITS.manifest_bytes} bytes`);
+    throw new Error(`The app file is larger than ${MODULE_LIMITS.manifest_bytes} bytes`);
   }
   return parsed;
 }
 
 export function parseSupportedDeftModuleManifestJson(value: string): DeftModuleManifest {
   if (new TextEncoder().encode(value).byteLength > MODULE_LIMITS.manifest_bytes) {
-    throw new Error(`Manifest exceeds ${MODULE_LIMITS.manifest_bytes} bytes`);
+    throw new Error(`The app file is larger than ${MODULE_LIMITS.manifest_bytes} bytes`);
   }
   try {
     return parseSupportedDeftModuleManifest(JSON.parse(value) as unknown);
@@ -1157,7 +1171,7 @@ export function validateModuleRecordData(
   if (!collection) {
     return {
       success: false,
-      issues: [validationIssue(null, 'invalid_collection', `Unknown collection: ${collectionKey}`)],
+      issues: [validationIssue(null, 'invalid_collection', `Unknown record type: ${collectionKey}`)],
     };
   }
   if (!isPlainRecord(dataValue)) {
@@ -1171,7 +1185,7 @@ export function validateModuleRecordData(
   const issues: ModuleRecordValidationIssue[] = [];
   for (const key of Object.keys(dataValue)) {
     if (!fieldByKey.has(key)) {
-      issues.push(validationIssue(key, 'unknown_field', 'Field is not declared by the active manifest'));
+      issues.push(validationIssue(key, 'unknown_field', 'This field is not in the app'));
     }
   }
 
@@ -1214,7 +1228,7 @@ export function validateModuleRecordData(
 
 export class ModuleRecordValidationError extends Error {
   constructor(public readonly issues: ModuleRecordValidationIssue[]) {
-    super('Module record data is invalid');
+    super('The record data is invalid');
     this.name = 'ModuleRecordValidationError';
   }
 }
@@ -1267,7 +1281,7 @@ export function projectModuleRecordSearch(
   const manifest = parseSupportedDeftModuleManifest(manifestValue);
   const collection = manifest.collections.find((candidate) => candidate.key === collectionKey);
   if (!collection) throw new ModuleRecordValidationError([
-    validationIssue(null, 'invalid_collection', `Unknown collection: ${collectionKey}`),
+    validationIssue(null, 'invalid_collection', `Unknown record type: ${collectionKey}`),
   ]);
   if (!collection.search) return null;
 
@@ -1304,7 +1318,7 @@ export function projectModuleRecordDisplayTitle(
   const manifest = parseSupportedDeftModuleManifest(manifestValue);
   const collection = manifest.collections.find((candidate) => candidate.key === collectionKey);
   if (!collection) throw new ModuleRecordValidationError([
-    validationIssue(null, 'invalid_collection', `Unknown collection: ${collectionKey}`),
+    validationIssue(null, 'invalid_collection', `Unknown record type: ${collectionKey}`),
   ]);
   const titleFieldKey = collection.search?.title_field ?? collection.fields[0]?.key;
   if (!titleFieldKey) return null;

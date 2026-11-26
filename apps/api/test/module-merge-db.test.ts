@@ -45,7 +45,7 @@ test('reviewed merge preserves original values and linked work atomically with s
   const [first, retry] = await Promise.all([commitModuleMerge(actor, installation.id, request), commitModuleMerge(actor, installation.id, request)]);
   assert.equal(first.mutation.record_id, target.id); assert.equal(retry.mutation.record_id, target.id);
   assert.equal(Number(first.replayed) + Number(retry.replayed), 1);
-  await assert.rejects(commitModuleMerge(actor, installation.id, { ...request, field_choices: { name: 'source' } }), /different module mutation/i);
+  await assert.rejects(commitModuleMerge(actor, installation.id, { ...request, field_choices: { name: 'source' } }), /different app record change/i);
   await assert.rejects(getModuleRecord(actor, source.id), /not found/i);
   const current = await getModuleRecord(actor, target.id);
   assert.equal(current.data.name, 'Curated person'); assert.equal(current.data.role, 'Founder'); assert.equal(current.data.phone, '+1 555 0100');

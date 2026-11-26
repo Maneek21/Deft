@@ -44,7 +44,7 @@ function manifestFor(
   const identity = options.identity ?? suffix;
   return parseDeftModuleManifest({
     schema_version: '1',
-    id: `com.deft.launch-${identity}`,
+    id: `com.example.launch-${identity}`,
     slug: `launch-${identity}`,
     version,
     name: `Launch ${identity}`,

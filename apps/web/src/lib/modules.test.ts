@@ -101,7 +101,7 @@ test('previews a local strict manifest with canonical digest and collection meta
   assert.match(preview.digest, /^sha256:[a-f0-9]{64}$/);
   await assert.rejects(
     () => previewModuleManifestJson(JSON.stringify({ ...rawManifest, script_url: 'https://bad.test/x.js' })),
-    /Unrecognized key/,
+    /App file: unknown key "script_url": remove it$/,
   );
 });
 
@@ -166,11 +166,11 @@ test('resolves local installs and sideload upgrades without crossing module iden
       installed,
       installed[0]?.id,
     ),
-    /conflicts|does not match/,
+    /already used|does not match/,
   );
   assert.throws(
     () => resolveModuleManifestUpload(preview, [{ ...installed[0], source: 'bundled' }]),
-    /Bundled modules/,
+    /ship with Deft/,
   );
 });
 

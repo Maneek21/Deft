@@ -25,6 +25,48 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 - **Pair Codex is shown only when developer pairing is available.** It stays hidden on
   hosted workspaces, where pairing is off.
 
+### Uploading an app: plain error messages, reserved names, pairing answers 404 when off
+
+- **Readable upload errors.** When an uploaded app file (a module manifest, or an
+  App package) is refused, the message is now at most three plain lines that name
+  where the problem is, such as `Candidates → fields: at most 64 fields (you have 500)`,
+  instead of the validator's raw JSON. A JSON syntax error names its line and
+  column. This applies to installing and upgrading a module, to inspecting and
+  staging an App, and to the check the browser runs before upload. The same lines
+  are in `details.lines`.
+- **Names kept for apps that ship with Deft.** An upload can no longer take a
+  bundled module's slug or id (such as `contacts` or `com.deft.contacts`), or any
+  id that starts with `com.deft.` or `io.deft.`. It is refused with 409
+  `MODULE_IDENTITY_RESERVED` and a message that says what to change. An installed
+  app cannot be uninstalled, and uninstalling an App package does not free its id,
+  so before this an upload could block bundled Contacts, or Email, in that
+  workspace for good. Bundled Contacts still installs in one click. Email still
+  stages through its own reviewed entry point, which now trusts only a Protocol 7
+  package with the id `io.deft.email`. Apps installed before this release are not
+  touched.
+- **Messages say "app", not "module".** Error messages a person can read now say
+  "app" for a module, "record type" for a collection and "app file" for a
+  manifest. So do the descriptions of the app record tools for MCP clients and
+  Defty. Error codes, routes, API fields, scopes (`read:modules`) and tool names
+  (`module_list` and the rest) are unchanged. A client that matched on the old
+  message text should match on the `code` instead.
+- **An App that carries a built-in app is refused.** This includes the Contacts CRM
+  App, whose upload through Settings → Apps is now refused; installs made before
+  155 keep working (see `docs/crm-operator-demo-guide.md`).
+- **A customer App cannot carry bundled Contacts, even unchanged.** Activating such
+  an App would install Contacts as owned by that App (blocking the one-click
+  install and every later Contacts update) or take over an installed Contacts
+  (moving its on/off switch to the App). Staging it is refused with 409
+  `MODULE_IDENTITY_RESERVED`, and an App update may not add it either. Only a
+  first-party package that Deft itself stages may carry it, the way Email stages
+  through its own reviewed entry point; no upload route can mark a package
+  first-party.
+- **Developer pairing answers 404 when it is off.** With developer pairing turned
+  off (as on hosted), `POST /api/apps/pairings` and its revoke route now answer
+  404 instead of 503. `GET /api/apps` now also returns
+  `developer_pairing: { available }`, which the Apps page can use to hide
+  **Pair Codex**.
+
 ### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
 
 Not before 2026-11-25, and never fewer than 14 days after this notice merged.

@@ -422,7 +422,7 @@ test('module record task links enforce native task and module boundaries', async
         null,
         'quick',
       ),
-      /different module task-link mutation/i,
+      /different task link change/i,
     );
 
     // Exercise Defty's actual non-action read dispatcher, not the direct

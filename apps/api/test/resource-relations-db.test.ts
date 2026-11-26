@@ -218,7 +218,7 @@ test('Module v2 relations remain live-authorized, revisioned, replay-safe, and a
       source: 'sideloaded',
       expected_active_manifest_digest: campaigns.manifest_digest,
     }),
-    /Existing resource relation contacts is incompatible/,
+    /Existing links in contacts do not fit/,
   );
   assert.equal((await listResourceRelation(owner, {
     schema_version: RESOURCE_CONTRACT_VERSIONS.relation,

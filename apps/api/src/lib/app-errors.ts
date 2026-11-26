@@ -23,7 +23,8 @@ export type AppErrorCode =
   | 'APP_PROTOCOL_UNSUPPORTED'
   | 'APP_STATE_CONFLICT'
   | 'APP_STALE'
-  | 'APP_UNINSTALL_REQUIRES_RETENTION_DECISION';
+  | 'APP_UNINSTALL_REQUIRES_RETENTION_DECISION'
+  | 'MODULE_IDENTITY_RESERVED';
 
 export class AppError extends Error {
   constructor(

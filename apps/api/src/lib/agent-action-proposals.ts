@@ -325,7 +325,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
         const inBatch = seenModuleClaims.get(claimKey);
         if (inBatch) {
           if (!sameModuleActionInput(inBatch.params, action.params)) {
-            throw new Error('Idempotency key was already used for a different module mutation');
+            throw new Error('Idempotency key was already used for a different app record change');
           }
           continue;
         }
@@ -363,7 +363,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
             existingParams.idempotency_key === key
             && !sameModuleActionInput(existingParams, action.params)
           ) {
-            throw new Error('Idempotency key was already used for a different module mutation');
+            throw new Error('Idempotency key was already used for a different app record change');
           }
           const inputDigest = moduleMutationInputDigest(
             action.action === 'module_record_create' ? 'create'
@@ -376,7 +376,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
             && typeof existingParams.input_digest === 'string'
             && existingParams.input_digest !== inputDigest
           ) {
-            throw new Error('Idempotency key was already used for a different module mutation');
+            throw new Error('Idempotency key was already used for a different app record change');
           }
         }
         duplicateActions.push(existing);
@@ -385,7 +385,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
 
     const duplicateOnly = readyActions.length > 0 && novelActions.length === 0 && duplicateActions.length > 0;
     const messageContent = rejectedModuleActions.length > 0 && readyActions.length === 0
-      ? 'I could not safely prepare that module change. Refresh the module schema or permissions, then try again.'
+      ? 'I could not safely prepare that change to the app. Refresh the app or its permissions, then try again.'
       : duplicateOnly
       ? duplicateActions.every((action) => action.approval_status === 'approved')
         ? 'This request was already approved and completed.'
