@@ -27,7 +27,7 @@
  */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { createRequire } from 'node:module';
 import { after, before, mock, test } from 'node:test';
 import { sql } from 'drizzle-orm';
@@ -56,6 +56,7 @@ const { documentRoutes } = await import('../src/routes/documents.js');
 const { messageRoutes, storeLinkPreviews } = await import('../src/routes/messages.js');
 const { spaceRoutes } = await import('../src/routes/spaces.js');
 const { getIO, setupSocket } = await import('../src/socket.js');
+const { publicFetchDeps } = await import('../src/lib/public-http-fetch.js');
 const { io: connectSocket } = createRequire(new URL('../../web/package.json', import.meta.url))('socket.io-client');
 const { setupDrivesFixture } = await import('./fixtures/drives-fixture.js');
 const { safeTestDatabaseUrl } = await import('./fixtures/safe-test-database.js');
@@ -143,7 +144,7 @@ async function linkChat(driveId: string, spaceId: string, role = 'edit') {
 
 /**
  * Socket.io clients for `people`, each joined to the room of `spaceId`,
- * recording every `message:new` they receive.
+ * recording every `message:new` and `message:link_previews` they receive.
  */
 async function chatSockets(spaceId: string, people: string[]) {
   const server = createServer();
@@ -164,12 +165,16 @@ async function chatSockets(spaceId: string, people: string[]) {
   const port = (server.address() as { port: number }).port;
   const clients: any[] = [];
   const received = new Map<string, any[]>();
+  const previews = new Map<string, any[]>();
   for (const id of people) {
     const client = connectSocket(`http://127.0.0.1:${port}`, { auth: { token: `token-${id}` }, transports: ['websocket'], reconnection: false });
     clients.push(client);
     const events: any[] = [];
     received.set(id, events);
     client.on('message:new', (data: unknown) => events.push(data));
+    const previewEvents: any[] = [];
+    previews.set(id, previewEvents);
+    client.on('message:link_previews', (data: unknown) => previewEvents.push(data));
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`presence:init timed out for ${id}`)), 5_000);
       client.once('presence:init', () => { clearTimeout(timer); resolve(); });
@@ -183,6 +188,7 @@ async function chatSockets(spaceId: string, people: string[]) {
   }
   return {
     received: (id: string) => received.get(id)!,
+    previews: (id: string) => previews.get(id)!,
     close: async () => {
       for (const client of clients) client.close();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
@@ -410,6 +416,44 @@ test('link previews keep the documents a message carries', async (t) => {
   assert.deepEqual(stored.metadata, { documents: [{ id: document }], link_previews: [] });
 });
 
+test('a message posted with a URL and a document keeps the document once its link preview arrives', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const document = await fx.insertDocument({ driveId: fx.workspaceDriveId, title: 'Spec with a link' });
+  // The preview fetch is stubbed as link-preview-fetch.test.ts does: a public address for the test host, and every
+  // request answered by a local page.
+  const page = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      .end('<html><head><title>Spec</title><meta property="og:title" content="The spec page"><meta name="description" content="Read me"></head></html>');
+  });
+  await new Promise<void>((resolve) => page.listen(0, '127.0.0.1', resolve));
+  const port = (page.address() as { port: number }).port;
+  const realDeps = { ...publicFetchDeps };
+  publicFetchDeps.lookup = async (hostname: string) => {
+    if (hostname !== 'docs-preview.test') throw new Error('ENOTFOUND');
+    return [{ address: '93.184.216.34', family: 4 }];
+  };
+  publicFetchDeps.request = (_protocol, options) => httpRequest({ ...options, hostname: '127.0.0.1', family: 4, port });
+  const sockets = await chatSockets(fx.spaces.team, [member, member2]);
+  try {
+    const content = `The spec is at http://docs-preview.test/spec ${randomUUID()}`;
+    const message = await call(member, 'POST', `/api/messages/${fx.spaces.team}`, { content, document_ids: [document] }, 201);
+    assert.deepEqual(message.metadata, { documents: [{ id: document }] });
+    // The real preview runs after the answer; wait for its live event.
+    await waitUntil(() => sockets.previews(member2).some((event) => event?.message_id === message.id), 'message:link_previews', 10_000);
+    const history = await call(member2, 'GET', `/api/messages/${fx.spaces.team}`, undefined, 200);
+    const listed = (history.messages ?? history).find((row: any) => row.id === message.id);
+    assert.deepEqual(listed.metadata.documents, [{ id: document }], 'the document is still attached');
+    assert.equal(listed.metadata.link_previews?.[0]?.url, 'http://docs-preview.test/spec');
+    assert.equal(listed.metadata.link_previews?.[0]?.title, 'The spec page');
+  } finally {
+    Object.assign(publicFetchDeps, realDeps);
+    await sockets.close();
+    page.closeAllConnections();
+    await new Promise((resolve) => page.close(resolve));
+  }
+});
+
 test('the Docs tab pages through every document shared into a chat, 50 at a time, each page in one snapshot', async (t) => {
   if (!fx) return t.skip(SKIP);
   const { member, member2 } = fx.people;
@@ -468,4 +512,28 @@ test('"Link a drive" is offered only when the chat has no link at all and the vi
   assert.equal(afterLink.linked_drive, null);
   assert.equal(afterLink.can_link, false, 'a hidden link is never offered, so it never answers ALREADY_LINKED');
   assert.doesNotMatch(JSON.stringify(afterLink), /F13-CANARY/);
+});
+
+test('a Docs tab cursor with an impossible date, or in the wrong shape, is refused with 400 before any query', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const bad = [
+    '2026-99-99T00:00:00.000000|a', // no such month or day
+    '2026-02-30T00:00:00.000000|a', // no 30 February
+    '2026-11-26T24:00:00.000000|a', // no hour 24
+    '2026-11-26T10:61:00.000000|a', // no minute 61
+    '2026-11-26T10:00:00|a', // no microseconds
+    'nonsense',
+    '2026-11-26T10:00:00.000000|', // no share id
+  ];
+  for (const cursor of bad) {
+    opened.length = 0;
+    const refused = await call(member, 'GET', `/api/spaces/${fx.spaces.team}/documents?cursor=${encodeURIComponent(cursor)}`, undefined, 400);
+    assert.equal(refused.code, 'VALIDATION_ERROR', cursor);
+    assert.equal(opened.length, 0, `${cursor}: refused before any transaction`);
+  }
+  // A real date in the right shape is a cursor (here past every share, so an empty page).
+  const page = await call(member, 'GET', `/api/spaces/${fx.spaces.team}/documents?cursor=${encodeURIComponent('2000-02-29T00:00:00.000000|a')}`, undefined, 200);
+  assert.deepEqual(page.shared, []);
+  assert.equal(page.next_cursor, null);
 });

@@ -60,12 +60,23 @@ export type SpaceDocuments = {
 /** A position in the shared list: the share's time, to the microsecond, and its id. */
 export type SharedCursor = { at: string; id: string };
 
-const CURSOR_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6})\|([A-Za-z0-9_-]{1,64})$/;
+const CURSOR_PATTERN = /^((\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.\d{6})\|([A-Za-z0-9_-]{1,64})$/;
 
-/** A cursor this module issued, or null for anything else (the route answers 400). */
+/**
+ * A cursor this module issued, or null for anything else (the route answers
+ * 400 before any query): the shape, and a date and time that exist (a month
+ * of 1 to 12, a day in that month, hours 0 to 23, minutes and seconds 0 to
+ * 59), so the timestamp cast in the statement can't fail.
+ */
 export function parseSharedCursor(value: string): SharedCursor | null {
   const match = CURSOR_PATTERN.exec(value);
-  return match ? { at: match[1]!, id: match[2]! } : null;
+  if (!match) return null;
+  const [year, month, day, hour, minute, second] = match.slice(2, 8).map(Number) as [number, number, number, number, number, number];
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  // Date.UTC rolls an impossible part over (30 February is 2 March) and reads years below 100 as 19xx: either way a part differs.
+  const real = date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+    && date.getUTCHours() === hour && date.getUTCMinutes() === minute && date.getUTCSeconds() === second;
+  return real ? { at: match[1]!, id: match[8]! } : null;
 }
 
 const idsParam = (ids: readonly string[]) => sql`${sql.param([...ids])}::text[]`;
