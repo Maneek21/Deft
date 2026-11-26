@@ -47,17 +47,18 @@
 //   again from the database first: lost closes with 4403, changed with 4409
 //   (the client reconnects with its new read-only flag);
 // - the size cap on those updates: they pass at once while the estimate plus
-//   the update grown by the worst block-id growth (ID_GROWTH) stays below
+//   the update's charge (its size, plus the most normalization can write
+//   back for each struct it carries or live struct it deletes) stays below
 //   fastAcceptBelowBytes; otherwise the update is applied to a scratch copy
 //   of the live state with the server's own normalization (block ids, the
 //   size warning), and passes only if the result is within docMaxBytes or no
 //   larger than before, so a document over the cap can still shrink (4413).
 //   The estimate is an upper bound on the normalized size, kept by one
 //   accounting (collab/size-account.ts): the last exact normalized
-//   measurement, plus every change admitted since, charged when admitted
-//   (never when Yjs integrates it, which it may hold back) with ID_GROWTH. A
+//   measurement, plus the charge of every change admitted since, charged
+//   when admitted (never when Yjs integrates it, which it may hold back). A
 //   measurement re-bases only when it is exact (derived, nothing held back),
-//   and only the admissions it covers;
+//   and only by what it covers;
 // - last, the expiry once more, after all of that work: a frame that passes
 //   it counts as received before the expiry. From the fence on nothing awaits.
 // A refused frame closes the socket, detaches the connection and marks it
@@ -232,7 +233,7 @@ type SocketEntry = {
  * Hocuspocus has applied (or dropped) it: afterHandleMessage settles it, and
  * an exact scratch measurement re-bases the estimate only then.
  */
-type Admission = { account: SizeAccount; seq: number; measured: { bytes: number; covers: number } | null };
+type Admission = { account: SizeAccount; seq: number; measured: { bytes: number; covered: number } | null };
 
 type DocSlot = {
   documentId: string;
@@ -674,12 +675,13 @@ function createCollabServer(): CollabServer {
    * its size is exact. Otherwise (built from the stored JSON, or stored
    * without a derive) it is measured normalized on a scratch copy; when that
    * can't be exact (content outside the schema, structs held back), the
-   * bound is its size × (1 + ID_GROWTH), the most it can normalize to.
+   * bound is the whole state's charge, as one change applied to an empty
+   * document: the most it can normalize to.
    */
   function loadedSize(document: Y.Doc, bytes: number, mayHoldBlocksWithoutIds: boolean): number {
     if (!mayHoldBlocksWithoutIds && heldBackNothing(document)) return bytes;
     const measured = normalizedCopyBytes(document);
-    return measured.exact ? measured.bytes : chargeFor(measured.bytes);
+    return measured.exact ? measured.bytes : chargeFor(Y.encodeStateAsUpdate(document), null);
   }
 
   /**
@@ -693,8 +695,17 @@ function createCollabServer(): CollabServer {
     const slot = entry.slot;
     if (!slot) return dropFrame(entry, connection, 'unauthenticated');
     const account = slot.size;
-    if (account.fitsFast(update.byteLength)) {
-      admissions.set(connection, { account, seq: account.admit(update.byteLength), measured: null });
+    // Its size, plus the most normalization can write back for each struct
+    // it carries and each live struct it deletes. Decoded, not applied; a
+    // frame that doesn't decode is refused as one that wouldn't apply.
+    let charge: number;
+    try {
+      charge = chargeFor(update, document);
+    } catch {
+      return dropFrame(entry, connection, 'tooLarge');
+    }
+    if (account.fitsFast(charge)) {
+      admissions.set(connection, { account, seq: account.admit(charge), measured: null });
       return true;
     }
     let after: { bytes: number; exact: boolean };
@@ -714,10 +725,10 @@ function createCollabServer(): CollabServer {
       withUpdate.destroy();
     }
     if (!withinSizeCap(before, after.bytes)) return dropFrame(entry, connection, 'tooLarge');
-    const seq = account.admit(update.byteLength);
+    const seq = account.admit(charge);
     // An exact measurement covers this frame and everything applied before
     // it; it re-bases the estimate once the frame has been applied.
-    admissions.set(connection, { account, seq, measured: after.exact ? { bytes: after.bytes, covers: account.covers(seq) } : null });
+    admissions.set(connection, { account, seq, measured: after.exact ? { bytes: after.bytes, covered: account.covered(seq) } : null });
     return true;
   }
 
@@ -842,9 +853,10 @@ function createCollabServer(): CollabServer {
     // A derived store wrote every block id back, so, unless Yjs holds
     // something back, it encodes the normalized state: an exact measurement
     // of the admissions applied so far. Frames admitted while the row is
-    // written stay on top of it; one measured meanwhile covers more, and wins.
+    // written stay on top of it; a frame measured meanwhile bounds the size
+    // more tightly, and that bound stands.
     const account = slot.size;
-    const measured = derived && heldBackNothing(document) ? { bytes: state.byteLength, covers: account.covers() } : null;
+    const measured = derived && heldBackNothing(document) ? { bytes: state.byteLength, covered: account.covered() } : null;
     const edit = slot.lastEdit;
     const editors = derived ? takeEditors(slot) : null;
     try {
@@ -859,7 +871,7 @@ function createCollabServer(): CollabServer {
       }
       slot.revision = revision;
       // A store of the state alone may hold blocks without ids: the estimate stands.
-      if (measured) account.rebase(measured.bytes, measured.covers);
+      if (measured) account.rebase(measured.bytes, measured.covered);
       slot.estimateBytes = state.byteLength * HEAP_FACTOR;
       if (slot.lastEdit === edit) slot.lastEdit = null;
       if (slot.changeCounter === counter) slot.stateDirty = false;
@@ -1027,7 +1039,7 @@ function createCollabServer(): CollabServer {
         admitted.account.settle(admitted.seq, applied);
         // The reconcile: the frame was measured exactly with the state it
         // landed on (nothing else applied in between: it held the writer lock).
-        if (applied && admitted.measured) admitted.account.rebase(admitted.measured.bytes, admitted.measured.covers);
+        if (applied && admitted.measured) admitted.account.rebase(admitted.measured.bytes, admitted.measured.covered);
       }
       frameLocks.get(connection)?.();
       frameLocks.delete(connection);
@@ -1278,7 +1290,7 @@ function createCollabServer(): CollabServer {
    * exact normalized measurement (Yjs holds nothing back in the copy).
    */
   async function changeInTx(tx: Tx, i: WriteInput, working: Y.Doc | ((row: DocumentStateRow) => Y.Doc), before: (doc: Y.Doc) => number,
-    reserve?: (deltaBytes: number) => void) {
+    reserve?: (delta: Uint8Array) => void) {
     const row = await lockDocumentState(tx, i.documentId, i.orgId);
     if (!row || row.isDeleted) throw new DocumentWriteRefused('FORBIDDEN');
     await i.check(tx, row);
@@ -1292,7 +1304,7 @@ function createCollabServer(): CollabServer {
     if (!withinSizeCap(beforeBytes, state.byteLength)) throw new DocumentWriteRefused('TOO_LARGE');
     const delta = Y.encodeStateAsUpdate(doc, vector);
     const exact = heldBackNothing(doc);
-    reserve?.(delta.byteLength);
+    reserve?.(delta);
     const revision = await writeStore(tx, {
       documentId: i.documentId, orgId: i.orgId, state, derived, editedBy: editorOf(i.actor), editedAt: new Date(),
     });
@@ -1318,19 +1330,20 @@ function createCollabServer(): CollabServer {
         const counter = slot.changeCounter;
         const account = slot.size;
         const scratch = new Y.Doc();
-        // The reservation: the write's change is admitted (charged) as soon
-        // as it is measured, before its store is awaited; a write that then
-        // fails gives it back. Sequence numbers start at 1, so 0 is none yet.
-        const reservation = { seq: 0, covers: 0 };
+        // The reservation: the write's change is admitted (charged as its
+        // delta against the live document) as soon as it is measured, before
+        // its store is awaited; a write that then fails gives it back.
+        // Sequence numbers start at 1, so 0 is none yet.
+        const reservation = { seq: 0, covered: 0 };
         try {
           let written: Awaited<ReturnType<typeof changeInTx>>;
           try {
             written = await db.transaction((tx) => changeInTx(tx, i, () => {
               Y.applyUpdate(scratch, Y.encodeStateAsUpdate(document));
               return scratch;
-            }, encodedStateBytes, (deltaBytes) => {
-              reservation.seq = account.admit(deltaBytes);
-              reservation.covers = account.covers(reservation.seq);
+            }, encodedStateBytes, (delta) => {
+              reservation.seq = account.admit(chargeFor(delta, document));
+              reservation.covered = account.covered(reservation.seq);
             }));
           } catch (error) {
             if (reservation.seq > 0) account.settle(reservation.seq, false);
@@ -1341,7 +1354,7 @@ function createCollabServer(): CollabServer {
           // (block ids written back), so, unless Yjs holds something back, its
           // size is an exact measurement covering the reservation.
           account.settle(reservation.seq);
-          if (written.exact) account.rebase(written.state.byteLength, reservation.covers);
+          if (written.exact) account.rebase(written.state.byteLength, reservation.covered);
           slot.revision = written.revision;
           slot.lastDerivedJson = written.derived.json;
           slot.lastDerivedAt = Date.now();
@@ -1575,6 +1588,7 @@ function createCollabServer(): CollabServer {
   testHandles = {
     docs,
     approxBytes: (documentId) => docs.get(documentId)?.size.estimate ?? null,
+    accountRetained: (documentId) => docs.get(documentId)?.size.retained ?? null,
     encodedBytes: (documentId) => {
       const document = hocuspocus.documents.get(`doc:${documentId}`);
       return document ? encodedStateBytes(document) : null;
@@ -1703,6 +1717,7 @@ const testState = { peakDocuments: 0, peakReservedBytes: 0, storeFailures: 0, un
 let testHandles: {
   docs: Map<string, DocSlot>;
   approxBytes(documentId: string): number | null;
+  accountRetained(documentId: string): number | null;
   encodedBytes(documentId: string): number | null;
   reservedBytes(): number;
   hideLiveDocument(documentId: string): () => void;
@@ -1724,6 +1739,8 @@ export function collabStateForTest() {
     storeFailures: testState.storeFailures,
     underivedFinals: testState.underivedFinals,
     approxBytes: (documentId: string) => handles?.approxBytes(documentId) ?? null,
+    /** How many entries the document's size accounting keeps (collab/size-account.ts), or null when it isn't loaded. */
+    accountRetained: (documentId: string) => handles?.accountRetained(documentId) ?? null,
     encodedBytes: (documentId: string) => handles?.encodedBytes(documentId) ?? null,
     /**
      * Takes a loaded document out of Hocuspocus's map while our slot still

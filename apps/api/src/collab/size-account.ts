@@ -1,66 +1,112 @@
-// The size cap's accounting (plan Task F7, review round 4): one upper bound
-// on a live document's normalized size, the encoded size its Yjs state has
-// once the server has written every block id back (the next derive does).
+// The size cap's accounting (plan Task F7, review rounds 4 and 5): one upper
+// bound on a live document's normalized size, the encoded size its Yjs state
+// has once the server has normalized it (the next derive writes every
+// missing block id back, and with it every non-null attribute default).
 //
-// The invariant: the estimate is the last exact normalized measurement plus,
-// for every change admitted since that measurement, the change's bytes ×
-// (1 + ID_GROWTH), the most its block ids can add once written back.
+// The invariant: the estimate is the last exact normalized measurement plus
+// the charge of every change admitted since that measurement. A change's
+// charge is its own size plus the most normalization can add for it:
+// ID_WRITEBACK_BYTES for every struct it carries, and for every live struct
+// its deletions remove (an attribute removed is written back).
 //
 // - A change is charged when it is admitted (a socket frame on the fast or
 //   the measured path, a writer's reservation), never when Yjs integrates it:
 //   Yjs holds back an update whose structs wait for a missing clock and fires
 //   no event for it, then integrates it all at once when the missing struct
 //   arrives. Held-back structs are charged like any other change.
-// - Each admission gets a sequence number. It is settled once it has been
-//   applied to the live document (or dropped: it never will be, and its
-//   charge goes).
-// - A measurement records the admissions it covers. A measurement of the
-//   live document covers every admission before the first one not yet
-//   settled (that one isn't in the state measured); a scratch copy with an
-//   admitted change applied also covers that change.
+// - The account keeps one cumulative total of the charges, and the charges
+//   of admissions not yet settled (applied to the live document, or dropped:
+//   a dropped one never applies, and its charge goes). Only in-flight
+//   admissions are kept, so the account holds the same few numbers however
+//   many changes pass (review round 5).
+// - A measurement records the cumulative charge it covers: everything
+//   applied when it was taken (the total minus what was still in flight); a
+//   scratch copy with an admitted change applied also covers that change.
 // - Only an exact measurement re-bases: the copy derived (no content outside
 //   the schema) and Yjs held nothing back, so its encoded size is the
-//   normalized size. A re-base replaces only the admissions it covers;
-//   later ones stay added on top. A measurement older than the current base
-//   (it covers fewer admissions) is ignored.
+//   normalized size. Any exact measurement M covering C bounds the size from
+//   then on by M + (total − C), the changes since it on top; the estimate
+//   takes the smaller of that and what it is, so a measurement older than the
+//   current base never loosens it.
 //
-// Every path that changes the estimate goes through this class:
-// collab/server.ts admits socket frames and writer reservations, settles
+// Every path that changes the estimate goes through this file:
+// collab/server.ts charges socket frames and writer reservations, settles
 // them, and re-bases from loads, derived stores, measured frames (after they
 // are applied) and writes (after they are applied).
+import * as Y from 'yjs';
 import { fastAcceptBelowBytes } from './limits.js';
 
 /**
- * How much a client update can grow once the server writes block ids back,
- * per byte of the update. Measured 26 Nov 2026 (yjs 13.6.33, F1's
- * ensureBlockIds + applyJsonToYDoc), growth of the encoded state divided by
- * the update's length, for updates of n = 50, 500 and 3000 tiny blocks:
- * empty paragraphs 2.69–2.75 (the worst), horizontal rules 2.13–2.16, bullet
- * lists of one empty item 1.73–1.77, empty headings 1.46–1.51,
- * one-character paragraphs 1.28–1.35; one transaction or one per block alike.
- * Rounded up. A whole state is one such update, so a state that can't be
- * normalized yet (Yjs holds structs back, or it holds content outside the
- * schema) normalizes to at most its encoded size × (1 + ID_GROWTH).
+ * The most the server's normalization adds for one struct of a change (F1's
+ * ensureBlockIds + applyJsonToYDoc: the block's id, and every non-null
+ * attribute default the binding writes with it), or for one live struct a
+ * change deletes. Measured 26 Nov 2026 (yjs 13.6.33, @deft/doc-schema), as
+ * (normalized growth − update bytes) / (structs in the update + live structs
+ * it deletes), for updates of 300 instances, with one block without an id in
+ * each so the write-back runs:
+ * - empty blocks: callout 72.1, heading and orderedList 68.1, details 66.1,
+ *   paragraph, blockquote, lists, codeBlock, horizontalRule, table, image,
+ *   taskView and tableOfContents 49.6–50.6; tableCell and tableHeader 39.2;
+ *   nativeMention 37.2; taskItem 18.7; listItem, tableRow, hardBreak and
+ *   detailsSummary/Content 0.2;
+ * - text runs with an empty-attribute mark: link 33.4, the others 0.1;
+ * - existing blocks: ids removed 8.9 (headings, paragraphs), every attribute
+ *   removed 8.9, ids overwritten with invalid ones 2.8, new blocks taking
+ *   existing ids 5.9;
+ * - the worst ids a client can pick (client id 2^53 − 1, clocks past 2^21):
+ *   callout 82.7, heading 78.7, paragraph 55.8.
+ * Clocks can be pushed to 8-byte varints (about +16 bytes per struct
+ * written back, so about 99 for a callout). Rounded up to 128.
  */
-export const ID_GROWTH = 3;
+export const ID_WRITEBACK_BYTES = 128;
 
-/** What an admitted change of `bytes` is charged: its own size and the most its block ids can add. */
-export function chargeFor(bytes: number): number {
-  return bytes * (1 + ID_GROWTH);
+/**
+ * The structs a change carries plus the live structs its deletions remove:
+ * each can lead normalization to write at most ID_WRITEBACK_BYTES back.
+ * Decodes the update without applying it; throws when it is malformed.
+ */
+function rewritable(update: Uint8Array, live: Y.Doc | null): number {
+  const { structs, ds } = Y.decodeUpdate(update);
+  let count = 0;
+  for (const struct of structs) if (struct instanceof Y.Item) count += 1;
+  if (!live) return count;
+  for (const [client, ranges] of ds.clients) {
+    const known = live.store.clients.get(client);
+    const tail = known?.[known.length - 1];
+    if (!known || !tail) continue;
+    const knownEnd = tail.id.clock + tail.length;
+    for (const { clock, len } of ranges) {
+      // Deletions of structs the live document doesn't hold yet are charged when those arrive.
+      if (clock >= knownEnd) continue;
+      for (let i = Y.findIndexSS(known, clock); i < known.length && known[i]!.id.clock < clock + len; i += 1) {
+        const struct = known[i]!;
+        if (struct instanceof Y.Item && !struct.deleted) count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * What a change is charged: its size, plus ID_WRITEBACK_BYTES for every
+ * struct it carries and every live struct of `live` its deletions remove.
+ * With `live` null (a whole state, or a document not loaded), only its own
+ * structs. Throws when the update is malformed.
+ */
+export function chargeFor(update: Uint8Array, live: Y.Doc | null): number {
+  return update.byteLength + rewritable(update, live) * ID_WRITEBACK_BYTES;
 }
 
 export class SizeAccount {
   /** The last exact normalized measurement (or, from a load that couldn't measure exactly, an upper bound). */
   private base: number;
-  /** The last admission `base` covers. */
-  private baseCovers = 0;
-  /** The last admission's sequence number. */
-  private last = 0;
-  /** The charge of every admission after `baseCovers` that hasn't been dropped. */
-  private readonly charges = new Map<number, number>();
+  /** The cumulative charge `base` covers. */
+  private baseCovered = 0;
+  /** The cumulative charge of every admission, less those dropped. */
   private charged = 0;
-  /** Admissions not yet applied to the live document (or dropped). */
-  private readonly unsettled = new Set<number>();
+  private last = 0;
+  /** The charge of each admission not yet settled (in flight: a frame being handled, a write being stored). */
+  private readonly unsettled = new Map<number, number>();
 
   constructor(base: number) {
     this.base = base;
@@ -68,58 +114,54 @@ export class SizeAccount {
 
   /** The upper bound on the normalized size. */
   get estimate(): number {
-    return this.base + this.charged;
+    return this.base + (this.charged - this.baseCovered);
   }
 
-  /** True when a change of `bytes` may pass without measuring: the bound with it stays below the fast threshold (90% of the cap). */
-  fitsFast(bytes: number): boolean {
-    return this.estimate + chargeFor(bytes) < fastAcceptBelowBytes();
+  /** How many entries the account keeps (its admissions in flight): constant however many changes pass. */
+  get retained(): number {
+    return this.unsettled.size;
   }
 
-  /** Admits a change of `bytes`: charged until a measurement covers it. Returns its sequence number. */
-  admit(bytes: number): number {
+  /** True when a change charged `charge` may pass without measuring: the bound with it stays below the fast threshold (90% of the cap). */
+  fitsFast(charge: number): boolean {
+    return this.estimate + charge < fastAcceptBelowBytes();
+  }
+
+  /** Admits a change charged `charge` (chargeFor). Returns its sequence number, for settle. */
+  admit(charge: number): number {
     this.last += 1;
-    const charge = chargeFor(bytes);
-    this.charges.set(this.last, charge);
+    this.unsettled.set(this.last, charge);
     this.charged += charge;
-    this.unsettled.add(this.last);
     return this.last;
   }
 
   /** Admission `seq` has been applied to the live document; or, with `applied: false`, never will be (its charge goes). */
   settle(seq: number, applied = true): void {
-    this.unsettled.delete(seq);
-    if (applied) return;
-    const charge = this.charges.get(seq);
+    const charge = this.unsettled.get(seq);
     if (charge === undefined) return;
-    this.charges.delete(seq);
-    this.charged -= charge;
+    this.unsettled.delete(seq);
+    if (!applied) this.charged -= charge;
   }
 
   /**
-   * The admissions a measurement of the live document taken now covers:
-   * every one before the first not yet settled. With `including`, a scratch
+   * The cumulative charge a measurement of the live document taken now
+   * covers: every admission already applied. With `including`, a scratch
    * copy that also has that admission applied.
    */
-  covers(including?: number): number {
-    let first = Infinity;
-    for (const seq of this.unsettled) if (seq !== including && seq < first) first = seq;
-    return first === Infinity ? this.last : first - 1;
+  covered(including?: number): number {
+    let inFlight = 0;
+    for (const [seq, charge] of this.unsettled) if (seq !== including) inFlight += charge;
+    return this.charged - inFlight;
   }
 
   /**
-   * An exact normalized measurement covering admissions up to `covers`
-   * (covers() when it was taken): it replaces them; later admissions stay on
-   * top. Ignored when the current base covers more.
+   * An exact normalized measurement that covers `covered` (covered() when it
+   * was taken): it bounds the size by `bytes` plus every charge since. The
+   * estimate becomes that bound when it is the smaller.
    */
-  rebase(bytes: number, covers: number): void {
-    if (covers < this.baseCovers) return;
+  rebase(bytes: number, covered: number): void {
+    if (bytes + (this.charged - covered) > this.estimate) return;
     this.base = bytes;
-    this.baseCovers = covers;
-    for (const [seq, charge] of this.charges) {
-      if (seq > covers) continue;
-      this.charges.delete(seq);
-      this.charged -= charge;
-    }
+    this.baseCovered = covered;
   }
 }

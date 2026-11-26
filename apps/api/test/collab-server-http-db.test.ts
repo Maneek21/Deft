@@ -18,7 +18,7 @@ import test, { after, before, mock } from 'node:test';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import * as Y from 'yjs';
-import { ensureBlockIds, jsonToText, jsonToYDoc } from '@deft/doc-schema';
+import { ensureBlockIds, getDocumentSchema, jsonToText, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
 import { setCollabLimitsForTest } from '../src/collab/limits.js';
 import { deriveContent, markSizeWarning, onDocumentStored, type DocumentStoredEvent } from '../src/collab/persistence.js';
 import { collabStateForTest, collabTestSeams, getCollabServer } from '../src/collab/server.js';
@@ -234,6 +234,25 @@ function paragraphWithIdFrame(draft: Y.Doc, bytes: number): Uint8Array {
   return Y.encodeStateAsUpdate(draft, vector);
 }
 
+/**
+ * Appends one paragraph that already carries a valid block id, holding
+ * `runs` one-character runs (each typed at the start, so none merges with
+ * the next) to `draft`; returns the update. Normalizing it adds nothing, but
+ * every run is a struct the size cap charges for.
+ */
+function manyRunsFrame(draft: Y.Doc, runs: number): Uint8Array {
+  const vector = Y.encodeStateVector(draft);
+  draft.transact(() => {
+    const paragraph = new Y.XmlElement('paragraph');
+    paragraph.setAttribute('id', randomUUID());
+    const text = new Y.XmlText();
+    paragraph.insert(0, [text]);
+    draft.getXmlFragment('default').push([paragraph]);
+    for (let k = 0; k < runs; k += 1) text.insert(0, 'a');
+  });
+  return Y.encodeStateAsUpdate(draft, vector);
+}
+
 /** The encoded size `doc` has once the server has normalized it (block ids written back, the size warning). */
 function normalizedSize(doc: Y.Doc): number {
   const scratch = new Y.Doc();
@@ -288,12 +307,14 @@ async function sendEmptyParagraphFrames(documentId: string, editor: CollabTestCl
  * socket's frames are handled in order, and document updates go out no later
  * than awareness), or the socket closed.
  */
-async function sendHandled(documentId: string, editor: CollabTestClient, observer: CollabTestClient, frames: Uint8Array[], label: string): Promise<void> {
-  for (const frame of frames) editor.socket.send(collabFrames.update(`doc:${documentId}`, frame));
+async function sendHandled(documentId: string, editor: CollabTestClient, observer: CollabTestClient, frames: Uint8Array[], label: string,
+  o: { as?: 'update' | 'syncStep2'; timeoutMs?: number } = {}): Promise<void> {
+  const encode = o.as === 'syncStep2' ? collabFrames.syncStep2 : collabFrames.update;
+  for (const frame of frames) editor.socket.send(encode(`doc:${documentId}`, frame));
   const probe = randomUUID();
   editor.provider.setAwarenessField('probe', probe);
   await pollUntil(() => editor.closes.length > 0
-    || (observer.provider.awareness!.getStates().get(editor.ydoc.clientID) as { probe?: string } | undefined)?.probe === probe, label);
+    || (observer.provider.awareness!.getStates().get(editor.ydoc.clientID) as { probe?: string } | undefined)?.probe === probe, label, o.timeoutMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -1500,11 +1521,14 @@ test('a frame measured while a store is writing keeps its measurement when the s
   t.after(() => draft.destroy());
   Y.applyUpdate(draft, Y.encodeStateAsUpdate(editor.ydoc));
   // 1. Fast frames of text in blocks that already carry ids: nothing to grow,
-  //    but each counts at four times its size.
-  for (let k = 1; k <= 4; k += 1) await sendHandled(doc, editor, observer, [paragraphWithIdFrame(draft, 3_300)], `fast frame ${k}`);
+  //    but each is charged far above its size (round 5: every struct, here
+  //    every one-character run, is charged what a write-back could add), so
+  //    the estimate stands far above the true size.
+  for (let k = 1; k <= 4; k += 1) await sendHandled(doc, editor, observer, [manyRunsFrame(draft, 90)], `fast frame ${k}`);
   assert.equal(editor.closes.length, 0);
   const state = collabStateForTest();
-  assert.ok(state.approxBytes(doc)! > 50_000, `the fast frames counted with their growth (${state.approxBytes(doc)})`);
+  assert.ok(state.approxBytes(doc)! > 40_000 && normalizedSize(observer.ydoc) < 10_000,
+    `the fast frames are charged well above their size (${state.approxBytes(doc)} for ${normalizedSize(observer.ydoc)} bytes)`);
   // 2. The debounced store, derived (the first since the load), encodes now and waits on the row.
   const row = await holdRow(doc);
   t.after(row.release);
@@ -1596,6 +1620,103 @@ test('a write made by work a listener started, after its run has finished, waits
   await pollUntil(() => work.later !== null, 'the listener started its work');
   const outcome = await Promise.race([work.later!, delay(5_000).then(() => 'still waiting')]);
   assert.equal(outcome, 'waited for its listeners');
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 5: an account of constant size, and a structural charge
+
+test('thousands of empty updates after a held-back struct leave the size accounting the same size, and the estimate still covers it', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Empty updates' });
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  // Another client's edit whose first struct is withheld: Yjs holds it back, so no measurement is exact again.
+  const ghost = new Y.Doc();
+  t.after(() => ghost.destroy());
+  Y.applyUpdate(ghost, Y.encodeStateAsUpdate(editor.ydoc));
+  appendParagraph(ghost, 'Withheld');
+  const held = emptyParagraphsFrame(ghost, 2_000);
+  await sendHandled(doc, editor, observer, [held], 'the held-back frame is handled');
+  const state = collabStateForTest();
+  // An empty Yjs update: no structs, no deletions. It applies, and changes nothing.
+  const empty = new Uint8Array([0, 0]);
+  await sendHandled(doc, editor, observer, Array.from({ length: 100 }, () => empty), 'the first empty updates are handled');
+  const retained = state.accountRetained(doc);
+  const estimate = state.approxBytes(doc)!;
+  await sendHandled(doc, editor, observer, Array.from({ length: 3_000 }, () => empty), 'the next empty updates are handled', { timeoutMs: 30_000 });
+  assert.equal(editor.closes.length, 0, 'every empty update was admitted');
+  assert.equal(state.accountRetained(doc), retained, `the size accounting grew from ${retained} to ${state.accountRetained(doc)} entries`);
+  assert.ok(retained! <= 1, `it keeps at most the frame in flight (${retained})`);
+  assert.equal(state.approxBytes(doc), estimate + 3_000 * empty.byteLength, 'each empty update is charged its own two bytes');
+  const completed = normalizedSize(ghost);
+  assert.ok(state.approxBytes(doc)! >= completed, `estimate ${state.approxBytes(doc)} is below what the held-back structs normalize to once completed (${completed})`);
+});
+
+for (const as of ['update', 'syncStep2'] as const) {
+  test(`775 empty headings in one ${as === 'update' ? 'Update' : 'SyncStep2'} are charged for their ids and defaults, refused, and nothing over the cap is stored`, { skip: !url && SKIP }, async (t) => {
+    t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+    const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: `Empty headings ${as}` });
+    const editor = await open(t, doc, fx!.people.member);
+    const observer = await open(t, doc, fx!.people.member2);
+    const draft = new Y.Doc();
+    t.after(() => draft.destroy());
+    Y.applyUpdate(draft, Y.encodeStateAsUpdate(editor.ydoc));
+    // A client id with a 5-byte varint, as most random Yjs ids have: every
+    // struct carries it, so it decides whether 775 headings pass the cap.
+    draft.clientID = 0xfffffff0;
+    const vector = Y.encodeStateVector(draft);
+    draft.transact(() => {
+      for (let k = 0; k < 775; k += 1) draft.getXmlFragment('default').push([new Y.XmlElement('heading')]);
+    });
+    const update = Y.encodeStateAsUpdate(draft, vector);
+    getDocumentSchema().nodeFromJSON(yDocToJson(draft)).check();
+    const normalized = normalizedSize(draft);
+    assert.ok(update.byteLength * 4 < 0.9 * 65_536 - 1_000, `round 4's ×4 would take it fast (${update.byteLength} bytes)`);
+    assert.ok(normalized > 65_536, `normalized, it is ${normalized} bytes`);
+    await sendHandled(doc, editor, observer, [update], 'the headings are handled', { as });
+    assert.equal(editor.closes[0]?.code, 4413, `the headings were applied (${observer.ydoc.getXmlFragment('default').length} blocks)`);
+    editor.destroy();
+    observer.destroy();
+    await allUnloaded();
+    const row = await stored(doc);
+    assert.ok(row.state_bytes === null || row.state_bytes <= 65_536, `the stored state is ${row.state_bytes} bytes, over the cap`);
+  });
+}
+
+test('one tiny frame removing the ids the server wrote back is charged for the ids written again', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Ids removed' });
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  // 200 paragraphs without ids: the first derived store writes their ids
+  // back from the server's own client, on consecutive clocks.
+  const draft = new Y.Doc();
+  t.after(() => draft.destroy());
+  Y.applyUpdate(draft, Y.encodeStateAsUpdate(editor.ydoc));
+  const vector = Y.encodeStateVector(draft);
+  draft.transact(() => {
+    for (let k = 0; k < 200; k += 1) draft.getXmlFragment('default').push([new Y.XmlElement('paragraph')]);
+  });
+  await sendHandled(doc, editor, observer, [Y.encodeStateAsUpdate(draft, vector)], 'the paragraphs are handled');
+  const blocks = () => editor.ydoc.getXmlFragment('default').toArray() as Y.XmlElement[];
+  await pollUntil(() => blocks().length >= 200 && blocks().every((el) => typeof el.getAttribute('id') === 'string'), 'the ids reached the editor', 10_000);
+  await pollUntil(async () => ((await stored(doc)).content_json.content ?? []).length >= 200, 'the derived store finished', 10_000);
+  // One frame removes them all: a single deleted range.
+  const removal = new Y.Doc();
+  t.after(() => removal.destroy());
+  Y.applyUpdate(removal, Y.encodeStateAsUpdate(editor.ydoc));
+  const before = Y.encodeStateVector(removal);
+  removal.transact(() => {
+    for (const el of removal.getXmlFragment('default').toArray() as Y.XmlElement[]) el.removeAttribute('id');
+  });
+  const frame = Y.encodeStateAsUpdate(removal, before);
+  assert.ok(frame.byteLength < 100, `one tiny frame (${frame.byteLength} bytes)`);
+  await sendHandled(doc, editor, observer, [frame], 'the removal is handled');
+  assert.equal(editor.closes.length, 0, 'admitted');
+  // Two scratch copies normalize under different client ids, a few bytes apart.
+  const truth = normalizedSize(removal);
+  const estimate = collabStateForTest().approxBytes(doc)!;
+  assert.ok(estimate >= truth - 64, `estimate ${estimate} is below the normalized size ${truth}`);
 });
 
 test('shutdown flushes pending stores', { skip: !url && SKIP }, async (t) => {
