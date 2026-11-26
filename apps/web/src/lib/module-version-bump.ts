@@ -21,7 +21,13 @@ export function nextPatchVersion(active: string): string | null {
   if (!match) return null;
   const [, major, minor, patch, prerelease] = match;
   if (prerelease) return `${major}.${minor}.${patch}`;
-  return `${major}.${minor}.${Number(patch) + 1}`;
+  // BigInt: version numbers may be larger than a JavaScript number holds exactly.
+  return `${major}.${minor}.${BigInt(patch!) + 1n}`;
+}
+
+function compareNumeric(left: string, right: string): number {
+  const difference = BigInt(left) - BigInt(right);
+  return difference === 0n ? 0 : difference < 0n ? -1 : 1;
 }
 
 /**
@@ -33,7 +39,7 @@ export function compareVersions(left: string, right: string): number | null {
   const b = SEMVER.exec(right.trim());
   if (!a || !b) return null;
   for (let index = 1; index <= 3; index += 1) {
-    const difference = Number(a[index]) - Number(b[index]);
+    const difference = compareNumeric(a[index]!, b[index]!);
     if (difference !== 0) return difference;
   }
   const aPre = a[4]?.split('.') ?? [];
@@ -46,7 +52,7 @@ export function compareVersions(left: string, right: string): number | null {
     if (x === y) continue;
     const xNumeric = /^\d+$/.test(x);
     const yNumeric = /^\d+$/.test(y);
-    if (xNumeric && yNumeric) return Number(x) - Number(y);
+    if (xNumeric && yNumeric) return compareNumeric(x, y);
     if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
     return x < y ? -1 : 1;
   }
@@ -74,13 +80,60 @@ export function bumpPatchIfUnchanged(edited: string, activeVersion: string): str
   if (topLevelVersion(edited) !== activeVersion) return edited;
   const next = nextPatchVersion(activeVersion);
   if (!next) return edited;
-  const escaped = activeVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`("version"\\s*:\\s*)"${escaped}"`);
-  const replaced = edited.replace(pattern, `$1"${next}"`);
-  if (topLevelVersion(replaced) === next) return replaced;
-  // The first "version" was not the top-level one: rewrite the whole file.
+  const span = topLevelStringValueSpan(edited, 'version');
+  if (span) {
+    const replaced = `${edited.slice(0, span.start)}${JSON.stringify(next)}${edited.slice(span.end)}`;
+    if (topLevelVersion(replaced) === next) return replaced;
+  }
+  // Only reached for text the scanner cannot follow: rewrite the whole file.
   const value = JSON.parse(edited) as Record<string, unknown>;
   return `${JSON.stringify({ ...value, version: next }, null, 2)}\n`;
+}
+
+/**
+ * Where the string value of a top-level key sits in JSON text, found by
+ * walking the text with string and nesting awareness, so a nested key of the
+ * same name, or the key written with escapes, cannot mislead it.
+ */
+function topLevelStringValueSpan(source: string, wanted: string): { start: number; end: number } | null {
+  let depth = 0;
+  let expectKey = false;
+  let currentKey: string | null = null;
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index]!;
+    if (char === '"') {
+      const start = index;
+      index += 1;
+      while (index < source.length && source[index] !== '"') index += source[index] === '\\' ? 2 : 1;
+      const end = index + 1;
+      if (depth === 1) {
+        if (expectKey) {
+          try {
+            currentKey = JSON.parse(source.slice(start, end)) as string;
+          } catch {
+            return null;
+          }
+          expectKey = false;
+        } else if (currentKey === wanted) {
+          return { start, end };
+        }
+      }
+      index = end;
+      continue;
+    }
+    if (char === '{' || char === '[') {
+      depth += 1;
+      if (depth === 1) expectKey = char === '{';
+    } else if (char === '}' || char === ']') {
+      depth -= 1;
+    } else if (char === ',' && depth === 1) {
+      expectKey = true;
+      currentKey = null;
+    }
+    index += 1;
+  }
+  return null;
 }
 
 export type ModuleManifestEditCheck =

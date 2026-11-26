@@ -2352,25 +2352,28 @@ export async function upgradeModuleInstallationToManifest(
     }> = [];
     // Check every record before refusing, so the refusal can name the
     // records that do not fit the new version, not just the first field.
+    // Pass 1 checks every record's data against the new version and collects
+    // the ones that do not fit. Pass 2, only when all fit, checks member
+    // fields, so a member problem never hides the list of misfits.
     const misfits = new RecordMisfits(current.version.manifest, manifest);
+    const parsedRecords: Array<{ row: RecordRow; data: ModuleRecordData }> = [];
     for (const record of records) {
-      let data: ModuleRecordData;
       try {
-        data = parseModuleRecordData(manifest, record.collection_key, record.data);
+        parsedRecords.push({ row: record, data: parseModuleRecordData(manifest, record.collection_key, record.data) });
       } catch (error) {
         if (!(error instanceof ModuleRecordValidationError)) throw error;
         misfits.add(record, error);
-        continue;
       }
-      if (misfits.count > 0) continue;
-      await assertMemberFieldsValid(tx, actor.org_id, manifest, record.collection_key, data);
-      validatedRecords.push({
-        row: record,
-        data,
-        projection: projectModuleRecordSearch(manifest, record.collection_key, data),
-      });
     }
     if (misfits.count > 0) throw misfits.error();
+    for (const { row, data } of parsedRecords) {
+      await assertMemberFieldsValid(tx, actor.org_id, manifest, row.collection_key, data);
+      validatedRecords.push({
+        row,
+        data,
+        projection: projectModuleRecordSearch(manifest, row.collection_key, data),
+      });
+    }
 
     const activeRelations = await tx
       .select()
