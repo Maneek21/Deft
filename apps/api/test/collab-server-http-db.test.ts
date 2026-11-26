@@ -20,7 +20,7 @@ import pg from 'pg';
 import * as Y from 'yjs';
 import { ensureBlockIds, jsonToText, jsonToYDoc } from '@deft/doc-schema';
 import { setCollabLimitsForTest } from '../src/collab/limits.js';
-import { onDocumentStored, type DocumentStoredEvent } from '../src/collab/persistence.js';
+import { deriveContent, markSizeWarning, onDocumentStored, type DocumentStoredEvent } from '../src/collab/persistence.js';
 import { collabStateForTest, collabTestSeams, getCollabServer } from '../src/collab/server.js';
 import { closeDb, db } from '../src/lib/db.js';
 import * as accessChange from '../src/lib/document-access-change.js';
@@ -198,6 +198,72 @@ function appendParagraph(doc: Y.Doc, text: string): void {
   const paragraph = new Y.XmlElement('paragraph');
   paragraph.insert(0, [new Y.XmlText(text)]);
   doc.getXmlFragment('default').push([paragraph]);
+}
+
+const delay = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+
+/**
+ * Appends empty paragraphs without block ids (the worst growth once the
+ * server writes ids back) to `draft`, in one transaction, until the update
+ * since the previous frame reaches `bytes`; returns that update.
+ */
+function emptyParagraphsFrame(draft: Y.Doc, bytes: number): Uint8Array {
+  const vector = Y.encodeStateVector(draft);
+  const fragment = draft.getXmlFragment('default');
+  draft.transact(() => {
+    while (Y.encodeStateAsUpdate(draft, vector).byteLength < bytes) {
+      for (let k = 0; k < 20; k += 1) fragment.push([new Y.XmlElement('paragraph')]);
+    }
+  });
+  return Y.encodeStateAsUpdate(draft, vector);
+}
+
+/** The encoded size `doc` has once the server has normalized it (block ids written back, the size warning). */
+function normalizedSize(doc: Y.Doc): number {
+  const scratch = new Y.Doc();
+  try {
+    Y.applyUpdate(scratch, Y.encodeStateAsUpdate(doc));
+    deriveContent(scratch);
+    markSizeWarning(scratch, Y.encodeStateAsUpdate(scratch).byteLength);
+    return Y.encodeStateAsUpdate(scratch).byteLength;
+  } finally {
+    scratch.destroy();
+  }
+}
+
+/**
+ * Sends up to `frames` frames of empty paragraphs without ids, about `bytes`
+ * each, on `editor`'s socket, each handled (seen by `observer`, or the socket
+ * closed) before the next; `between` runs after each applied frame. Fails
+ * when a frame is applied that carries the normalized state past `cap`, or
+ * one is refused that wouldn't. Returns the refused frame's number, or 0.
+ */
+async function sendEmptyParagraphFrames(documentId: string, editor: CollabTestClient, observer: CollabTestClient,
+  o: { frames: number; bytes: number; cap: number; between?: () => Promise<void> }): Promise<number> {
+  const draft = new Y.Doc();
+  try {
+    Y.applyUpdate(draft, Y.encodeStateAsUpdate(editor.ydoc));
+    let sent = 0;
+    for (let frame = 1; frame <= o.frames; frame += 1) {
+      const update = emptyParagraphsFrame(draft, o.bytes);
+      sent += update.byteLength;
+      const blocks = draft.getXmlFragment('default').length;
+      const normalized = normalizedSize(draft);
+      editor.socket.send(collabFrames.update(`doc:${documentId}`, update));
+      await pollUntil(() => observer.ydoc.getXmlFragment('default').length === blocks || editor.closes.length > 0, `frame ${frame} is handled`);
+      if (editor.closes.length > 0) {
+        assert.equal(editor.closes[0]!.code, 4413, `frame ${frame} closed the socket`);
+        assert.ok(normalized > o.cap, `frame ${frame} was refused, though the state would normalize to ${normalized} bytes`);
+        return frame;
+      }
+      assert.ok(normalized <= o.cap,
+        `frame ${frame} was applied: the state now normalizes to ${normalized} bytes, past the ${o.cap}-byte cap (${sent} bytes sent in ${frame} frames)`);
+      await o.between?.();
+    }
+    return 0;
+  } finally {
+    draft.destroy();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1193,6 +1259,165 @@ test('a second address with a byte order mark is refused at the door and never l
   const closed = await raw.closed();
   assert.ok([4403, 4404].includes(closed.code), `refused at the door (${closed.code})`);
   assert.ok(lines.every((line) => !line.includes('﻿')), `the address reached the logs: ${lines.join(' | ')}`);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 3
+
+test('fast frames of blocks without ids add up with their id growth, so the frame that would cross the cap is refused', { skip: !url && SKIP }, async (t) => {
+  // Each frame passes the fast check on its own. Five 7 KB frames normalize to
+  // about 130 KB against a 64 KB cap. With 5 KB frames the third is admitted
+  // on a measurement, and the fourth must not then pass fast.
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  for (const bytes of [7_000, 5_000]) {
+    const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: `Tiny frames ${bytes}` });
+    const editor = await open(t, doc, fx!.people.member);
+    const observer = await open(t, doc, fx!.people.member2);
+    const refusedAt = await sendEmptyParagraphFrames(doc, editor, observer, { frames: 5, bytes, cap: 65_536 });
+    assert.ok(refusedAt > 0, `one of five ${bytes}-byte frames was refused`);
+    editor.destroy();
+    observer.destroy();
+    await allUnloaded();
+    const state = new Y.Doc();
+    Y.applyUpdate(state, new Uint8Array((await stored(doc)).ydoc_state!));
+    const size = normalizedSize(state);
+    state.destroy();
+    assert.ok(size <= 65_536, `the stored state normalizes to ${size} bytes, within the cap`);
+  }
+});
+
+test('a store of the live state alone between fast frames keeps their id growth in the estimate', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Stored between frames' });
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  let stores = 0;
+  let derivedBlocks = -1;
+  const refusedAt = await sendEmptyParagraphFrames(doc, editor, observer, {
+    frames: 6, bytes: 4_000, cap: 65_536,
+    between: async () => {
+      const revision = Number((await stored(doc)).revision);
+      await pollUntil(async () => Number((await stored(doc)).revision) > revision, 'the frame is stored', 10_000);
+      stores += 1;
+      // The first store derives; the next ones, inside the derive window, store the state alone.
+      const blocks = ((await stored(doc)).content_json.content ?? []).length;
+      if (stores === 1) derivedBlocks = blocks;
+      else assert.equal(blocks, derivedBlocks, 'stored inside the derive window: the state alone');
+    },
+  });
+  assert.ok(refusedAt > 0, 'a frame was refused');
+  assert.ok(stores >= 3, `stores of the state alone came between frames (${stores})`);
+});
+
+test('a load whose stored state holds blocks without ids starts the estimate from its normalized size', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Stored without ids' });
+  // A live state stored without a derive (as a store of the state alone
+  // leaves it when the process then stops): 13 KB of empty paragraphs without ids.
+  const draft = new Y.Doc();
+  t.after(() => draft.destroy());
+  emptyParagraphsFrame(draft, 13_000);
+  await fx!.client.query('UPDATE documents SET ydoc_state = $2 WHERE id = $1', [doc, Buffer.from(Y.encodeStateAsUpdate(draft))]);
+  assert.ok(normalizedSize(draft) <= 65_536, 'stored, it is within the cap');
+  const update = emptyParagraphsFrame(draft, 7_000);
+  assert.ok(normalizedSize(draft) > 65_536, 'with the frame it would pass the cap');
+  // The frame goes right behind the authentication, so it is applied as the
+  // load finishes, before the load's derive writes the ids back.
+  const raw = rawCollab(srv!.url);
+  t.after(() => raw.ws.terminate());
+  assert.ok(await raw.opened());
+  raw.send(collabFrames.auth(`doc:${doc}`, await tokenFor(fx!.people.member, fx!.orgId)));
+  raw.send(collabFrames.update(`doc:${doc}`, update));
+  assert.equal((await raw.closed()).code, 4413);
+  const reader = await open(t, doc, fx!.people.member2);
+  assert.ok(reader.ydoc.getXmlFragment('default').length < draft.getXmlFragment('default').length, 'never applied');
+});
+
+test('a stored listener can write to the same document, cold and live: neither write waits on the other', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Listener writes back' });
+  const system = {
+    orgId: fx!.orgId, documentId: doc, actor: { kind: 'system' as const, userId: 'system' }, requiredRole: null, reason: 'import' as const,
+  };
+  const events: DocumentStoredEvent[] = [];
+  const nested: string[] = [];
+  let writeBackAfter = '';
+  t.after(onDocumentStored(async (e) => {
+    if (e.documentId !== doc) return;
+    events.push(e);
+    if (!writeBackAfter || !jsonToText(e.json).includes(writeBackAfter)) return;
+    const marker = `Written back after ${writeBackAfter}`;
+    writeBackAfter = '';
+    // Bounded, so a server where this write waits on the run can't hang the test.
+    const second = writeDocument({ ...system, mutate: (d) => appendParagraph(d, marker) });
+    nested.push(await Promise.race([second.then(() => 'written', () => 'refused'), delay(3_000).then(() => 'still waiting')]));
+  }));
+  for (const phase of ['cold', 'live']) {
+    if (phase === 'live') await open(t, doc, fx!.people.member);
+    assert.equal(collabStateForTest().loadedDocumentIds.includes(doc), phase === 'live', `${phase}: loaded only when someone has it open`);
+    const first = `First write ${phase}`;
+    writeBackAfter = first;
+    const count = events.length;
+    await writeDocument({ ...system, mutate: (d) => appendParagraph(d, first) });
+    assert.deepEqual(nested.slice(-1), ['written'], `${phase}: the listener's own write finished inside the listener`);
+    await pollUntil(() => events.slice(count).some((e) => jsonToText(e.json).includes(`Written back after ${first}`)),
+      `${phase}: the listener's own write ran its listeners after the current run`);
+    const own = events.slice(count).find((e) => jsonToText(e.json).includes(`Written back after ${first}`))!;
+    assert.ok(jsonToText(own.previousJson).includes(first), `${phase}: its event comes after the first write's`);
+  }
+});
+
+test('a socket edit is applied while a write\'s listeners are still running', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Slow listener' });
+  const editor = await open(t, doc, fx!.people.member);
+  const observer = await open(t, doc, fx!.people.member2);
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => release());
+  let gated = false;
+  let running = false;
+  t.after(onDocumentStored(async (e) => {
+    if (e.documentId !== doc || gated || !jsonToText(e.json).includes('From the writer')) return;
+    gated = true;
+    running = true;
+    // Bounded, so a server that holds the edit behind this run can't hang the test.
+    await Promise.race([released, delay(5_000)]);
+    running = false;
+  }));
+  const writing = writeDocument({
+    orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member2 }, reason: 'import',
+    mutate: (d) => appendParagraph(d, 'From the writer'),
+  });
+  await pollUntil(() => running, 'the write\'s listener is running');
+  editor.typeText('Typed while the listener runs');
+  await pollUntil(() => observer.text().includes('Typed while the listener runs') || !running, 'the edit arrives, or the listener ends', 10_000);
+  const appliedDuring = running && observer.text().includes('Typed while the listener runs');
+  release();
+  await writing;
+  assert.ok(appliedDuring, 'the edit was applied while the listener was still running');
+});
+
+test('a write to a document that loaded but never became live is refused BUSY after a bounded wait, and frees the lock', { skip: !url && SKIP }, async (t) => {
+  collabTestSeams.liveDocumentWaitMs = 300;
+  t.after(() => { collabTestSeams.liveDocumentWaitMs = 5_000; });
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Never live' });
+  const editor = await open(t, doc, fx!.people.member);
+  const actor = { kind: 'user' as const, userId: fx!.people.member2 };
+  const lines = captureConsole(t);
+  // Our slot says loaded; Hocuspocus's map doesn't have it.
+  const restore = collabStateForTest().hideLiveDocument(doc);
+  t.after(restore);
+  const writing = writeDocument({ orgId: fx!.orgId, documentId: doc, actor, reason: 'import', mutate: (d) => appendParagraph(d, 'Never applied') });
+  const outcome = await Promise.race([writing.then(() => 'written', (e: unknown) => e), delay(3_000).then(() => 'still waiting')]);
+  restore();
+  assert.ok(outcome instanceof DocumentWriteRefused && outcome.code === 'BUSY', `refused BUSY (${String(outcome)})`);
+  assert.ok(lines.includes('[collab] a loaded document never became live; the write was refused'), lines.join(' | '));
+  // The lock was let go: a socket edit and the next write go through.
+  editor.typeText('After the refusal');
+  await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'the socket edit was applied');
+  await writeDocument({ orgId: fx!.orgId, documentId: doc, actor, reason: 'import', mutate: (d) => appendParagraph(d, 'The next write') });
+  const reader = await open(t, doc, fx!.people.member);
+  for (const text of ['After the refusal', 'The next write']) assert.ok(reader.text().includes(text), text);
+  assert.ok(!reader.text().includes('Never applied'));
 });
 
 test('shutdown flushes pending stores', { skip: !url && SKIP }, async (t) => {

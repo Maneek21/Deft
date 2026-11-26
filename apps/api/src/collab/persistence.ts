@@ -80,6 +80,10 @@ const storedListeners = new Set<StoredListener>();
  * - Each run carries every editor, agent and action seen since the previous
  *   run, editors ordered by how many updates they made, most first.
  * - A store of ydoc_state alone bumps `revision` and runs no listener.
+ * - Runs for one document go one at a time, in the order of their stores.
+ *   They run with no lock held, so a listener may call writeDocument, even on
+ *   the same document: that write returns once applied, and its own run
+ *   comes after the current one.
  */
 export function onDocumentStored(fn: (e: DocumentStoredEvent) => Promise<void>): () => void {
   storedListeners.add(fn);

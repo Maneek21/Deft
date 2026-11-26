@@ -52,8 +52,10 @@
 //   of the live state with the server's own normalization (block ids, the
 //   size warning), and passes only if the result is within docMaxBytes or no
 //   larger than before, so a document over the cap can still shrink (4413).
-//   The estimate stays conservative until the frame has been applied, then
-//   is set from the real encoded size;
+//   The estimate bounds the normalized size: it restarts only from a
+//   normalized measurement (a load, a derived store, a write, a measured
+//   frame), and every socket update applied since counts with ID_GROWTH, so
+//   fast frames add up as their block ids would;
 // - last, the expiry once more, after all of that work: a frame that passes
 //   it counts as received before the expiry. From the fence on nothing awaits.
 // A refused frame closes the socket, detaches the connection and marks it
@@ -93,7 +95,11 @@
 // its row the same way, under the load lock a load waits for (so a load
 // never reads the row from before a write), with its provisional memory
 // reserved against the budget (BUSY when it would pass it). Writes, loads
-// and stores of one document never overlap. writeDocument locks only the
+// and stores of one document never overlap. A write's stored listeners run
+// after it has released the writer lock (socket updates aren't held while
+// they run, and a listener may write); writeDocument returns once they have
+// run, except when called from inside a listener run, whose own write's
+// listeners run after it. writeDocument locks only the
 // document row (never a drive), so it can't wait in a cycle with a move or a
 // delete, which lock the drive and then the document.
 //
@@ -108,6 +114,7 @@
 // non-zero.
 //
 // Logs are fixed text (document ids only through logId).
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import crossws from 'crossws/adapters/node';
@@ -141,7 +148,7 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type CollabActor = { kind: 'user' | 'agent' | 'system'; userId: string; askerId?: string; actionId?: string };
 
 export type DocumentWriteReason = 'agent_edit' | 'suggestion' | 'restore' | 'import' | 'template' | 'move_fix';
-/** BUSY: live editing can't take the write now (its memory budget is spent, or the server is shutting down); try again later. */
+/** BUSY: live editing can't take the write now (its memory budget is spent, the server is shutting down, or a loaded document didn't become live); try again later. */
 export type DocumentWriteRefusalCode = 'FORBIDDEN' | 'REVISION_CHANGED' | 'TOO_LARGE' | 'BUSY';
 
 const REFUSAL_MESSAGES: Record<DocumentWriteRefusalCode, string> = {
@@ -178,6 +185,11 @@ type WriteInput = {
   check: (tx: Tx, row: DocumentStateRow) => Promise<void>;
 };
 type WriteResult = { revision: number; sizeBytes: number };
+/** A write that has applied, with its listener run (queued in order, awaited once the writer lock is released). */
+type Written = { result: WriteResult; listeners: Promise<void> };
+
+/** Set while stored listeners run: a write made from inside a run doesn't wait for its own listeners. */
+const listenerRun = new AsyncLocalStorage<true>();
 
 /** A failed store is retried after these delays, the last one repeating. */
 const STORE_RETRY_MS = [5_000, 30_000, 120_000] as const;
@@ -202,8 +214,11 @@ type SocketEntry = {
   accessGeneration: number;
   connected: boolean;
   expiryTimer: NodeJS.Timeout | null;
-  /** A frame admitted on a scratch measurement: the estimate is set from the real size once it has been applied. */
-  reconcile: boolean;
+  /**
+   * The normalized size a frame was admitted at on a scratch measurement:
+   * once it has been applied, the estimate restarts from it (never below it).
+   */
+  measured: number | null;
 };
 
 type DocSlot = {
@@ -218,7 +233,13 @@ type DocSlot = {
   /** Non-socket writes in progress. */
   writers: number;
   estimateBytes: number;
-  /** Conservative estimate of the live state's encoded size (never below it once a frame has been applied). */
+  /**
+   * An upper bound on the encoded size the live state has once normalized
+   * (block ids written back, as the next derive does): restarts from a
+   * normalized measurement (a load, a derived store, a write, a frame's
+   * scratch measurement), and every change since adds to it, a socket
+   * update with the worst growth its block ids can add (ID_GROWTH).
+   */
   approxBytes: number;
   revision: number;
   changeCounter: number;
@@ -235,7 +256,6 @@ type DocSlot = {
   retryAttempt: number;
   retryTimer: NodeJS.Timeout | null;
   deriveTimer: NodeJS.Timeout | null;
-  listenerChain: Promise<void>;
 };
 
 /**
@@ -399,6 +419,8 @@ function createCollabServer(): CollabServer {
   /** The writer lock an update frame holds, by its connection, until afterHandleMessage. */
   const frameLocks = new WeakMap<Connection, () => void>();
   const activeWrites = new Set<Promise<unknown>>();
+  /** Per document: the tail of its stored-listener runs, which go one at a time in the order of their stores. */
+  const listenerChains = new Map<string, Promise<void>>();
   const attached: Array<{ server: HttpServer; listener: (req: IncomingMessage, socket: Duplex, head: Buffer) => void }> = [];
   let nextSocketKey = 0;
   let coldReservedBytes = 0;
@@ -427,7 +449,6 @@ function createCollabServer(): CollabServer {
       connections: 0, writers: 0, estimateBytes: provisionalEstimate(), approxBytes: 0, revision: 0,
       changeCounter: 0, stateDirty: false, derivedDirty: false, deriveFailedAt: null, lastDerivedAt: 0, lastDerivedJson: null,
       editors: new Map(), lastEdit: null, emptySince: null, unloadTimer: null, retryAttempt: 0, retryTimer: null, deriveTimer: null,
-      listenerChain: Promise.resolve(),
     };
   }
 
@@ -611,6 +632,17 @@ function createCollabServer(): CollabServer {
     return encodedStateBytes(scratch);
   }
 
+  /** The size `document` has once normalized, measured on a scratch copy (the document is left as it is). */
+  function normalizedCopyBytes(document: Y.Doc): number {
+    const scratch = new Y.Doc();
+    try {
+      Y.applyUpdate(scratch, Y.encodeStateAsUpdate(document));
+      return normalizedBytes(scratch);
+    } finally {
+      scratch.destroy();
+    }
+  }
+
   /**
    * The size cap for a SyncStep2 or Update frame from a connection that can
    * write: false when refused (4413). The caller holds the document's writer
@@ -619,40 +651,30 @@ function createCollabServer(): CollabServer {
   function checkSize(entry: SocketEntry, connection: Connection, document: Y.Doc, update: Uint8Array): boolean {
     const slot = entry.slot;
     if (!slot) return dropFrame(entry, connection, 'unauthenticated');
-    // Fast only while even the worst block-id growth would stay below the threshold.
+    // Fast only while even the worst block-id growth would stay below the
+    // threshold. Once applied, the update counts with that growth too
+    // (trackUpdate), so fast frames add up as their ids would.
     if (slot.approxBytes + update.byteLength * (1 + ID_GROWTH) < fastAcceptBelowBytes()) return true;
-    /** The live state, as a scratch copy. */
-    const current = () => {
-      const scratch = new Y.Doc();
-      Y.applyUpdate(scratch, Y.encodeStateAsUpdate(document));
-      return scratch;
-    };
     let after: number;
     let before = Infinity;
-    const withUpdate = current();
+    const withUpdate = new Y.Doc();
     try {
+      Y.applyUpdate(withUpdate, Y.encodeStateAsUpdate(document));
       Y.applyUpdate(withUpdate, update);
       after = normalizedBytes(withUpdate);
       // Over the cap, it may still pass by being no larger than before,
       // measured the same way (normalized).
-      if (after > COLLAB_LIMITS.docMaxBytes) {
-        const without = current();
-        try {
-          before = normalizedBytes(without);
-        } finally {
-          without.destroy();
-        }
-      }
+      if (after > COLLAB_LIMITS.docMaxBytes) before = normalizedCopyBytes(document);
     } catch {
       return dropFrame(entry, connection, 'tooLarge');
     } finally {
       withUpdate.destroy();
     }
     if (!withinSizeCap(before, after)) return dropFrame(entry, connection, 'tooLarge');
-    // Conservative until the frame has been applied; afterHandleMessage then
-    // sets the estimate from the real encoded size.
+    // A fresh normalized measurement: the estimate restarts from it once the
+    // frame has been applied (afterHandleMessage), never below it.
     slot.approxBytes = Math.max(slot.approxBytes, after);
-    entry.reconcile = true;
+    entry.measured = after;
     return true;
   }
 
@@ -660,9 +682,13 @@ function createCollabServer(): CollabServer {
   // Stores
 
   function trackUpdate(slot: DocSlot, update: Uint8Array, origin: unknown): void {
-    // Server-made changes count in the size too (block ids, the size warning, writes).
-    slot.approxBytes += update.byteLength;
-    if (isOwnOrigin(origin)) return;
+    if (isOwnOrigin(origin)) {
+      // Server-made changes count as they are (block ids, the size warning, writes).
+      slot.approxBytes += update.byteLength;
+      return;
+    }
+    // A socket update counts with the worst growth its block ids can add once written back.
+    slot.approxBytes += update.byteLength * (1 + ID_GROWTH);
     slot.changeCounter += 1;
     slot.stateDirty = true;
     slot.derivedDirty = true;
@@ -686,9 +712,17 @@ function createCollabServer(): CollabServer {
 
   const byCount = (editors: Map<string, number>) => [...editors.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([id]) => id);
 
-  function queueListeners(slot: DocSlot, event: DocumentStoredEvent): Promise<void> {
-    slot.listenerChain = slot.listenerChain.then(() => runStoredListeners(event));
-    return slot.listenerChain;
+  /**
+   * Queues the listener run for a document's stored event. Runs for one
+   * document go one at a time, in the order they were queued; every caller
+   * queues while it still holds what orders its stores (the save mutex, the
+   * writer lock), so that is the order of the stores. Never rejects.
+   */
+  function queueListeners(documentId: string, event: DocumentStoredEvent): Promise<void> {
+    const run = (listenerChains.get(documentId) ?? Promise.resolve()).then(() => listenerRun.run(true, () => runStoredListeners(event)));
+    listenerChains.set(documentId, run);
+    void run.then(() => { if (listenerChains.get(documentId) === run) listenerChains.delete(documentId); });
+    return run;
   }
 
   function scheduleRetry(slot: DocSlot): void {
@@ -769,7 +803,11 @@ function createCollabServer(): CollabServer {
         return 'ok';
       }
       slot.revision = revision;
-      slot.approxBytes = state.byteLength + Math.max(0, slot.approxBytes - approxAtEncode);
+      // A derived store wrote the block ids back, so it stored the normalized
+      // state: the estimate restarts from it, plus what arrived during the
+      // write. A store of the state alone may hold blocks without ids, so
+      // the estimate stands.
+      if (derived) slot.approxBytes = state.byteLength + Math.max(0, slot.approxBytes - approxAtEncode);
       slot.estimateBytes = state.byteLength * HEAP_FACTOR;
       if (slot.lastEdit === edit) slot.lastEdit = null;
       if (slot.changeCounter === counter) slot.stateDirty = false;
@@ -781,7 +819,7 @@ function createCollabServer(): CollabServer {
         slot.lastDerivedJson = derived.json;
         slot.lastDerivedAt = Date.now();
         if (slot.changeCounter === counter) slot.derivedDirty = false;
-        void queueListeners(slot, {
+        void queueListeners(slot.documentId, {
           orgId: slot.orgId!, documentId: slot.documentId, editorIds: byCount(editors!), agentUserIds: [], actionIds: [],
           previousJson, json: derived.json, sizeBytes: state.byteLength, at: new Date(),
         });
@@ -928,10 +966,14 @@ function createCollabServer(): CollabServer {
       frameLocks.get(payload.connection)?.();
       frameLocks.delete(payload.connection);
       const entry = entryOf(payload.context);
-      if (!entry?.reconcile) return;
-      entry.reconcile = false;
+      const measured = entry?.measured ?? null;
+      if (!entry || measured === null) return;
+      entry.measured = null;
+      // The frame was measured normalized with the state it landed on (nothing
+      // else applied in between: it held the writer lock), so that measurement
+      // replaces the running count. Never below it, nor below the real size.
       const slot = entry.slot;
-      if (slot?.loaded) slot.approxBytes = encodedStateBytes(payload.document);
+      if (slot?.loaded) slot.approxBytes = Math.max(measured, encodedStateBytes(payload.document));
     },
 
     async beforeHandleAwareness(payload) {
@@ -967,10 +1009,13 @@ function createCollabServer(): CollabServer {
         if (!row) throw LOAD_REFUSED;
         markSizeWarning(document, encodedStateBytes(document));
         const bytes = encodedStateBytes(document);
+        // Stored by a store of ydoc_state alone: derived straight away.
+        const derivedDirty = row.state !== null && derivedIsBehind(document, row.json);
         Object.assign(slot, {
-          loaded: true, revision: row.revision, approxBytes: bytes, estimateBytes: bytes * HEAP_FACTOR, lastDerivedJson: row.json,
-          // Stored by a store of ydoc_state alone: derived straight away.
-          derivedDirty: row.state !== null && derivedIsBehind(document, row.json),
+          loaded: true, revision: row.revision, estimateBytes: bytes * HEAP_FACTOR, lastDerivedJson: row.json, derivedDirty,
+          // A state built from the stored JSON, or stored without a derive, may
+          // hold blocks without ids: the estimate starts from its normalized size.
+          approxBytes: row.state === null || derivedDirty ? normalizedCopyBytes(document) : bytes,
         });
         document.on('update', (update: Uint8Array, origin: unknown) => trackUpdate(slot, update, origin));
       } catch {
@@ -1073,7 +1118,7 @@ function createCollabServer(): CollabServer {
         const client = hocuspocus.handleConnection(peer.websocket as WebSocket, peer.request as Request, { socketKey: key });
         const entry: SocketEntry = {
           key, peer, client, closed: false, address: null, documentId: null, slot: null, ctx: null, accessGeneration: 0, connected: false,
-          expiryTimer: null, reconcile: false,
+          expiryTimer: null, measured: null,
         };
         sockets.set(key, entry);
         peers.set(peer, entry);
@@ -1198,9 +1243,10 @@ function createCollabServer(): CollabServer {
    * updates wait (beforeHandleMessage) until this has applied: the live state
    * holds still from the flush to the apply. Stores pending live changes,
    * then checks, changes a scratch copy, stores it, and applies it live
-   * after the commit.
+   * after the commit. Queues its listener run, which the caller awaits once
+   * the writer lock is released.
    */
-  async function liveWrite(slot: DocSlot, document: HocuspocusDocument, i: WriteInput): Promise<WriteResult> {
+  async function liveWrite(slot: DocSlot, document: HocuspocusDocument, i: WriteInput): Promise<Written> {
     slot.writers += 1;
     cancelUnload(slot);
     try {
@@ -1215,6 +1261,7 @@ function createCollabServer(): CollabServer {
             return scratch;
           }, encodedStateBytes));
           document.transact(() => Y.applyUpdate(document, written.delta), WRITER_ORIGIN);
+          // The write normalized the whole copy it applied (block ids written back): a normalized measurement.
           slot.approxBytes = encodedStateBytes(document);
           slot.revision = written.revision;
           slot.lastDerivedJson = written.derived.json;
@@ -1231,16 +1278,18 @@ function createCollabServer(): CollabServer {
       });
       const { written } = result;
       scheduleDerive(slot);
-      await queueListeners(slot, storedEventOf(i, result.accumulated, result.previousJson, written.derived.json, written.state.byteLength));
-      return { revision: written.revision, sizeBytes: written.state.byteLength };
+      return {
+        result: { revision: written.revision, sizeBytes: written.state.byteLength },
+        listeners: queueListeners(i.documentId, storedEventOf(i, result.accumulated, result.previousJson, written.derived.json, written.state.byteLength)),
+      };
     } finally {
       slot.writers -= 1;
       settleSlot(slot);
     }
   }
 
-  /** A document nobody has open: from its row, in one transaction, under the load lock. */
-  async function rowWrite(i: WriteInput): Promise<WriteResult> {
+  /** A document nobody has open: from its row, in one transaction, under the load lock. Queues its listener run. */
+  async function rowWrite(i: WriteInput): Promise<Written> {
     const working = new Y.Doc();
     try {
       // Measured normalized, as the result will be.
@@ -1248,53 +1297,73 @@ function createCollabServer(): CollabServer {
         applyRowToDoc(working, row);
         return working;
       }, normalizedBytes));
-      await runStoredListeners(storedEventOf(i, new Map(), written.row.json, written.derived.json, written.state.byteLength));
-      return { revision: written.revision, sizeBytes: written.state.byteLength };
+      return {
+        result: { revision: written.revision, sizeBytes: written.state.byteLength },
+        listeners: queueListeners(i.documentId, storedEventOf(i, new Map(), written.row.json, written.derived.json, written.state.byteLength)),
+      };
     } finally {
       working.destroy();
     }
   }
 
+  /** A write, under the document's writer lock. */
+  async function writeLocked(i: WriteInput): Promise<Written> {
+    let liveBy: number | null = null;
+    for (;;) {
+      if (destroying) throw new DocumentWriteRefused('BUSY');
+      const slot = docs.get(i.documentId);
+      if (slot?.unloading) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        continue;
+      }
+      if (slot?.loading) {
+        await slot.loading;
+        continue;
+      }
+      const document = slot?.loaded ? hocuspocus.documents.get(slot.name) : undefined;
+      if (slot && document) return liveWrite(slot, document, i);
+      if (slot?.loaded) {
+        // Loaded a moment ago; Hocuspocus is still putting it in its map. A
+        // document that never gets there fails the write (and frees the lock).
+        liveBy ??= Date.now() + collabTestSeams.liveDocumentWaitMs;
+        if (Date.now() >= liveBy) {
+          console.error('[collab] a loaded document never became live; the write was refused');
+          throw new DocumentWriteRefused('BUSY');
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        continue;
+      }
+      // A cold write holds a document's worth of memory while it runs.
+      const reserved = provisionalEstimate();
+      if (memoryEstimate() + reserved > COLLAB_LIMITS.memoryBudgetBytes) throw new DocumentWriteRefused('BUSY');
+      coldReservedBytes += reserved;
+      notePeak();
+      let outcome: Written | null;
+      try {
+        outcome = await loadLocks.run(i.documentId, async () => {
+          // A load that started meanwhile wins; write through it instead.
+          const current = docs.get(i.documentId);
+          if (current?.loading || current?.loaded) return null;
+          return rowWrite(i);
+        });
+      } finally {
+        coldReservedBytes -= reserved;
+      }
+      if (outcome) return outcome;
+    }
+  }
+
   async function write(i: WriteInput): Promise<WriteResult> {
     if (destroying) throw new DocumentWriteRefused('BUSY');
-    const run = writerLocks.run(i.documentId, async () => {
-      for (;;) {
-        if (destroying) throw new DocumentWriteRefused('BUSY');
-        const slot = docs.get(i.documentId);
-        if (slot?.unloading) {
-          await new Promise<void>((resolve) => setImmediate(resolve));
-          continue;
-        }
-        if (slot?.loading) {
-          await slot.loading;
-          continue;
-        }
-        const document = slot?.loaded ? hocuspocus.documents.get(slot.name) : undefined;
-        if (slot && document) return liveWrite(slot, document, i);
-        if (slot?.loaded) {
-          // Loaded a moment ago; Hocuspocus is still putting it in its map.
-          await new Promise<void>((resolve) => setImmediate(resolve));
-          continue;
-        }
-        // A cold write holds a document's worth of memory while it runs.
-        const reserved = provisionalEstimate();
-        if (memoryEstimate() + reserved > COLLAB_LIMITS.memoryBudgetBytes) throw new DocumentWriteRefused('BUSY');
-        coldReservedBytes += reserved;
-        notePeak();
-        let outcome: WriteResult | null;
-        try {
-          outcome = await loadLocks.run(i.documentId, async () => {
-            // A load that started meanwhile wins; write through it instead.
-            const current = docs.get(i.documentId);
-            if (current?.loading || current?.loaded) return null;
-            return rowWrite(i);
-          });
-        } finally {
-          coldReservedBytes -= reserved;
-        }
-        if (outcome) return outcome;
-      }
-    });
+    const run = (async () => {
+      const { result, listeners } = await writerLocks.run(i.documentId, () => writeLocked(i));
+      // The writer lock is released before the listeners run, so socket
+      // updates aren't held while they do and a listener may write. From
+      // inside a listener run, a write doesn't wait for its own listeners:
+      // they run after the run that is waiting for this write.
+      if (!listenerRun.getStore()) await listeners;
+      return result;
+    })();
     activeWrites.add(run);
     try {
       return await run;
@@ -1355,8 +1424,8 @@ function createCollabServer(): CollabServer {
         if (slot.loaded && document && !unstored.has(slot.documentId) && !(await storeDurably(slot, document, retryUntil))) {
           unstored.add(slot.documentId);
         }
-        await slot.listenerChain;
       }));
+      await Promise.all([...listenerChains.values()]);
       const changed = [...docs.values()].filter((slot) => slot.loaded && slot.stateDirty && !unstored.has(slot.documentId));
       if (!loadsInFlight() && changed.length === 0) break;
       if (Date.now() >= retryUntil) {
@@ -1422,6 +1491,13 @@ function createCollabServer(): CollabServer {
       return document ? encodedStateBytes(document) : null;
     },
     reservedBytes: memoryEstimate,
+    hideLiveDocument: (documentId) => {
+      const name = `doc:${documentId}`;
+      const document = hocuspocus.documents.get(name);
+      if (!document) throw new Error('the document is not loaded');
+      hocuspocus.documents.delete(name);
+      return () => { if (!hocuspocus.documents.has(name)) hocuspocus.documents.set(name, document); };
+    },
     unloadIdle: async (timeoutMs) => {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
@@ -1467,8 +1543,11 @@ export function getCollabServer(): CollabServer {
  * only; `expectedRevision` checked when given (every store bumps the
  * revision, and pending live changes are stored first). The 2 MB cap the
  * sockets apply. Throws DocumentWriteRefused: FORBIDDEN, REVISION_CHANGED,
- * TOO_LARGE, or BUSY (live editing's memory budget is spent, or it is shutting
- * down; try again later). Runs the stored listeners before it returns.
+ * TOO_LARGE, or BUSY (live editing's memory budget is spent, it is shutting
+ * down, or a loaded document didn't become live; try again later). Runs the
+ * stored listeners before it returns, after releasing the document's writer
+ * lock; called from inside a stored listener, it returns once the write has
+ * applied and its listeners run after the current run.
  */
 export async function writeDocument(i: {
   orgId: string;
@@ -1507,16 +1586,20 @@ export async function writeDocument(i: {
  * Test seams: `afterAuthenticate` runs after a connection's role is read and
  * before it is registered; `derivedEveryMs` is the derived-copy window (60 s);
  * `afterSizeCheck` runs (synchronously) after an update frame's size work,
- * just before the last expiry check.
+ * just before the last expiry check; `liveDocumentWaitMs` is how long a write
+ * waits for a document that has loaded to reach Hocuspocus's map (5 s; the
+ * gap is normally a few ticks) before it is refused BUSY.
  */
 export const collabTestSeams: {
   afterAuthenticate: ((documentId: string) => Promise<void>) | null;
   derivedEveryMs: number;
   afterSizeCheck: (() => void) | null;
+  liveDocumentWaitMs: number;
 } = {
   afterAuthenticate: null,
   derivedEveryMs: 60_000,
   afterSizeCheck: null,
+  liveDocumentWaitMs: 5_000,
 };
 
 /** How each document held stands (no ids). */
@@ -1533,6 +1616,7 @@ let testHandles: {
   approxBytes(documentId: string): number | null;
   encodedBytes(documentId: string): number | null;
   reservedBytes(): number;
+  hideLiveDocument(documentId: string): () => void;
   unloadIdle(timeoutMs: number): Promise<void>;
 } | null = null;
 
@@ -1552,6 +1636,15 @@ export function collabStateForTest() {
     underivedFinals: testState.underivedFinals,
     approxBytes: (documentId: string) => handles?.approxBytes(documentId) ?? null,
     encodedBytes: (documentId: string) => handles?.encodedBytes(documentId) ?? null,
+    /**
+     * Takes a loaded document out of Hocuspocus's map while our slot still
+     * says loaded (the state a write sees when Hocuspocus never registers a
+     * document it loaded); returns the restore.
+     */
+    hideLiveDocument: (documentId: string) => {
+      if (!handles) throw new Error('no live-editing server');
+      return handles.hideLiveDocument(documentId);
+    },
     /** How each document still held stands (no ids), for a failing assertion's message. */
     describe: () => describeSlots(docs),
     /**
