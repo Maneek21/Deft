@@ -72,15 +72,27 @@ export function appTemplateSlug(name: string): string {
     .replace(/\p{M}/gu, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/^[0-9-]+/, '');
-  const trimmed = base.slice(0, MODULE_LIMITS.module_slug_chars - 4).replace(/-+$/g, '');
+    .replace(/^-+|-+$/g, '');
+  // A slug starts with a letter: "3D printing" becomes "app-3d-printing".
+  const lettered = /^[0-9]/.test(base) ? `app-${base}` : base;
+  const trimmed = lettered.slice(0, MODULE_LIMITS.module_slug_chars - 4).replace(/-+$/g, '');
   return trimmed || 'my-app';
 }
 
 function withSuffix(slug: string, attempt: number): string {
   return attempt <= 1 ? slug : `${slug}-${attempt}`;
 }
+
+/** "Hiring" and then "Hiring 2", so two installs of one starter are told apart. */
+function nameWithSuffix(name: string, attempt: number): string {
+  const trimmed = name.trim();
+  if (attempt <= 1) return trimmed;
+  const suffix = ` ${attempt}`;
+  return `${Array.from(trimmed).slice(0, MODULE_LIMITS.display_name_chars - suffix.length).join('').trimEnd()}${suffix}`;
+}
+
+/** The server refuses these names for this workspace; the next suffix may be free. */
+const RETRY_WITH_SUFFIX = new Set(['MODULE_ALREADY_INSTALLED', 'MODULE_IDENTITY_RESERVED']);
 
 /**
  * The template's manifest renamed for this workspace: the person's name, a
@@ -159,16 +171,31 @@ async function seedSamples(
     });
     if (!response.ok) {
       const reason = await moduleApiError(response, 'A sample record could not be created.');
-      return {
-        seeded,
-        seedError: `The app is installed, but only ${seeded} of ${template.samples.length} sample records were added. ${reason}`,
-      };
+      return { seeded, seedError: partialSeedError(seeded, template.samples.length, reason) };
     }
-    const body = await response.json().catch(() => ({})) as { record?: { id?: unknown } };
-    if (sample.ref && typeof body.record?.id === 'string') ids.set(sample.ref, body.record.id);
+    const body = await response.json().catch(() => ({})) as {
+      record?: { id?: unknown } | null;
+      mutation?: { record_id?: unknown } | null;
+      record_id?: unknown;
+    };
+    const recordId = [body.record?.id, body.mutation?.record_id, body.record_id]
+      .find((value): value is string => typeof value === 'string' && value.length > 0);
     seeded += 1;
+    if (sample.ref) {
+      // Later samples link to this one; without its id their links would be lost.
+      if (!recordId) {
+        return { seeded, seedError: partialSeedError(seeded, template.samples.length, 'The new record could not be read back.') };
+      }
+      ids.set(sample.ref, recordId);
+    }
   }
   return { seeded };
+}
+
+function partialSeedError(seeded: number, total: number, reason: string): string {
+  const added = seeded === 0 ? `none of the ${total} sample records were added` : `only ${seeded} of ${total} sample records were added`;
+  const sentence = /[.!?]$/.test(reason.trim()) ? reason.trim() : `${reason.trim()}.`;
+  return `The app is installed, but ${added}. ${sentence}`;
 }
 
 /**
@@ -189,7 +216,7 @@ export async function installAppTemplate(options: {
   let attempt = firstFreeAttempt(baseSlug, options.installed);
   for (let tries = 0; tries < 3 && attempt <= MAX_SLUG_ATTEMPTS; tries += 1, attempt += 1) {
     const slug = withSuffix(baseSlug, attempt);
-    const manifest = buildAppTemplateManifest(options.template, options.name, slug);
+    const manifest = buildAppTemplateManifest(options.template, nameWithSuffix(options.name, attempt), slug);
     const response = await fetcher('/api/modules/sideload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -197,7 +224,7 @@ export async function installAppTemplate(options: {
     });
     if (response.status === 409) {
       const body = await response.clone().json().catch(() => ({})) as { code?: unknown };
-      if (body.code === 'MODULE_ALREADY_INSTALLED') continue;
+      if (typeof body.code === 'string' && RETRY_WITH_SUFFIX.has(body.code)) continue;
     }
     if (!response.ok) throw new Error(await moduleApiError(response, `Unable to install ${manifest.name}.`));
     const body = await response.json().catch(() => ({})) as { module?: { slug?: unknown; module_id?: unknown; manifest_digest?: unknown } };

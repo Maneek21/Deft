@@ -10,21 +10,24 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-### Starter apps, and a plain-words preview before install
+### Starter apps and a plain-words app preview, ready for the Apps page
+
+The Apps page shows these through its starter gallery and install step.
 
 - **Four starter apps.** Hiring pipeline, Vendor tracker, Light CRM and Content
-  calendar each install under the name you give them, as an ordinary uploaded app,
-  so you can keep editing and updating them. Each opens on a board. You can add
-  a few sample records, created with their links (a candidate linked to its
-  role, a deal to its company). If adding samples stops part-way, the app stays
-  installed and you are told how many were added. If the name is taken, the app
-  is installed as `<name>-2`.
-- **A preview in plain words.** Before an app is installed, the page can say
-  what it adds: each record type, its fields ("Stage: pick one of Applied, Phone
-  screen…, required"), how record types link ("Each Candidate links to one
-  Role"), its views ("Pipeline: a board grouped by Stage") and who can see the
-  records. It can also ask "Let Defty read these records?" (default no); yes
-  turns on read access for Defty after install.
+  calendar. Each installs under the name you give it, as an ordinary uploaded app,
+  so it can be edited and updated like one, and opens on a board. Sample records
+  can be added with their links (a candidate linked to its role, a deal to its
+  company). If adding samples stops part-way, the app stays installed and the
+  message says how many were added. If the name is taken, or belongs to an app
+  that ships with Deft, the app is installed as "<name> 2" (web address ending in
+  `-2`).
+- **A preview in plain words.** Before an app is installed, it can be described:
+  each record type, its fields ("Stage: pick one of Applied, Phone screen…,
+  starts as Applied, required"), how record types link ("Each Candidate links to
+  one Role"), its views ("Pipeline: a board grouped by Stage") and who can see the
+  records, with the question "Let Defty read these records?" (default no; yes
+  turns on read access for Defty after install).
 - The starter files are plain app files (`apps/web/src/lib/app-templates/*.json`),
   ready for the website to offer as downloads.
 

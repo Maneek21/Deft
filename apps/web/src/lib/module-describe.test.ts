@@ -40,7 +40,7 @@ test('describes bundled Contacts, including links, sums and long option lists', 
   assert.equal(description.summary, 'Contacts adds 5 record types: Contacts, Companies, Deals, Activities and Outreach.');
   const deals = description.collections.find((collection) => collection.key === 'deals')!;
   assert.deepEqual(deals.relations, ['Each Deal links to one Company', 'Each Deal links to one Contact (Primary contact)']);
-  assert.ok(deals.views.includes('Pipeline: a board grouped by Stage, adding up Value'));
+  assert.ok(deals.views.includes('Pipeline: a board grouped by Stage, with Value totals'));
   assert.ok(deals.fields.some((field) => /^Currency: pick one of USD, EUR, GBP, INR, CAD, AUD and \d+ more$/.test(field)));
   const outreach = description.collections.find((collection) => collection.key === 'outreach')!;
   assert.deepEqual(outreach.relations, ['Each Outreach draft links to any number of Contacts (Recipients)']);
@@ -59,6 +59,11 @@ test('the summary shows each record type and, only when asked, the Defty questio
   assert.match(withoutQuestion, /Hiring pipeline adds 2 record types: Candidates and Roles\./);
   assert.match(withoutQuestion, /Each Candidate links to one Role/);
   assert.doesNotMatch(withoutQuestion, /Let Defty read these records\?/);
+  assert.match(withoutQuestion, /<h3 class="font-semibold">Candidates:/);
+  assert.match(
+    renderToStaticMarkup(createElement(ManifestSummary, { manifest: hiring, headingLevel: 2 })),
+    /<h2 class="font-semibold">Candidates:/,
+  );
 
   const withQuestion = renderToStaticMarkup(createElement(ManifestSummary, { manifest: hiring, onAgentReadChange: () => {} }));
   assert.match(withQuestion, /Let Defty read these records\?/);

@@ -10,6 +10,8 @@ export type ManifestSummaryProps = {
   agentRead?: boolean;
   /** Shows the "Let Defty read these records?" question when given. */
   onAgentReadChange?: (agentRead: boolean) => void;
+  /** Heading level for each record type, to fit the page around it. Default 3. */
+  headingLevel?: 2 | 3 | 4;
 };
 
 const muted = { color: 'var(--on-surface-variant)' } as const;
@@ -20,7 +22,8 @@ const muted = { color: 'var(--on-surface-variant)' } as const;
  * whether Defty may read them; the caller sends `agent_access: read` after
  * install when the answer is yes (see `agentAccessPatchFor`).
  */
-export function ManifestSummary({ manifest, agentRead = false, onAgentReadChange }: ManifestSummaryProps) {
+export function ManifestSummary({ manifest, agentRead = false, onAgentReadChange, headingLevel = 3 }: ManifestSummaryProps) {
+  const Heading = `h${headingLevel}` as 'h2' | 'h3' | 'h4';
   const description = describeModuleManifest(manifest);
   const questionId = useId();
   return (
@@ -33,7 +36,7 @@ export function ManifestSummary({ manifest, agentRead = false, onAgentReadChange
             className="rounded-xl border p-3"
             style={{ borderColor: 'var(--ghost-border)', background: 'var(--surface-container-low)' }}
           >
-            <h3 className="font-semibold">{collection.summary}</h3>
+            <Heading className="font-semibold">{collection.summary}</Heading>
             {collection.fields.length > 0 ? (
               <div className="mt-2">
                 <p className="text-xs font-medium" style={muted}>Fields</p>

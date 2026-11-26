@@ -62,7 +62,8 @@ test('a starter is renamed for the workspace with a slug and id from the name', 
   assert.equal(manifest.id, 'workspace.hiring-eu-team');
   assert.equal(manifest.collections.length, template.manifest.collections.length);
   assert.equal(appTemplateSlug(''), 'my-app');
-  assert.equal(appTemplateSlug('2026 Café plans'), 'cafe-plans');
+  assert.equal(appTemplateSlug('2026 Café plans'), 'app-2026-cafe-plans');
+  assert.equal(appTemplateSlug('3D printing'), 'app-3d-printing');
   assert.ok(appTemplateSlug('x'.repeat(200)).length <= 44);
   assert.throws(() => buildAppTemplateManifest(template, '<b>Hiring</b>'), (error: unknown) => (
     error instanceof Error && !/\[\s*\{|\{\s*"/.test(error.message) && /name/.test(error.message)
@@ -135,17 +136,75 @@ test('a seeding failure keeps the app installed and says how far it got', async 
   const result = await installAppTemplate({ template, name: 'Sales', withSamples: true, fetch: server.fetch });
   assert.equal(result.slug, 'sales');
   assert.equal(result.seeded, 2);
-  assert.match(result.seedError ?? '', /^The app is installed, but only 2 of 5 sample records were added\. The record data is invalid$/);
+  assert.match(result.seedError ?? '', /^The app is installed, but only 2 of 5 sample records were added\. The record data is invalid\.$/);
 });
 
 test('an install refusal is thrown as readable text', async () => {
   const template = getAppTemplate('content-calendar')!;
   const fetch = async () => new Response(JSON.stringify({
-    error: 'The slug "contacts" belongs to Contacts, an app that ships with Deft. Choose another slug and id.',
-    code: 'MODULE_IDENTITY_RESERVED',
-  }), { status: 409 });
+    error: 'Only workspace owners and admins can manage apps',
+    code: 'MODULE_ACCESS_DENIED',
+  }), { status: 403 });
   await assert.rejects(
-    () => installAppTemplate({ template, name: 'Contacts', withSamples: false, fetch }),
-    /belongs to Contacts, an app that ships with Deft/,
+    () => installAppTemplate({ template, name: 'Plans', withSamples: false, fetch }),
+    /^Error: Only workspace owners and admins can manage apps$/,
   );
+});
+
+test('a name that slugs to a built-in app moves on to -2, and the second install is named "<name> 2"', async () => {
+  const template = getAppTemplate('light-crm')!;
+  const calls: Array<Record<string, unknown>> = [];
+  const fetch = async (path: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    calls.push(body);
+    if (body.slug === 'contacts') {
+      return new Response(JSON.stringify({ error: 'The slug "contacts" belongs to Contacts, an app that ships with Deft.', code: 'MODULE_IDENTITY_RESERVED' }), { status: 409 });
+    }
+    return new Response(JSON.stringify({ module: { slug: body.slug, module_id: body.id, manifest_digest: `sha256:${'a'.repeat(64)}` } }), { status: 201 });
+  };
+  const result = await installAppTemplate({ template, name: 'Contacts', withSamples: false, fetch });
+  assert.equal(result.slug, 'contacts-2');
+  assert.equal(result.name, 'Contacts 2');
+  assert.deepEqual(calls.map((call) => [call.slug, call.name]), [['contacts', 'Contacts'], ['contacts-2', 'Contacts 2']]);
+});
+
+test('it gives up after three refused names with a readable message', async () => {
+  const template = getAppTemplate('hiring-pipeline')!;
+  let count = 0;
+  const fetch = async () => {
+    count += 1;
+    return new Response(JSON.stringify({ error: 'taken', code: 'MODULE_ALREADY_INSTALLED' }), { status: 409 });
+  };
+  await assert.rejects(
+    () => installAppTemplate({ template, name: 'Hiring', withSamples: true, fetch }),
+    /already installed\. Choose another name\./,
+  );
+  assert.equal(count, 3);
+});
+
+test('a first sample that fails reads "none of", and a parent without a readable id stops seeding', async () => {
+  const template = getAppTemplate('hiring-pipeline')!;
+  const none = fakeServer({ failRecordAt: 1 });
+  const first = await installAppTemplate({ template, name: 'Hiring', withSamples: true, fetch: none.fetch });
+  assert.match(first.seedError ?? '', /^The app is installed, but none of the 5 sample records were added\./);
+
+  const unreadable = async (path: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    if (path === '/api/modules/sideload') {
+      return new Response(JSON.stringify({ module: { slug: body.slug, module_id: body.id, manifest_digest: `sha256:${'a'.repeat(64)}` } }), { status: 201 });
+    }
+    return new Response('ok', { status: 201 });
+  };
+  const second = await installAppTemplate({ template, name: 'Hiring', withSamples: true, fetch: unreadable });
+  assert.equal(second.seeded, 1);
+  assert.match(second.seedError ?? '', /only 1 of 5 sample records were added\. The new record could not be read back\.$/);
+});
+
+test('an install answer without a digest keeps the app and says the samples were not added', async () => {
+  const template = getAppTemplate('vendor-tracker')!;
+  const fetch = async () => new Response('', { status: 201 });
+  const result = await installAppTemplate({ template, name: 'Vendors', withSamples: true, fetch });
+  assert.equal(result.slug, 'vendors');
+  assert.equal(result.seeded, 0);
+  assert.match(result.seedError ?? '', /sample records were not added/);
 });

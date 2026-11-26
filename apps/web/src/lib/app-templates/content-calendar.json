@@ -10,7 +10,7 @@
     {
       "key": "pieces",
       "name": "Content",
-      "singular_name": "Piece",
+      "singular_name": "Content piece",
       "fields": [
         { "key": "title", "label": "Title", "type": "text", "required": true },
         {
@@ -52,7 +52,7 @@
         { "key": "calendar", "name": "Calendar", "type": "timeline", "start_field": "publish_on", "fields": ["title", "channel", "status"] },
         { "key": "all", "name": "All content", "type": "table", "fields": ["title", "status", "channel", "publish_on", "author", "campaign_id"] },
         { "key": "form", "name": "Add content", "type": "form", "fields": ["title", "status", "channel", "publish_on", "author", "campaign_id", "link", "tags", "brief"] },
-        { "key": "detail", "name": "Piece", "type": "detail", "fields": ["title", "status", "channel", "publish_on", "author", "campaign_id", "link", "tags", "brief"] }
+        { "key": "detail", "name": "Content piece", "type": "detail", "fields": ["title", "status", "channel", "publish_on", "author", "campaign_id", "link", "tags", "brief"] }
       ]
     },
     {

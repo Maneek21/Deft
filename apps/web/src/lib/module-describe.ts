@@ -76,7 +76,7 @@ function fieldKind(field: Field): string {
     case 'single_select': return `pick one of ${optionList(field.options)}`;
     case 'multi_select': return `pick any of ${optionList(field.options)}`;
     case 'member': return field.multiple ? 'workspace members' : 'a workspace member';
-    case 'tags': return 'tags';
+    case 'tags': return 'a list of tags';
     case 'relation': return 'a link to another record';
     default: return 'a link to a record in another app';
   }
@@ -132,7 +132,7 @@ export function describeModuleView(collection: Collection, view: View): string {
     case 'table':
       return `${view.name}: a table`;
     case 'board': {
-      const summary = view.summary ? `, adding up ${fieldLabel(collection, view.summary.value_field)}` : '';
+      const summary = view.summary ? `, with ${fieldLabel(collection, view.summary.value_field)} totals` : '';
       return `${view.name}: a board grouped by ${fieldLabel(collection, view.group_by)}${summary}`;
     }
     case 'timeline': {
