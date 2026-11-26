@@ -115,9 +115,10 @@ test('a .131 head applies the tail once and the second run is a no-op',
       assert.ok(review.rows[0].present, 'restore review table exists after upgrade');
       const late = await client.query(`SELECT to_regclass('note_files') IS NOT NULL AS note_files,
         to_regclass('documents') IS NOT NULL AS tables,
-        'document_shared' = ANY (enum_range(NULL::notification_type)::text[]) AS label`);
-      assert.deepEqual(late.rows[0], { note_files: true, tables: true, label: true },
-        'the .154 note file links and the .155 drives tables and label exist after upgrade');
+        'document_shared' = ANY (enum_range(NULL::notification_type)::text[]) AS label,
+        to_regclass('document_event_links') IS NOT NULL AS event_links`);
+      assert.deepEqual(late.rows[0], { note_files: true, tables: true, label: true, event_links: true },
+        'the .154 note file links, the .155 drives tables and label and the .156 meeting-notes links exist after upgrade');
 
       const before = (await client.query('SELECT version FROM deft_schema_migrations ORDER BY version')).rows
         .map((row: { version: string }) => row.version);
@@ -144,7 +145,8 @@ async function tailState(client: pg.Client) {
       WHERE conname='app_connection_sessions_record_identity') AS session_constraint,
     to_regclass('note_files') IS NOT NULL AS note_files,
     to_regclass('documents') IS NOT NULL AS documents,
-    (SELECT count(*)::int FROM pg_enum WHERE enumlabel = 'document_shared') AS document_labels`)).rows[0];
+    (SELECT count(*)::int FROM pg_enum WHERE enumlabel = 'document_shared') AS document_labels,
+    to_regclass('document_event_links') IS NOT NULL AS event_links`)).rows[0];
   return { ledger, shape };
 }
 
@@ -159,6 +161,7 @@ test('PR424-F11: --status and --dry-run on a .131 head change nothing',
       assert.equal(before.shape.resume_fn, 0, '.133 resume function is absent at the head');
       assert.equal(before.shape.note_files, false, '.154 note file links are absent at the head');
       assert.equal(before.shape.documents, false, '.155 drives tables are absent at the head');
+      assert.equal(before.shape.event_links, false, '.156 meeting-notes links are absent at the head');
       await runUpgrade(['--status']);
       assert.deepEqual(await tailState(client), before, '--status is read-only');
       await runUpgrade(['--dry-run']);
@@ -185,6 +188,7 @@ test('PR424-F13: concurrent upgrades of a .131 head both succeed and apply the t
       assert.equal(state.shape.note_files, true);
       assert.equal(state.shape.documents, true);
       assert.equal(state.shape.document_labels, 1, 'the .155 label is added once');
+      assert.equal(state.shape.event_links, true);
     } finally {
       await finish(client, name);
     }

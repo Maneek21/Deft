@@ -26,13 +26,27 @@ import { resolveReasonProvider } from './org-ai-config.js';
 import { createNotificationIfAllowed } from './notification-policy.js';
 import { getActiveOrgMembership } from './org-membership.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { previousMeetingNotes, type PreviousMeetingNotes } from './meeting-notes.js';
 import { emitToUser } from '../socket.js';
 
 type MeetingEvidence = {
   source_id: string;
-  kind: 'event' | 'task' | 'message';
+  kind: 'event' | 'task' | 'message' | 'document';
   text: string;
 };
+
+/** A document the briefing cites (M2). */
+export type MeetingPrepCitation = { type: 'document'; id: string; title: string };
+
+/**
+ * The briefing's part from the last meeting notes (M2): their title and up
+ * to 1,500 characters of their current text, read for the recipient.
+ */
+function renderPreviousNotes(notes: PreviousMeetingNotes | null): string {
+  if (!notes) return '';
+  const lines = notes.excerpt.split('\n').map((line) => line.trim()).filter(Boolean);
+  return ['', '', `**Last meeting notes: ${notes.title.trim() || 'Untitled'}**`, ...lines].join('\n');
+}
 
 type Attendee = { email: string; displayName?: string };
 
@@ -287,8 +301,15 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
   try {
     await updateAutomationRun(claim.run.id, { status: 'gathering_context', startedAt: now });
     const evidence = await gatherMeetingEvidence({ ...meeting, user_id: meeting.user_id });
+    // The last notes linked to an earlier meeting of the same title that the
+    // recipient (never the notes' creator) can open, cited by reference (M2).
+    const notes = await previousMeetingNotes(meeting, recipientId);
+    if (notes) {
+      evidence.push({ source_id: `document:${notes.id}`, kind: 'document', text: `Notes from the last meeting, "${notes.title}": ${notes.excerpt}` });
+    }
+    const citations: MeetingPrepCitation[] = notes ? [{ type: 'document', id: notes.id, title: notes.title }] : [];
     const synthesis = await synthesizeMeetingPrep(meeting.org_id, meeting.org_name, meeting.user_id, evidence);
-    const briefText = renderMeetingPrepDraft(meeting.title || 'Upcoming meeting', synthesis.draft);
+    const briefText = renderMeetingPrepDraft(meeting.title || 'Upcoming meeting', synthesis.draft) + renderPreviousNotes(notes);
     // The brief is stored only while the recipient's active membership row is
     // held, so a removal cannot commit between the check and the write. Rows
     // are locked user first, then membership, the same order member removal uses.
@@ -332,7 +353,7 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
       title: `Meeting prep: ${meeting.title || 'Upcoming meeting'}`,
       body: briefText,
       link: '/calendar',
-      metadata: { event_id: meeting.id, automation_run_id: claim.run.id, generator: synthesis.generator },
+      metadata: { event_id: meeting.id, automation_run_id: claim.run.id, generator: synthesis.generator, citations },
     }, { channel: 'calendar' });
     if (notification) emitToUser(notification.org_id, meeting.user_id, 'notification:new', notification);
     emitToUser(meeting.org_id, meeting.user_id, 'meeting-brief:new', {
@@ -340,16 +361,18 @@ export async function generateMeetingPrep(eventId: string, now = new Date()) {
       event_title: meeting.title,
       brief_text: briefText,
       generator: synthesis.generator,
+      citations,
     });
 
     const run = await updateAutomationRun(claim.run.id, {
       status: 'delivered',
       generator: synthesis.generator,
-      output: { draft: synthesis.draft, evidence, model: synthesis.model },
+      // Run details carry the notes by reference only (rule C4): the document's text stays out.
+      output: { draft: synthesis.draft, evidence: evidence.filter((item) => item.kind !== 'document'), model: synthesis.model, citations },
       resultEntityId: brief.id,
       completedAt: new Date(),
     });
-    return { brief, run, alreadyExisted: false };
+    return { brief, run, alreadyExisted: false, citations };
   } catch (error) {
     await failAutomationRun(claim.run.id, error);
     throw error;

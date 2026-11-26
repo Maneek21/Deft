@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { eq, and, between, desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { tasks, events, projects, meetingBriefs, reminders, automationRuns, orgMembers } from '@deft/db/schema';
@@ -6,6 +7,9 @@ import { documents } from '@deft/db/documents';
 import { visibleDocumentCondition } from '../lib/document-access.js';
 import { getOrgTimezone, getDayBoundaries } from '../lib/task-dates.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
+import { DocumentRefusal } from '../lib/documents.js';
+import { createMeetingNotes, linkedDocumentsByEvent } from '../lib/meeting-notes.js';
+import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 
 export const calendarRoutes = new Hono();
 
@@ -115,15 +119,47 @@ calendarRoutes.get('/', async (c) => {
       .orderBy(reminders.remind_at),
     readEmailCalendarOccurrences(db,{org_id:user.org_id,owner_user_id:user.id,from,to}),
   ]);
+  const calendarEvents = [...eventRows,...invitationOccurrences].sort((a,b)=>a.timestamp.getTime()-b.timestamp.getTime());
+  // Each event's meeting notes this viewer can open (M2), in one query.
+  const linkedDocuments = await linkedDocumentsByEvent(user.id, user.org_id, calendarEvents.map((event) => event.id));
 
   return c.json({
     tasks: taskRows,
-    events: [...eventRows,...invitationOccurrences].sort((a,b)=>a.timestamp.getTime()-b.timestamp.getTime()),
+    events: calendarEvents.map((event) => ({ ...event, documents: linkedDocuments.get(event.id) ?? [] })),
     documents: documentRows.map((row) => ({ ...row, url: `/d/${row.id}` })),
     // Empty, for clients that still read the old key until the web reads documents (F16).
     notes: [],
     reminders: reminderRows,
   });
+});
+
+const meetingNotesSchema = z.object({
+  drive_id: z.string().trim().min(1).max(200).optional(),
+  folder_id: z.string().trim().min(1).max(200).nullable().optional(),
+}).strict();
+
+// POST /events/:eventId/document { drive_id?, folder_id? } — "Notes for this
+// meeting" (M2): a document from the meeting notes template, linked to the
+// event. The caller must see the event and have edit on the drive (by
+// default their My drive); see lib/meeting-notes.ts.
+calendarRoutes.post('/events/:eventId/document', async (c) => {
+  const user = c.get('user');
+  const eventId = c.req.param('eventId');
+  if (!(await noBodyOrJson(c))) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+  const parsed = meetingNotesSchema.safeParse((await jsonBody(c)) ?? {});
+  if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+  if (eventId.length > 200) return c.json({ error: 'Event not found', code: 'NOT_FOUND' }, 404);
+  try {
+    const { document, finish } = await createMeetingNotes({
+      orgId: user.org_id, userId: user.id, eventId, driveId: parsed.data.drive_id, folderId: parsed.data.folder_id,
+    });
+    await finish();
+    return c.json({ document }, 201);
+  } catch (error) {
+    if (error instanceof DocumentRefusal) return c.json({ error: error.message, code: error.code }, error.status);
+    console.error('[calendar] creating meeting notes failed');
+    return c.json({ error: 'Failed to create the meeting notes', code: 'INTERNAL_ERROR' }, 500);
+  }
 });
 
 // GET /briefs?event_ids=id1,id2 — meeting prep briefs for specific events

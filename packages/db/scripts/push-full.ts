@@ -42,11 +42,11 @@ type Queryable = { query: (text: string) => Promise<{ rows: Array<Record<string,
  * Without this, a stop (for example E5_FRESH_PRESTAMP_CATALOG_UNRECOGNIZED on a
  * server whose Postgres or pgvector version differs from the supported image)
  * leaves tables from schema.ts in place but none from the upgrades after
- * 0.3.0-preview.117 (ics_publish_tokens, seat_statements, user_two_step, note_files, drives, ...),
+ * 0.3.0-preview.117 (ics_publish_tokens, seat_statements, user_two_step, note_files, drives, document_event_links, ...),
  * and the database looks usable. Read-only.
  */
 // Tables only upgrades after the bootstrap create, named when they are missing.
-const LATE_TABLES = ['ics_publish_tokens', 'seat_statements', 'user_two_step', 'note_files', 'drives', 'documents'] as const;
+const LATE_TABLES = ['ics_publish_tokens', 'seat_statements', 'user_two_step', 'note_files', 'drives', 'documents', 'document_event_links'] as const;
 
 export async function describeIncompleteFreshInit(client: Queryable, error: unknown): Promise<string[]> {
   let tableCount: number | null = null;

@@ -189,6 +189,7 @@ export const FK_PAIRS: Array<[child: string, col: string, parent: string]> = [
   ['canvases', 'space_id', 'spaces'],
   ['clips', 'message_id', 'messages'],
   ['clips', 'space_id', 'spaces'],
+  ['document_event_links', 'event_id', 'events'],
   ['duplicate_flags', 'task_a_id', 'tasks'],
   ['duplicate_flags', 'task_b_id', 'tasks'],
   ['email_calendar_invitations', 'event_id', 'events'],

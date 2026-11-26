@@ -236,6 +236,22 @@ export const drivesMoveRuns = pgTable('drives_move_runs', {
   unique('drives_move_runs_org_release_key').on(t.org_id, t.release_version),
 ]);
 
+/** Meeting notes: a document linked to a calendar event. Created by upgrade
+ * 0.3.0-preview.156. The upgrade file also holds the org-qualified document
+ * key, the event key (deleting an event removes its links) and the trigger
+ * `document_event_link_check`, which refuses an event from another workspace. */
+export const documentEventLinks = pgTable('document_event_links', {
+  id: id(),
+  org_id: text('org_id').notNull(),
+  document_id: text('document_id').notNull(),
+  event_id: text('event_id').notNull(),
+  created_by: text('created_by'),
+  created_at: createdAt(),
+}, (t) => [
+  unique('document_event_links_event_document_key').on(t.event_id, t.document_id),
+  index('document_event_links_document_idx').on(t.org_id, t.document_id),
+]);
+
 export type DriveRow = typeof drives.$inferSelect;
 export type DriveMemberRow = typeof driveMembers.$inferSelect;
 export type DocFolderRow = typeof docFolders.$inferSelect;
@@ -245,3 +261,4 @@ export type DocumentVersionRow = typeof documentVersions.$inferSelect;
 export type DocumentAttachmentRow = typeof documentAttachments.$inferSelect;
 export type DocFavoriteRow = typeof docFavorites.$inferSelect;
 export type NoteDocumentMapRow = typeof noteDocumentMap.$inferSelect;
+export type DocumentEventLinkRow = typeof documentEventLinks.$inferSelect;

@@ -39,6 +39,7 @@ import { visibleFilesSql } from '../src/lib/workspace-export/attachments.js';
 import { DRIVES_DOCUMENTS, documentMarkdownQuery } from '../src/lib/workspace-export/datasets-documents.js';
 import type { ExportContext } from '../src/lib/workspace-export/scope.js';
 import { driveListQuery, drivesWithoutManagerQuery } from '../src/lib/drives.js';
+import { linkedDocumentsQuery, previousMeetingNotesQuery } from '../src/lib/meeting-notes.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { planningGrowth, type Growth } from './fixtures/planning-growth.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -160,6 +161,21 @@ test('the drive tree and the recent list plan within budget', async (t) => {
       ['template documents', templateDocumentsQuery(member, fx.orgId).toSQL()],
       // The breadcrumb's page chain, each page held to the access check (GET /api/documents/:id).
       ['breadcrumb page chain', query(breadcrumbChainQuery(member, fx.orgId, document!.id))],
+    ];
+  });
+});
+
+test('the meeting notes forms plan within budget (M2)', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  await withinBudget(t, async (fx) => {
+    const { member } = fx.people;
+    const eventIds = Array.from({ length: 200 }, (_, at) => `event-${at}`);
+    const meeting = { id: 'event-0', org_id: fx.orgId, title: 'Weekly sync', timestamp: new Date() };
+    return [
+      // GET /api/calendar: the linked documents of a range's events the viewer can open, in one IN (...) query.
+      ['calendar linked documents', linkedDocumentsQuery(member, fx.orgId, eventIds).toSQL()],
+      // The meeting-prep briefing's last notes, held to the recipient's access.
+      ['meeting-prep last notes', previousMeetingNotesQuery(meeting, 'Weekly sync', member).toSQL()],
     ];
   });
 });

@@ -1,12 +1,15 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { CalEvent, getEventSourceColor, getEventSourceLabel } from '@/lib/calendar';
 import { formatEventTime, formatFullDateLong } from '@/lib/time';
 import { AutomationText } from '@/components/automation-text';
 import { api } from '@/lib/api';
+import { createMeetingNotes, meetingNotesAction, meetingNotesHref } from '@/lib/meeting-notes';
 import {
-  X, MapPin, ExternalLink, Users, Video, FileText,
+  X, MapPin, ExternalLink, Users, Video, FileText, FilePlus,
   Clock, Edit2, Trash2,
 } from 'lucide-react';
 import { CreateEventModal } from './create-event-modal';
@@ -30,6 +33,10 @@ export function EventDetailModal({
 }) {
   const [showEdit, setShowEdit] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const router = useRouter();
+  const notes = meetingNotesAction(event);
+  const [creatingNotes, setCreatingNotes] = useState(false);
+  const [notesError, setNotesError] = useState<string | null>(null);
 
   const isNative = event.source === 'native';
   const sourceColor = getEventSourceColor(event.source);
@@ -53,6 +60,20 @@ export function EventDetailModal({
       const res = await api.delete(`/api/events/${event.id}`);
       if (res.ok) onDeleted?.();
     } catch {} finally { setDeleting(false); }
+  };
+
+  // One creation at a time; on success the notes open, so the button stays busy until the page changes.
+  const handleCreateNotes = async () => {
+    if (creatingNotes) return;
+    setCreatingNotes(true);
+    setNotesError(null);
+    const outcome = await createMeetingNotes(api, event.id);
+    if (outcome.ok) {
+      router.push(meetingNotesHref(outcome.id));
+      return;
+    }
+    setNotesError(outcome.message);
+    setCreatingNotes(false);
   };
 
   if (showEdit && isNative) {
@@ -186,9 +207,25 @@ export function EventDetailModal({
         </div>
 
         {/* Footer actions */}
-        <div className="px-5 py-3 flex items-center justify-between"
+        <div className="px-5 py-3 flex flex-wrap items-center justify-between gap-2"
           style={{ borderTop: '1px solid var(--border-default)' }}>
-          <div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 min-w-0">
+            {notes?.kind === 'open' && (
+              <Link href={notes.href} title={notes.title}
+                className="flex items-center gap-1.5 text-[11px] font-medium hover:underline"
+                style={{ color: 'var(--accent)' }}>
+                <FileText size={11} />
+                {notes.label}
+              </Link>
+            )}
+            {notes?.kind === 'create' && (
+              <button onClick={handleCreateNotes} disabled={creatingNotes}
+                className="flex items-center gap-1.5 text-[11px] font-medium hover:underline"
+                style={{ color: 'var(--accent)', opacity: creatingNotes ? 0.6 : 1 }}>
+                <FilePlus size={11} />
+                {creatingNotes ? 'Creating notes…' : notes.label}
+              </button>
+            )}
             {event.url && (
               <a href={event.url} target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-1.5 text-[11px] hover:underline"
@@ -213,6 +250,11 @@ export function EventDetailModal({
                 {deleting ? 'Deleting...' : 'Delete'}
               </button>
             </div>
+          )}
+          {notesError && (
+            <p role="alert" className="basis-full text-[11px]" style={{ color: 'var(--status-red)' }}>
+              {notesError}
+            </p>
           )}
         </div>
       </div>

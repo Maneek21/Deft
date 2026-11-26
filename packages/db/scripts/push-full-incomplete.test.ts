@@ -52,7 +52,7 @@ test('an unrecognized catalog before any ledger: incomplete, the upgrades after 
   const text = lines.join('\n');
   assert.match(text, /INCOMPLETE/);
   assert.match(text, pendingAfter117);
-  assert.match(text, /among them ics_publish_tokens, seat_statements, user_two_step, note_files, drives, documents\)/);
+  assert.match(text, /among them ics_publish_tokens, seat_statements, user_two_step, note_files, drives, documents, document_event_links\)/);
   assert.match(text, /Postgres 16\.15 \(Ubuntu\); extensions: plpgsql 1\.0, vector 0\.6\.0/);
   assert.match(text, /docker-compose\.yml/);
   assert.match(lines.at(-1)!, /^Drop this database/);
@@ -76,16 +76,22 @@ test('only the late tables that are really missing are named', async () => {
     new Error('migration 0.3.0-preview.148 failed'),
   );
   const text = lines.join('\n');
-  assert.match(text, /among them user_two_step, note_files, drives, documents\)/);
+  assert.match(text, /among them user_two_step, note_files, drives, documents, document_event_links\)/);
   assert.doesNotMatch(text, /ics_publish_tokens|seat_statements/);
   const upTo154 = all.slice(0, all.indexOf('0.3.0-preview.154') + 1);
   const drivesMissing = await describeIncompleteFreshInit(
     fakeClient({ ledger: [upgradeManifest.baseline.version, ...upTo154], present: ['ics_publish_tokens', 'seat_statements', 'user_two_step', 'note_files'] }),
     new Error('migration 0.3.0-preview.155 failed'),
   );
-  assert.match(drivesMissing.join('\n'), /among them drives, documents\)/);
+  assert.match(drivesMissing.join('\n'), /among them drives, documents, document_event_links\)/);
+  const upTo155 = all.slice(0, all.indexOf('0.3.0-preview.155') + 1);
+  const linksMissing = await describeIncompleteFreshInit(
+    fakeClient({ ledger: [upgradeManifest.baseline.version, ...upTo155], present: ['ics_publish_tokens', 'seat_statements', 'user_two_step', 'note_files', 'drives', 'documents'] }),
+    new Error('migration 0.3.0-preview.156 failed'),
+  );
+  assert.match(linksMissing.join('\n'), /among them document_event_links\)/);
   const none = await describeIncompleteFreshInit(
-    fakeClient({ ledger: [upgradeManifest.baseline.version, ...upTo144], present: ['ics_publish_tokens', 'seat_statements', 'user_two_step', 'note_files', 'drives', 'documents'] }),
+    fakeClient({ ledger: [upgradeManifest.baseline.version, ...upTo144], present: ['ics_publish_tokens', 'seat_statements', 'user_two_step', 'note_files', 'drives', 'documents', 'document_event_links'] }),
     new Error('x'),
   );
   assert.doesNotMatch(none.join('\n'), /among them/);
@@ -116,7 +122,7 @@ test('a reporting failure never hides the original stop', async () => {
 
 test('a stop with every upgrade recorded says only the final step failed', async () => {
   const lines = await describeIncompleteFreshInit(
-    fakeClient({ ledger: [upgradeManifest.baseline.version, ...all], present: ['ics_publish_tokens', 'seat_statements', 'user_two_step', 'note_files', 'drives', 'documents'] }),
+    fakeClient({ ledger: [upgradeManifest.baseline.version, ...all], present: ['ics_publish_tokens', 'seat_statements', 'user_two_step', 'note_files', 'drives', 'documents', 'document_event_links'] }),
     new Error('final check failed'),
   );
   assert.match(lines.join('\n'), /Every upgrade was applied, but the final step failed/);

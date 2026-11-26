@@ -11,6 +11,8 @@ export type CalTask = {
 export type CalEvent = {
   id: string; title: string; body?: string | null; event_type: string; url: string | null;
   timestamp: string; metadata: any; source: string;
+  /** Meeting notes linked to the event that the viewer can open (M2). */
+  documents?: Array<{ id: string; title: string }>;
 };
 
 /** `legacy`: the id is an old note id (from the API's `notes` key), not a document id. */

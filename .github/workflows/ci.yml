@@ -725,6 +725,17 @@ jobs:
               THEN
                 RAISE EXCEPTION 'document shares table missing or different after upgrade';
               END IF;
+              -- Same definitions as apps/api/test/documents-schema-db.test.ts (fresh install): meeting-notes links (.156).
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.document_event_links'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'document_event_links_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id) | document_event_links_event_id_fkey: FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE | document_event_links_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id)'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.document_event_links'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE INDEX document_event_links_document_idx ON public.document_event_links USING btree (org_id, document_id) | CREATE UNIQUE INDEX document_event_links_event_document_key ON public.document_event_links USING btree (event_id, document_id)'
+              THEN
+                RAISE EXCEPTION 'document event links table missing or different after upgrade';
+              END IF;
             END \$\$;
           "
           bash scripts/ci/snapshot-upgrade-data.sh "$RUNNER_TEMP/upgrade-after"
@@ -733,7 +744,7 @@ jobs:
         # db:push-full (fresh installs, dev and test databases) and db:upgrade
         # (every existing install) must build the same set of tables, including
         # those that only upgrades create (ics_publish_tokens, user_two_step,
-        # note_files, drives, documents), and the same enum labels, functions,
+        # note_files, drives, documents, document_event_links), and the same enum labels, functions,
         # triggers and columns: enum labels and trigger functions also come only
         # from upgrades.
         run: |
@@ -744,7 +755,7 @@ jobs:
           tables_sql="SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1"
           psql "$fresh_url" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-fresh.txt"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-upgraded.txt"
-          for table in ics_publish_tokens seat_statements user_two_step note_files drives documents deft_schema_migrations; do
+          for table in ics_publish_tokens seat_statements user_two_step note_files drives documents document_event_links deft_schema_migrations; do
             grep -qx "$table" "$RUNNER_TEMP/tables-fresh.txt" || { echo "fresh install is missing $table" >&2; exit 1; }
           done
           diff --unified --label fresh-install --label upgraded "$RUNNER_TEMP/tables-fresh.txt" "$RUNNER_TEMP/tables-upgraded.txt"

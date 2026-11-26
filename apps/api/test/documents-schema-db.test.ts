@@ -5,13 +5,15 @@ import pg from 'pg';
 import * as documentsSchema from '@deft/db/documents';
 import { UPGRADE_NOTIFICATION_TYPES, asStoredNotificationType } from '../src/lib/notification-types.js';
 
-// Drives and documents are created by upgrade 0.3.0-preview.155 (db:push-full
-// and db:upgrade both apply it), not by schema.ts.
+// Drives and documents are created by upgrade 0.3.0-preview.155, and meeting
+// notes links by 0.3.0-preview.156 (db:push-full and db:upgrade both apply
+// them), not by schema.ts.
 
 const DRIVE_TABLES = [
   'doc_favorites',
   'doc_folders',
   'document_attachments',
+  'document_event_links',
   'document_shares',
   'document_versions',
   'documents',
@@ -82,8 +84,8 @@ before(async () => {
 
 after(async () => {
   const orgIds = [orgA, orgB];
-  for (const table of ['document_shares', 'drive_members', 'document_versions', 'document_attachments',
-    'doc_favorites', 'note_document_map', 'documents', 'doc_folders', 'drives', 'spaces', 'org_members']) {
+  for (const table of ['document_event_links', 'document_shares', 'drive_members', 'document_versions', 'document_attachments',
+    'doc_favorites', 'note_document_map', 'documents', 'doc_folders', 'drives', 'events', 'spaces', 'org_members']) {
     await client.query(`DELETE FROM ${table} WHERE org_id = ANY($1)`, [orgIds]);
   }
   await client.query('DELETE FROM users WHERE id = ANY($1)', [[alice, bob, carol]]);
@@ -100,7 +102,8 @@ test('the upgrade creates every drives table', async () => {
 test('the Drizzle mirror matches every column the upgrade creates', async () => {
   const mirrors = [documentsSchema.drives, documentsSchema.driveMembers, documentsSchema.docFolders,
     documentsSchema.documents, documentsSchema.documentShares, documentsSchema.documentVersions,
-    documentsSchema.documentAttachments, documentsSchema.docFavorites, documentsSchema.noteDocumentMap, documentsSchema.drivesMoveRuns];
+    documentsSchema.documentAttachments, documentsSchema.docFavorites, documentsSchema.noteDocumentMap, documentsSchema.drivesMoveRuns,
+    documentsSchema.documentEventLinks];
   const sqlType = (type: string) => (type === 'timestamp' ? 'timestamp without time zone' : type);
   const mirrored = mirrors.map(getTableConfig);
   assert.deepEqual(mirrored.map((table) => table.name).sort(), DRIVE_TABLES);
@@ -275,6 +278,32 @@ test("a document pointing at another org's drive is refused", async () => {
     [newId(), orgB, docA, EMPTY_DOC]);
 });
 
+test("a meeting-notes link to another org's event or document is refused", async () => {
+  const event = async (orgId: string) => {
+    const id = newId();
+    await client.query(`INSERT INTO events (id, org_id, source, event_type, external_id, title, timestamp, metadata)
+      VALUES ($1, $2, 'native', 'calendar_event', $1, 'Weekly sync', now(), '{}'::jsonb)`, [id, orgId]);
+    return id;
+  };
+  const link = 'INSERT INTO document_event_links (id, org_id, document_id, event_id, created_by) VALUES ($1, $2, $3, $4, $5)';
+  const docA = await document(orgA, await drive(orgA));
+  const docB = await document(orgB, await drive(orgB));
+  const eventA = await event(orgA);
+  const eventB = await event(orgB);
+  // An event of another workspace (the trigger) and a document of another workspace (the org-qualified key).
+  await rejectsWith('23503', link, [newId(), orgA, docA, eventB, alice]);
+  await rejectsWith('23503', link, [newId(), orgA, docB, eventA, alice]);
+  await rejectsWith('23503', link, [newId(), orgA, docA, newId(), alice]);
+  const id = newId();
+  await client.query(link, [id, orgA, docA, eventA, alice]);
+  await rejectsWith('23505', link, [newId(), orgA, docA, eventA, alice]);
+  await rejectsWith('23503', 'UPDATE document_event_links SET event_id = $1 WHERE id = $2', [eventB, id]);
+  // Deleting the event removes its link and keeps the document.
+  await client.query('DELETE FROM events WHERE id = $1', [eventA]);
+  assert.equal((await client.query('SELECT 1 FROM document_event_links WHERE id = $1', [id])).rowCount, 0);
+  assert.equal((await client.query('SELECT 1 FROM documents WHERE id = $1', [docA])).rowCount, 1);
+});
+
 test('a retried agent edit stores one version', async () => {
   const doc = await document(orgA, await drive(orgA));
   const version = `INSERT INTO document_versions (id, org_id, document_id, kind, action_id, content_json, size_bytes)
@@ -321,6 +350,17 @@ const DEFINITIONS: Record<string, { constraints: string; indexes: string }> = {
       "CREATE UNIQUE INDEX drive_members_space_link_uidx ON public.drive_members USING btree (org_id, principal_id) WHERE ((principal_type = 'space'::text) AND is_link)",
     ].join(' | '),
   },
+  document_event_links: {
+    constraints: [
+      'document_event_links_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id)',
+      'document_event_links_event_id_fkey: FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE',
+      'document_event_links_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id)',
+    ].join(' | '),
+    indexes: [
+      'CREATE INDEX document_event_links_document_idx ON public.document_event_links USING btree (org_id, document_id)',
+      'CREATE UNIQUE INDEX document_event_links_event_document_key ON public.document_event_links USING btree (event_id, document_id)',
+    ].join(' | '),
+  },
   document_shares: {
     constraints: [
       'document_shares_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id)',
@@ -335,7 +375,7 @@ const DEFINITIONS: Record<string, { constraints: string; indexes: string }> = {
   },
 };
 
-test('documents, drive_members and document_shares have the definitions the upgrade job checks', async () => {
+test('documents, drive_members, document_shares and document_event_links have the definitions the upgrade job checks', async () => {
   for (const [table, expected] of Object.entries(DEFINITIONS)) {
     const constraints = await client.query<{ v: string }>(constraintsSql, [`public.${table}`]);
     const indexes = await client.query<{ v: string }>(indexesSql, [`public.${table}`]);
