@@ -45,6 +45,7 @@ import {
   moduleUploadRequest,
   planModuleUpload,
   readableManifestError,
+  uniqueAppName,
 } from '@/lib/app-upload-routing';
 import { refreshApps, useAppRealtime, useApps } from '@/hooks/use-apps';
 import { refreshModuleCaches, useBundledModules, useInstalledModules, useModuleRealtime } from '@/hooks/use-modules';
@@ -168,7 +169,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   const installTemplate = async (template: AppTemplate, name: string, withSamples: boolean) => {
     setBusy('template'); setMessage(null);
     try {
-      const result = await installAppTemplate({ template, name, withSamples, installed: installedModules.modules });
+      const result = await installAppTemplate({ template, name: uniqueAppName(name, installedModules.modules), withSamples, installed: installedModules.modules });
       await refreshModuleCaches(result.slug);
       setMessage(result.seedError
         ? { tone: 'error', text: `${result.name}: ${result.seedError}`, href: `/modules/${encodeURIComponent(result.slug)}`, hrefLabel: `Open ${result.name}` }

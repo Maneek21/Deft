@@ -9,6 +9,7 @@ import {
   moduleUploadRequest,
   planModuleUpload,
   readableManifestError,
+  uniqueAppName,
 } from './app-upload-routing';
 import { MODULE_MANIFEST_MAX_BYTES, previewModuleManifestJson, type BundledModule, type ModuleInstallation } from './modules';
 import type { AppInstallation } from './apps';
@@ -162,4 +163,11 @@ test('review fixes: size wording, BOM, app files win over a stray package_format
 test('module sizes just over the limit round up to whole kilobytes', () => {
   const big = JSON.stringify({ ...hiring, description: 'x'.repeat(MODULE_MANIFEST_MAX_BYTES) });
   assert.throws(() => classifyAppUpload(big, { appPackagesEnabled: true }), /This app file is \d+ KB\. App files must be 128 KB or smaller/);
+});
+
+test('a template name already shown by an installed app gets a number', () => {
+  const named = (name: string) => installed({ id: name, slug: name.toLowerCase().replace(/\s+/g, '-'), moduleId: `workspace.${name}`, manifest: { ...installed().manifest, name } });
+  assert.equal(uniqueAppName('Hiring pipeline', [installed()]), 'Hiring pipeline 2');
+  assert.equal(uniqueAppName('  hiring   PIPELINE ', [installed(), named('Hiring pipeline 2')]), 'hiring PIPELINE 3');
+  assert.equal(uniqueAppName('Suppliers', [installed()]), 'Suppliers');
 });

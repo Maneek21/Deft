@@ -259,3 +259,17 @@ export function readableManifestError(error: unknown, source?: string): string {
   if (lines.length > 3) shown[2] = `${shown[2]} (and ${lines.length - 3} more)`;
   return shown.join('\n');
 }
+
+/**
+ * A name no installed app already shows: "Hiring pipeline" becomes
+ * "Hiring pipeline 2" (then 3…) when taken, compared without case or extra spaces.
+ */
+export function uniqueAppName(name: string, installed: ModuleInstallation[]): string {
+  const clean = name.trim().replace(/\s+/gu, ' ');
+  const taken = new Set(installed.map((module) => (module.manifest.name || module.slug).trim().replace(/\s+/gu, ' ').toLowerCase()));
+  if (!taken.has(clean.toLowerCase())) return clean;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${clean} ${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
