@@ -8,6 +8,7 @@ import {
   developerPairingAvailable,
   moduleUploadRequest,
   planModuleUpload,
+  readableManifestError,
 } from './app-upload-routing';
 import { MODULE_MANIFEST_MAX_BYTES, previewModuleManifestJson, type BundledModule, type ModuleInstallation } from './modules';
 import type { AppInstallation } from './apps';
@@ -125,4 +126,16 @@ test('Pair Codex shows only when GET /api/apps says pairing is available', () =>
   assert.equal(developerPairingAvailable({ apps: [], developer_pairing: { available: false } }), false);
   assert.equal(developerPairingAvailable({ apps: [] }), false);
   assert.equal(developerPairingAvailable(undefined), false);
+});
+
+test('a manifest the browser check refuses reads as at most three where-and-what lines', async () => {
+  const bad = JSON.stringify({ ...hiring, collections: [{ ...hiring.collections[0], views: [{ key: 'board', name: 'Board', type: 'board', group_by: 'name' }] }] });
+  const error = await previewModuleManifestJson(bad).then(() => null, (reason: unknown) => reason);
+  const text = readableManifestError(error, bad);
+  assert.doesNotMatch(text, /\[\{|"code"/);
+  assert.match(text, /^collections → Candidates → views → Board → fields: expected array/m);
+  assert.ok(text.split('\n').length <= 3);
+  const withLines = Object.assign(new Error('x'), { lines: ['one', 'two', 'three', 'four'] });
+  assert.equal(readableManifestError(withLines), 'one\ntwo\nthree');
+  assert.equal(readableManifestError(new Error('Plain words.')), 'Plain words.');
 });

@@ -200,3 +200,52 @@ export function developerPairingAvailable(response: unknown): boolean {
   const pairing = response.developer_pairing;
   return isRecord(pairing) && pairing.available === true;
 }
+
+type ValidatorIssue = { code?: string; path?: Array<string | number>; message?: string; errors?: ValidatorIssue[][] };
+
+function flattenIssues(issues: ValidatorIssue[], prefix: Array<string | number> = []): Array<{ path: Array<string | number>; message: string }> {
+  return issues.flatMap((issue) => {
+    const path = [...prefix, ...(issue.path ?? [])];
+    // A union lists one branch per manifest version; the first is the current format.
+    if (issue.code === 'invalid_union' && issue.errors?.[0]?.length) return flattenIssues(issue.errors[0], path);
+    return [{ path, message: issue.message ?? 'Invalid value' }];
+  });
+}
+
+/**
+ * Readable text for a manifest the browser check refused. Errors that already
+ * carry readable `lines` pass through; a raw validator dump becomes at most
+ * three "where: what" lines.
+ */
+export function readableManifestError(error: unknown, source?: string): string {
+  if (error && typeof error === 'object' && Array.isArray((error as { lines?: unknown }).lines)) {
+    return ((error as { lines: unknown[] }).lines).filter((line): line is string => typeof line === 'string').slice(0, 3).join('\n');
+  }
+  const message = error instanceof Error ? error.message : '';
+  if (!/^\s*[[{]/u.test(message)) return message || 'This app file could not be read.';
+  let issues: ValidatorIssue[];
+  try {
+    const parsed = JSON.parse(message) as unknown;
+    issues = Array.isArray(parsed) ? parsed as ValidatorIssue[] : [parsed as ValidatorIssue];
+  } catch {
+    return 'This app file does not match the app format.';
+  }
+  let manifest: Record<string, unknown> | null = null;
+  try { manifest = source ? JSON.parse(source) as Record<string, unknown> : null; } catch { manifest = null; }
+  const name = (path: Array<string | number>) => {
+    const parts: string[] = [];
+    let node: unknown = manifest;
+    for (const key of path) {
+      node = node && typeof node === 'object' ? (node as Record<string | number, unknown>)[key] : undefined;
+      if (typeof key === 'number') {
+        const label = node && typeof node === 'object' ? (node as Record<string, unknown>).name ?? (node as Record<string, unknown>).label ?? (node as Record<string, unknown>).key : undefined;
+        parts.push(typeof label === 'string' ? label : `item ${key + 1}`);
+      } else parts.push(key);
+    }
+    return parts.length ? parts.join(' → ') : 'The file';
+  };
+  const lines = [...new Set(flattenIssues(issues).map((issue) => `${name(issue.path)}: ${issue.message.replace(/^Invalid input: /u, '')}`))];
+  const shown = lines.slice(0, 3);
+  if (lines.length > 3) shown[2] = `${shown[2]} (and ${lines.length - 3} more)`;
+  return shown.join('\n');
+}

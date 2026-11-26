@@ -3,7 +3,6 @@
 import { useMemo, useRef, useState, type ChangeEvent } from 'react';
 import Link from 'next/link';
 import { AppWindow, Check, Copy, FileUp, Loader2, Power, ShieldCheck, X } from 'lucide-react';
-import { PageHeader } from '@/components/page-header';
 import { EmptyState } from '@/components/empty-state';
 import { AttachmentAppUpgrade } from '@/components/apps/attachment-app-upgrade';
 import { InstallationUpgradeTrust } from '@/components/apps/installation-upgrade-trust';
@@ -38,6 +37,7 @@ import {
   developerPairingAvailable,
   moduleUploadRequest,
   planModuleUpload,
+  readableManifestError,
 } from '@/lib/app-upload-routing';
 import { refreshApps, useAppRealtime, useApps } from '@/hooks/use-apps';
 import { refreshModuleCaches, useBundledModules, useInstalledModules, useModuleRealtime } from '@/hooks/use-modules';
@@ -98,7 +98,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
       const upload = classifyAppUpload(source, { appPackagesEnabled: APPS_ENABLED });
       if (upload.kind === 'module') {
         if (target?.kind === 'package') throw new Error(`This is an app file, not an App Kit package. Choose a new package for ${target.app.name}.`);
-        const preview = await previewModuleManifestJson(source);
+        const preview = await previewModuleManifestJson(source).catch((reason: unknown) => { throw new Error(readableManifestError(reason, source)); });
         const decision = planModuleUpload(preview, installedModules.modules, target?.kind === 'module' ? target.module.id : null);
         setPendingModule({ source, preview, decision });
         return;
@@ -256,10 +256,10 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   const retry = () => { void installedModules.mutate(); void bundledModules.mutate(); void mutate(); };
 
   return <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-    <PageHeader title="Apps" description="Add apps that come with Deft, or build your own." compact />
     <input ref={inputRef} type="file" accept="application/json,.json" onChange={(event) => void handleFile(event)} className="sr-only" aria-label="Choose an app file" tabIndex={-1} />
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(2rem,env(safe-area-inset-bottom))] pt-3 md:px-6">
       <div className="mx-auto max-w-5xl space-y-5">
+        <header className="sr-only md:not-sr-only md:pt-2"><h1 className="text-[1.5rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Apps</h1><p className="mt-1 text-[0.875rem]" style={{ color: 'var(--on-surface-variant)' }}>Add apps that come with Deft, or build your own.</p></header>
         {message && <div role={message.tone === 'error' ? 'alert' : 'status'} className="flex items-start gap-3 rounded-lg px-3 py-2.5 text-[0.8125rem]" style={{ background: message.tone === 'error' ? 'var(--danger-subtle)' : 'rgba(48,164,108,.12)', color: message.tone === 'error' ? 'var(--error)' : 'var(--status-green)' }}>
           <p className="min-w-0 flex-1 whitespace-pre-line break-words leading-relaxed">{message.text}{message.href && <> <Link href={message.href} className="font-semibold underline underline-offset-2">{message.hrefLabel}</Link></>}</p>
           <button type="button" onClick={() => setMessage(null)} aria-label="Dismiss message" className="-my-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md"><X size={14} aria-hidden /></button>

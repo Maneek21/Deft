@@ -177,7 +177,7 @@ const PACKAGE_STATES: Record<AppInstallation['state'], { tone: Tone; label: stri
 export function PackageAppTile({ app, canManage }: { app: AppInstallation; canManage: boolean }) {
   const state = PACKAGE_STATES[app.state];
   const href = `/settings/apps/${encodeURIComponent(app.id)}`;
-  const meta = [`v${app.version}`, 'App Kit package', plural(app.manifest.modules.length, 'part')].join(' · ');
+  const meta = `v${app.version} · App Kit package`;
   return (
     <TileShell label={app.name}>
       <TileHeading icon={<AppWindow size={20} aria-hidden />} name={app.name} status={<StatusPill tone={state.tone}>{state.label}</StatusPill>} meta={meta} />
