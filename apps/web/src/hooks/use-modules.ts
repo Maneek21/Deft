@@ -109,7 +109,7 @@ const MODULE_QUERY_KEY_SEPARATOR = '::module-query::';
 async function fetchModuleQuery(key: string): Promise<unknown> {
   key = sessionSWRPath(key);
   const separator = key.indexOf(MODULE_QUERY_KEY_SEPARATOR);
-  if (separator < 0) throw new Error('Invalid module query cache key.');
+  if (separator < 0) throw new Error('Unable to load app records.');
   const path = key.slice(0, separator);
   const body = JSON.parse(decodeURIComponent(key.slice(separator + MODULE_QUERY_KEY_SEPARATOR.length))) as unknown;
   const response = await api.post(path, body);

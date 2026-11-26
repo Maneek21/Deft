@@ -176,6 +176,7 @@ jobs:
           src/lib/module-collection-nav.test.ts
           src/lib/apps.test.ts
           src/lib/app-upload-routing.test.ts
+          src/lib/tool-display.test.ts
           src/components/apps/home/apps-home.test.tsx
           src/lib/settings-navigation.test.ts
           src/lib/module-navigation.test.ts

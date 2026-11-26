@@ -272,7 +272,7 @@ export function ModuleWorkspace() {
     }), { scroll: false });
   };
 
-  if (moduleState.isLoading) return <ModuleLoadingState label="Loading module…" />;
+  if (moduleState.isLoading) return <ModuleLoadingState label="Loading app…" />;
   if (moduleState.error || !installedModule) {
     return (
       <ModuleErrorState
