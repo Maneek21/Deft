@@ -205,6 +205,10 @@ An attachment is left out, with its reason in `omissions.jsonl` and
   versions show, and who created and last edited a document (`created_by`
   and `last_edited_by`, null otherwise). Never for a guest, whatever their
   role;
+- of the people a drive, folder, member or share row names as its actor,
+  only those Deft shows them: a personal drive's owner, who added a drive
+  member on a drive they have full access to, and who made a share on a
+  document they can edit. Who created a drive or folder is null;
 - their own calendar;
 - installed modules, which guests do not see and which nobody sees while
   disabled.

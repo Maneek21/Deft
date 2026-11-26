@@ -1789,3 +1789,72 @@ test('a deleted doc folder\'s documents aren\'t exported from it: those in its t
     await r.remove();
   }
 });
+
+// ---------------------------------------------------------------------------
+// F17 C4 follow-up: a person's export names a drive's, folder's, member's or
+// share's actor only where Deft shows it to them.
+
+test('a viewer\'s and a guest\'s export names no drive creator, folder creator, member adder or share maker Deft hides from them', { skip }, async () => {
+  const { a } = world;
+  const r = new DocumentRows();
+  try {
+    // Everything below is created, added and shared by the owner (DocumentRows).
+    const drive = await r.drive('F17 Actors', 'private');
+    await r.member(drive, { user: a.member }, 'full');
+    await r.member(drive, { user: a.other }, 'view');
+    await r.member(drive, { user: a.guest }, 'view');
+    const folder = await r.folder(drive, 'Actors folder');
+    const shownBelowEdit = await r.document(drive, 'Shared below edit', docOf('actors text'), { folder });
+    await r.share(shownBelowEdit, { user: a.other }, 'comment');
+    await r.share(shownBelowEdit, { user: a.guest }, 'view');
+    const editable = await r.document(drive, 'Shared at edit', docOf('actors text'));
+    await r.share(editable, { user: a.guest }, 'edit');
+    const myDrive = await r.drive('My drive', 'personal', { owner: a.member });
+    await r.member(myDrive, { user: a.member }, 'full');
+    const exportOf = (scope: ExportOptions['scope']) => runExport({ scope });
+    const find = (exported: Exported, path: string, match: (row: Record<string, any>) => boolean) => rows(exported, path).find(match);
+
+    // The whole workspace names every actor.
+    const whole = await exportOf({ kind: 'workspace' });
+    assert.equal(find(whole, 'data/drives.jsonl', (row) => row.id === drive)?.created_by, a.owner);
+    assert.equal(find(whole, 'data/drives.jsonl', (row) => row.id === myDrive)?.owner_user_id, a.member);
+    assert.equal(find(whole, 'data/doc_folders.jsonl', (row) => row.id === folder)?.created_by, a.owner);
+    for (const row of rows(whole, 'data/drive_members.jsonl').filter((candidate) => candidate.drive_id === drive)) assert.equal(row.added_by, a.owner);
+    for (const row of rows(whole, 'data/document_shares.jsonl').filter((candidate) => r.documents.includes(candidate.document_id))) assert.equal(row.shared_by, a.owner);
+
+    // No person is told who created a drive or a folder.
+    const people = { member: await exportOf({ kind: 'member', member: a.member }), viewer: await exportOf({ kind: 'member', member: a.other }),
+      guest: await exportOf({ kind: 'member', member: a.guest }) };
+    for (const [name, exported] of Object.entries(people)) {
+      assert.ok(find(exported, 'data/drives.jsonl', (row) => row.id === drive), `${name} has the drive`);
+      assert.equal(find(exported, 'data/drives.jsonl', (row) => row.id === drive)!.created_by, null, `${name}: drive creator`);
+      assert.equal(find(exported, 'data/doc_folders.jsonl', (row) => row.id === folder)!.created_by, null, `${name}: folder creator`);
+    }
+    // A personal drive's owner, as the drive list shows it (`is_mine`).
+    assert.equal(find(people.member, 'data/drives.jsonl', (row) => row.id === myDrive)!.owner_user_id, a.member);
+    assert.equal(find(people.member, 'data/drives.jsonl', (row) => row.id === myDrive)!.created_by, null);
+    // Who added a member: only on a drive the person holds full on.
+    assert.equal(find(people.member, 'data/drive_members.jsonl', (row) => row.drive_id === drive)!.added_by, a.owner, 'full on the drive');
+    assert.equal(find(people.viewer, 'data/drive_members.jsonl', (row) => row.drive_id === drive)!.added_by, null, 'a viewer');
+    assert.equal(find(people.guest, 'data/drive_members.jsonl', (row) => row.drive_id === drive)!.added_by, null, 'a guest');
+    // Who made a share: only on a document the person can edit, a guest included.
+    assert.equal(find(people.viewer, 'data/document_shares.jsonl', (row) => row.document_id === shownBelowEdit)!.shared_by, null, 'a commenter');
+    assert.equal(find(people.guest, 'data/document_shares.jsonl', (row) => row.document_id === shownBelowEdit)!.shared_by, null, 'a guest viewer');
+    assert.equal(find(people.guest, 'data/document_shares.jsonl', (row) => row.document_id === editable)!.shared_by, a.owner, 'a guest who can edit');
+  } finally {
+    await r.remove();
+  }
+});
+
+test('an attachment id the archive refuses as a folder name is hashed', async () => {
+  const { archiveFileName } = await import('../src/lib/workspace-export/attachments.js');
+  const { assertArchivePath } = await import('../src/lib/workspace-export/writer.js');
+  const plain = randomUUID();
+  assert.equal(archiveFileName(plain, 'report.pdf'), `attachments/${plain}/report.pdf`);
+  const paths = ['con', 'NUL', 'COM1', 'lpt9', '..', '../../etc', 'a/b'].map((id) => archiveFileName(id, 'report.pdf'));
+  for (const path of paths) {
+    assert.match(path, /^attachments\/h\.[0-9a-f]{64}\/report\.pdf$/, path);
+    assert.doesNotThrow(() => assertArchivePath(path));
+  }
+  assert.equal(new Set(paths).size, paths.length);
+});

@@ -16,7 +16,9 @@
 //   bodies and authors, and the files only older content shows) and who
 //   wrote a document (its created_by and last_edited_by) only for the
 //   documents they can edit, and never for a guest, whatever their role
-//   (spec 5.6; the 25 Nov consult; F17 fix round 1).
+//   (spec 5.6; the 25 Nov consult; F17 fix round 1). Who created a drive or
+//   folder, added a drive member or made a share only where Deft shows it
+//   to them (actorSql; rule C4).
 // Nothing deleted is in either: not a document in a drive's trash, a deleted
 // folder or drive, or a document in a deleted drive. Deleting a folder moves
 // its documents up to its parent folder or the drive root (deleteFolder,
@@ -117,12 +119,30 @@ function authorsCte(ctx: ExportContext): SQL {
   return memberId(ctx) && !historyForbidden(ctx) ? sql`, history_documents AS MATERIALIZED (${historyDocumentIdsSql(ctx)})` : sql``;
 }
 
-/** The ids of the drives the export holds: every live drive, or those the person can view. */
-function exportedDriveIdsSql(ctx: ExportContext): SQL {
+/** The ids of the drives the export holds: every live drive, or those the person holds at least `min` on. */
+function exportedDriveIdsSql(ctx: ExportContext, min: DocRole = 'view'): SQL {
   const userId = memberId(ctx);
   return sql`SELECT exported_drive.id FROM drives exported_drive
     WHERE exported_drive.org_id = ${ctx.orgId} AND exported_drive.is_deleted = false
-      ${userId ? sql`AND ${visibleDriveIdSql(userId, ctx.orgId, col('exported_drive.id'))}` : sql``}`;
+      ${userId ? sql`AND ${visibleDriveIdSql(userId, ctx.orgId, col('exported_drive.id'), min)}` : sql``}`;
+}
+
+/**
+ * The person a row names as its actor (`userRef`: who created a drive or
+ * folder, added a drive member, made a share), held to what Deft shows the
+ * person exporting (rule C4): the whole workspace names every actor; a
+ * person sees one only where Deft shows it to them (`shown`, a condition
+ * over the row, or never when null), and then as the people rule decides
+ * (workspaceUser). Otherwise null.
+ */
+function actorSql(ctx: ExportContext, userRef: SQL, shown: SQL | null): SQL {
+  if (!memberId(ctx)) return workspaceUser(ctx, userRef);
+  return shown ? sql`CASE WHEN ${shown} THEN ${workspaceUser(ctx, userRef)} END` : sql`NULL::text`;
+}
+
+/** A CTE to add to a WITH list (`, name AS MATERIALIZED (…)`), for the member scope only: actorSql's `shown` reads it. */
+function memberCte(ctx: ExportContext, name: string, body: () => SQL): SQL {
+  return memberId(ctx) ? sql`, ${sql.raw(name)} AS MATERIALIZED (${body()})` : sql``;
 }
 
 /**
@@ -181,35 +201,42 @@ export function documentMarkdownQuery(ctx: ExportContext): SQL {
 
 export const DRIVES_DOCUMENTS: readonly Dataset[] = [
   {
+    // A person is shown a personal drive's owner, as GET /api/drives shows it (`is_mine`, `owner_name` under the
+    // people rule), and never who created a drive (driveShape, routes/drives.ts).
     path: 'data/drives.jsonl',
     query: (ctx) => sql`WITH exported_drives AS MATERIALIZED (${exportedDriveIdsSql(ctx)})
       SELECT export_drive.id, export_drive.name, export_drive.icon, export_drive.kind,
-        ${workspaceUser(ctx, col('export_drive.owner_user_id'))} AS owner_user_id, export_drive.default_role,
+        ${actorSql(ctx, col('export_drive.owner_user_id'), sql`export_drive.kind = 'personal'`)} AS owner_user_id, export_drive.default_role,
         export_drive.agent_suggest_only, export_drive.knowledge_default, export_drive.frozen_at,
-        ${workspaceUser(ctx, col('export_drive.created_by'))} AS created_by, export_drive.created_at, export_drive.updated_at
+        ${actorSql(ctx, col('export_drive.created_by'), null)} AS created_by, export_drive.created_at, export_drive.updated_at
       FROM drives export_drive
       WHERE export_drive.org_id = ${ctx.orgId} AND export_drive.id IN (SELECT exported_drives.id FROM exported_drives)
       ORDER BY export_drive.created_at, export_drive.id`,
   },
   {
+    // Who added a member: a person is shown it only on a drive they hold full on, as only full lists a drive's
+    // members (GET /api/drives/:id/members).
     path: 'data/drive_members.jsonl',
-    query: (ctx) => sql`WITH exported_drives AS MATERIALIZED (${exportedDriveIdsSql(ctx)})
+    query: (ctx) => sql`WITH exported_drives AS MATERIALIZED (${exportedDriveIdsSql(ctx)})${memberCte(ctx, 'full_drives', () => exportedDriveIdsSql(ctx, 'full'))}
       SELECT drive_member.drive_id, drive_member.principal_type, drive_member.principal_id, drive_member.role, drive_member.is_link,
-        ${workspaceUser(ctx, col('drive_member.added_by'))} AS added_by, drive_member.created_at
+        ${actorSql(ctx, col('drive_member.added_by'), sql`drive_member.drive_id IN (SELECT full_drives.id FROM full_drives)`)} AS added_by,
+        drive_member.created_at
       FROM drive_members drive_member
       WHERE drive_member.org_id = ${ctx.orgId} AND drive_member.drive_id IN (SELECT exported_drives.id FROM exported_drives)
         AND ${exportedPrincipal(ctx, 'drive_member')}
       ORDER BY drive_member.drive_id, drive_member.created_at, drive_member.id`,
   },
   {
-    // Folders carry no access of their own: each is in the export with its drive.
+    // Folders carry no access of their own: each is in the export with its drive. A person is never shown who
+    // created a folder, as the drive tree doesn't show it (lib/documents.ts).
     path: 'data/doc_folders.jsonl',
     query: (ctx) => sql`WITH exported_drives AS MATERIALIZED (${exportedDriveIdsSql(ctx)})
       SELECT export_folder.id, export_folder.drive_id,
         CASE WHEN EXISTS (SELECT 1 FROM doc_folders parent_folder WHERE parent_folder.id = export_folder.parent_folder_id
             AND parent_folder.org_id = ${ctx.orgId} AND parent_folder.drive_id = export_folder.drive_id AND parent_folder.is_deleted = false)
           THEN export_folder.parent_folder_id END AS parent_folder_id,
-        export_folder.name, export_folder.position, ${workspaceAuthor(ctx, col('export_folder.created_by'))} AS created_by,
+        export_folder.name, export_folder.position,
+        ${memberId(ctx) ? sql`NULL::text` : workspaceAuthor(ctx, col('export_folder.created_by'))} AS created_by,
         export_folder.created_at, export_folder.updated_at
       FROM doc_folders export_folder
       WHERE export_folder.org_id = ${ctx.orgId} AND export_folder.is_deleted = false
@@ -239,10 +266,13 @@ export const DRIVES_DOCUMENTS: readonly Dataset[] = [
       ORDER BY export_document.created_at, export_document.id`,
   },
   {
+    // Who made a share: a person is shown it only on a document they can edit, as only edit lists a document's
+    // shares (GET /api/documents/:id/shares, guests included).
     path: 'data/document_shares.jsonl',
-    query: (ctx) => sql`WITH exported_documents AS MATERIALIZED (${exportedDocumentIdsSql(ctx)})
+    query: (ctx) => sql`WITH exported_documents AS MATERIALIZED (${exportedDocumentIdsSql(ctx)})${memberCte(ctx, 'editable_documents', () => exportedDocumentIdsSql(ctx, 'edit'))}
       SELECT document_share.document_id, document_share.principal_type, document_share.principal_id, document_share.role,
-        ${workspaceUser(ctx, col('document_share.shared_by'))} AS shared_by, document_share.created_at
+        ${actorSql(ctx, col('document_share.shared_by'), sql`document_share.document_id IN (SELECT editable_documents.id FROM editable_documents)`)} AS shared_by,
+        document_share.created_at
       FROM document_shares document_share
       WHERE document_share.org_id = ${ctx.orgId} AND document_share.document_id IN (SELECT exported_documents.id FROM exported_documents)
         AND ${exportedPrincipal(ctx, 'document_share')}

@@ -100,9 +100,23 @@ function fitBytes(text: string, budget: number): string {
   return kept;
 }
 
-/** Each attachment has its own folder, named by its id. A hashed id starts with `h.`, which no plain id can. */
+/**
+ * Each attachment has its own folder, named by its id. An id that isn't a
+ * plain name, or whose folder name the archive refuses (a name Windows
+ * reserves, such as `con` or `COM1`; assertArchivePath), is hashed instead:
+ * a hashed id starts with `h.`, which no plain id can.
+ */
 function archiveFolder(id: string): string {
-  return `attachments/${/^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : `h.${createHash('sha256').update(id).digest('hex')}`}`;
+  const plain = `attachments/${id}`;
+  if (/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    try {
+      assertArchivePath(plain);
+      return plain;
+    } catch {
+      // A reserved name: hashed below.
+    }
+  }
+  return `attachments/h.${createHash('sha256').update(id).digest('hex')}`;
 }
 
 /** No trailing dot or space, never empty, and never a device name. */
