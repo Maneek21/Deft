@@ -12,7 +12,8 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ### Starter apps and a plain-words app preview, ready for the Apps page
 
-The Apps page shows these through its starter gallery and install step.
+Groundwork only: nothing on a page uses these yet. The Apps page's starter
+gallery and install step will.
 
 - **Four starter apps.** Hiring pipeline, Vendor tracker, Light CRM and Content
   calendar. Each installs under the name you give it, as an ordinary uploaded app,

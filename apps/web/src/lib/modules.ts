@@ -1036,7 +1036,8 @@ export function diffModuleRecordUpdate(
 }
 
 export async function moduleApiError(response: Response, fallback: string): Promise<string> {
-  const body = await response.json().catch(() => ({})) as { error?: unknown; code?: unknown };
+  const raw = await response.json().catch(() => null) as unknown;
+  const body = (raw && typeof raw === 'object' ? raw : {}) as { error?: unknown; code?: unknown };
   const lines = readableErrorLines(body);
   if (lines) return lines;
   const detail = readableErrorText(body) ?? fallback;

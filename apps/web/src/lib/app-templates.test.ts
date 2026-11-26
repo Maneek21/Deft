@@ -231,3 +231,23 @@ test('a dropped connection or a null answer while seeding keeps the app and repo
     assert.ok(result.seeded <= 2, failure);
   }
 });
+
+test('a long name with an emoji still fits after " 2", and a null install answer keeps the app', async () => {
+  const template = getAppTemplate('hiring-pipeline')!;
+  const name = `${'x'.repeat(77)}${String.fromCodePoint(0x1f600)}`;
+  const server = fakeServer({ takenSlugs: [appTemplateSlug(name)] });
+  const retried = await installAppTemplate({ template, name, withSamples: false, fetch: server.fetch });
+  assert.ok(retried.name.length <= 80, `${retried.name.length}`);
+  assert.ok(retried.name.endsWith(' 2'));
+
+  for (const status of [201, 409]) {
+    const fetch = async () => new Response('null', { status });
+    if (status === 201) {
+      const result = await installAppTemplate({ template, name: 'Hiring', withSamples: true, fetch });
+      assert.equal(result.slug, 'hiring');
+      assert.match(result.seedError ?? '', /sample records were not added/);
+    } else {
+      await assert.rejects(() => installAppTemplate({ template, name: 'Hiring', withSamples: false, fetch }), /^Error: Unable to install Hiring\./);
+    }
+  }
+});

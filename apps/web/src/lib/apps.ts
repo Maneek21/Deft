@@ -1287,7 +1287,8 @@ export function normalizeAppConnectors(value: unknown): AppConnector[] {
 }
 
 export async function appApiError(response: Response, fallback: string): Promise<string> {
-  const body = await response.json().catch(() => ({})) as { error?: unknown; code?: unknown };
+  const raw = await response.json().catch(() => null) as unknown;
+  const body = (raw && typeof raw === 'object' ? raw : {}) as { error?: unknown; code?: unknown };
   // A switched-off feature (developer pairing on hosted) answers a bare 404;
   // the caller's own words explain it better than "Not found".
   if (response.status === 404 && body.code === 'NOT_FOUND') return fallback;

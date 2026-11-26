@@ -88,7 +88,20 @@ function nameWithSuffix(name: string, attempt: number): string {
   const trimmed = name.trim();
   if (attempt <= 1) return trimmed;
   const suffix = ` ${attempt}`;
-  return `${Array.from(trimmed).slice(0, MODULE_LIMITS.display_name_chars - suffix.length).join('').trimEnd()}${suffix}`;
+  // The validator counts UTF-16 units, so trim by units without splitting a character.
+  const limit = MODULE_LIMITS.display_name_chars - suffix.length;
+  let kept = '';
+  for (const char of trimmed) {
+    if (kept.length + char.length > limit) break;
+    kept += char;
+  }
+  return `${kept.trimEnd()}${suffix}`;
+}
+
+/** A JSON object body, or an empty object for anything else (null, text, broken JSON). */
+async function jsonObject(response: Response): Promise<Record<string, unknown>> {
+  const value = await response.json().catch(() => null) as unknown;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 /** The server refuses these names for this workspace; the next suffix may be free. */
@@ -230,11 +243,11 @@ export async function installAppTemplate(options: {
       body: JSON.stringify(manifest),
     });
     if (response.status === 409) {
-      const body = await response.clone().json().catch(() => ({})) as { code?: unknown };
+      const body = await jsonObject(response.clone()) as { code?: unknown };
       if (typeof body.code === 'string' && RETRY_WITH_SUFFIX.has(body.code)) continue;
     }
     if (!response.ok) throw new Error(await moduleApiError(response, `Unable to install ${manifest.name}.`));
-    const body = await response.json().catch(() => ({})) as { module?: { slug?: unknown; module_id?: unknown; manifest_digest?: unknown } };
+    const body = await jsonObject(response) as { module?: { slug?: unknown; module_id?: unknown; manifest_digest?: unknown } | null };
     const installedSlug = typeof body.module?.slug === 'string' ? body.module.slug : manifest.slug;
     const digest = typeof body.module?.manifest_digest === 'string' ? body.module.manifest_digest : null;
     const result: AppTemplateInstallResult = {
