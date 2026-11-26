@@ -23,14 +23,20 @@ import { WorkspaceLimitError, limitResponse } from '../lib/workspace-limits.js';
 export const uploadRoutes = new Hono();
 export const fileServingRoutes = new Hono();
 
+/** What every document id looks like (they are crypto.randomUUID()); anything else is malformed. */
+const DOCUMENT_ID = /^[A-Za-z0-9_-]{1,200}$/;
+
 // POST /api/upload — multipart file upload (protected)
 //
 // With `document_id` (plan Task F10) the file is an image in that document:
 // it needs edit on the document (404 when the caller can't open it, 403 for a
-// viewer or commenter), is never staged, and is linked through
-// document_attachments in the same transaction, which first takes the
-// document write locks (lockDocumentForEditInTx) and checks edit again under
-// them. Whoever can open the document then reads it (lib/attachment-access.ts).
+// viewer or commenter; 400 for a document_id that is empty or isn't an id),
+// is never staged, and is linked through document_attachments in the same
+// transaction, which first takes the document write locks
+// (lockDocumentForEditInTx) and checks edit again under them. The link starts
+// outside the content (`in_current` false): editors can fetch the file at
+// once, and everyone who can open the document once a store of it holds the
+// image (lib/document-attachment-access.ts).
 uploadRoutes.post('/', async (c) => {
   try {
     const user = c.get('user');
@@ -53,7 +59,13 @@ uploadRoutes.post('/', async (c) => {
     if (taskId && messageId) {
       return c.json({ error: 'A file can target either a task or a message', code: 'VALIDATION_ERROR' }, 400);
     }
-    const documentId = c.req.query('document_id') || null;
+    // Present, document_id must be one document id; an empty or malformed one
+    // is refused rather than taken for no document.
+    const documentIds = c.req.queries('document_id');
+    if (documentIds && (documentIds.length !== 1 || !DOCUMENT_ID.test(documentIds[0]!))) {
+      return c.json({ error: 'document_id must be a document id', code: 'VALIDATION_ERROR' }, 400);
+    }
+    const documentId = documentIds?.[0] ?? null;
     if (documentId && (taskId || messageId)) {
       return c.json({ error: 'A file in a document can’t also target a task or a message', code: 'VALIDATION_ERROR' }, 400);
     }
@@ -133,10 +145,14 @@ uploadRoutes.post('/', async (c) => {
           });
         }
         if (documentId) {
+          // Not in the document's content yet: only its editors can fetch it
+          // until a store of the document holds it, when the stored listener
+          // (lib/document-versions.ts) marks it current.
           await tx.insert(documentAttachments).values({
             org_id: user.org_id,
             document_id: documentId,
             file_id: row.id,
+            in_current: false,
             added_by: user.id,
           });
         }

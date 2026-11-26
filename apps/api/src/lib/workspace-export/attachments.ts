@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { basename, dirname, posix } from 'node:path';
 import { sql, type SQL } from 'drizzle-orm';
+import { fileInDocumentSql, fileReadableThroughDocumentSql } from '../document-attachment-access.js';
 import { localStorageKeyPath } from '../file-store.js';
 import { readableSpaceSql } from '../space-visibility.js';
 import { visibleNoteCondition } from '../note-visibility.js';
@@ -24,9 +25,12 @@ function attachableMessage(ctx: ExportContext, ref: SQL): SQL {
 /**
  * The files of this workspace the scope may see, decided as getVisibleAttachment
  * does: one typed link decides; more than one fails closed; otherwise the
- * legacy task column, then the legacy message column; a file attached to
- * nothing belongs to its uploader and to everyone who can read a live note
- * that shows it (note_files, canReadAttachmentThroughNote).
+ * legacy task column, then the legacy message column; a file that documents
+ * link (document_attachments) belongs to everyone one of them admits, at
+ * view while it is in the document and at edit otherwise, and to nobody
+ * else (canReadAttachmentThroughDocument, lib/document-attachment-access.ts);
+ * a file attached to nothing belongs to its uploader and to everyone who can
+ * read a live note that shows it (note_files, canReadAttachmentThroughNote).
  */
 export function visibleFilesSql(ctx: ExportContext): SQL {
   const userId = memberId(ctx);
@@ -40,6 +44,8 @@ export function visibleFilesSql(ctx: ExportContext): SQL {
         WHEN typed.task_links = 1 THEN CASE WHEN ${exportableTask(ctx, col('typed.task_id'))} THEN 'task' END
         WHEN f.task_id IS NOT NULL THEN CASE WHEN ${exportableTask(ctx, col('f.task_id'))} THEN 'task' END
         WHEN f.message_id IS NOT NULL THEN CASE WHEN ${attachableMessage(ctx, col('f.message_id'))} THEN 'message' END
+        WHEN ${fileInDocumentSql(ctx.orgId, col('f.id'))}
+          THEN CASE WHEN ${userId ? fileReadableThroughDocumentSql(userId, ctx.orgId, col('f.id')) : sql`true`} THEN 'unattached' END
         WHEN ${userId ? sql`(f.uploaded_by = ${userId} OR EXISTS (SELECT 1 FROM note_files link
           JOIN notes ON notes.id = link.note_id AND notes.org_id = link.org_id
           WHERE link.org_id = ${ctx.orgId} AND link.file_id = f.id AND notes.is_deleted = false

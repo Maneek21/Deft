@@ -35,6 +35,7 @@ import {
 import { breadcrumbChainQuery, driveTreeDocumentsQuery, favoriteDocumentsQuery, recentDocumentsQuery } from '../src/lib/documents.js';
 import { documentCardsQuery, fullDriveQuery, postableDocumentsQuery, spaceSharedDocumentsQuery } from '../src/lib/chat-documents.js';
 import { newlyReachedQuery } from '../src/lib/document-shares.js';
+import { visibleFilesSql } from '../src/lib/workspace-export/attachments.js';
 import { driveListQuery, drivesWithoutManagerQuery } from '../src/lib/drives.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { planningGrowth, type Growth } from './fixtures/planning-growth.js';
@@ -230,6 +231,8 @@ test('the attention, export and retrieval forms plan within budget', async (t) =
         WHERE export_document.org_id = ${fx.orgId} AND export_document.is_deleted = false
           AND ${visibleDocumentIdSql(member, fx.orgId, sql`export_document.id`)}
         ORDER BY export_document.created_at, export_document.id`)],
+      // A member's export of attachments (F10): a file documents link is decided by them, at view or at edit.
+      ['export files (document images)', query(visibleFilesSql({ orgId: fx.orgId, scope: { kind: 'member', user_id: member, role: 'member' } }))],
       ['export shares', query(sql`SELECT share.document_id, share.principal_type, share.principal_id, share.role, share.created_at
         FROM document_shares share
         WHERE share.org_id = ${fx.orgId} AND share.principal_type = 'user' AND share.principal_id = ${member}

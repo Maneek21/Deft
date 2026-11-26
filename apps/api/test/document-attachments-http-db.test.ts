@@ -4,14 +4,19 @@
  * `document_attachments` in the upload's transaction, is never staged, and is
  * never swept. `GET /api/files/:id` serves it to everyone the access check
  * (lib/document-access.ts) lets open the document while the image is in the
- * document (`in_current`), only to its editors once it is only in history,
- * and to nobody else: anyone else gets the answer a missing file gets. A file
- * linked to several documents is served when any one of them admits the
- * reader. Uploading into a document needs edit: 404 for someone who can't
- * open it, 403 for a viewer or commenter.
+ * document (`in_current`), only to its editors otherwise, and to nobody
+ * else: anyone else gets the answer a missing file gets. A fresh upload is
+ * not yet in the document: it becomes current only once a store of the
+ * document holds it (lib/document-versions.ts's stored listener), so until
+ * the image is placed and stored only editors can fetch it. A file linked to
+ * several documents is served when any one of them admits the reader.
+ * Uploading into a document needs edit: 404 for someone who can't open it,
+ * 403 for a viewer or commenter, 400 for a document_id that isn't an id.
  *
- * Tests 4 to 6 link their files with SQL, so what they show is the access
- * rule alone, whatever the upload does.
+ * Images are placed and removed through the one writer (writeDocument) with
+ * the stored listeners registered, as document-versions-http-db.test.ts
+ * does. Tests 4 to 6 link their files with SQL, so what they show is the
+ * access rule alone, whatever the upload does.
  *
  * Run:
  *   DATABASE_URL=... DEFT_TEST_DATABASE_URL=... pnpm --filter @deft/api test test/document-attachments-http-db.test.ts
@@ -20,15 +25,23 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
 import { Hono } from 'hono';
+import * as Y from 'yjs';
+import { ensureBlockIds, jsonToText, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
+import { setCollabLimitsForTest } from '../src/collab/limits.js';
 import { authorizeAttachmentDownload, AttachmentDownloadAuthorityError, getVisibleAttachment } from '../src/lib/attachment-access.js';
 import { sweepExpiredStagedAttachments } from '../src/lib/attachment-retention.js';
 import { closeDb } from '../src/lib/db.js';
+import { startDocumentVersioning } from '../src/lib/document-versions.js';
+import { writeDocument } from '../src/lib/document-writer.js';
 import { localFileStore, type FileStore } from '../src/lib/file-store.js';
 import { createWebSession, verifyWebAccess } from '../src/lib/web-sessions.js';
 import { authMiddleware } from '../src/middleware/auth.js';
 import { fileServingRoutes, uploadRoutes } from '../src/routes/upload.js';
+import { startCollabTestServer, type CollabTestServer } from './fixtures/collab-client.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
+
+type JSONContent = Parameters<typeof jsonToText>[0];
 
 const url = safeTestDatabaseUrl();
 const SKIP = 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
@@ -37,6 +50,9 @@ const SKIP = 'Set DEFT_TEST_DATABASE_URL to a disposable test database';
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 1, 2, 3, 4]);
 
 let fx: DrivesFixture | undefined;
+let srv: CollabTestServer | undefined;
+let stopVersioning: (() => void) | undefined;
+let restoreLimits: (() => void) | undefined;
 /** Everyone the tests act as: the fixture's people plus the ones added in `before`. */
 let who: {
   editor: string; editor2: string; commenter: string; viewer: string; viewer2: string; stranger: string;
@@ -67,14 +83,20 @@ before(async () => {
     const orgId = userId === who.outsider ? fx.otherOrgId : fx.orgId;
     tokens.set(userId, (await createWebSession({ id: userId, email: `${userId}@images.test`, org_id: orgId })).accessToken);
   }
+  restoreLimits = setCollabLimitsForTest({ unloadAfterMs: 200 });
+  srv = await startCollabTestServer(fx);
+  stopVersioning = startDocumentVersioning();
 });
 
 after(async () => {
+  stopVersioning?.();
+  restoreLimits?.();
+  await srv?.close();
   if (fx) {
     const orgs = [fx.orgId, fx.otherOrgId];
     const { rows } = await fx.client.query('SELECT storage_key FROM files WHERE org_id = ANY($1::text[])', [orgs]);
     for (const row of rows) await localFileStore.delete(row.storage_key as string).catch(() => undefined);
-    for (const table of ['document_attachments', 'attachment_derivatives', 'files', 'web_sessions']) {
+    for (const table of ['job_queue', 'document_attachments', 'attachment_derivatives', 'files', 'web_sessions']) {
       await fx.client.query(`DELETE FROM ${table} WHERE org_id = ANY($1::text[])`, [orgs]);
     }
     await fx.teardown();
@@ -89,9 +111,24 @@ async function privateDrive(): Promise<string> {
   return driveId;
 }
 
+/** `json` in canonical form with block ids, as a stored document holds it (document-versions-http-db.test.ts). */
+function canonical(json: JSONContent): JSONContent {
+  const doc = jsonToYDoc(json);
+  try {
+    return ensureBlockIds(yDocToJson(doc));
+  } finally {
+    doc.destroy();
+  }
+}
+
+/** A document of one paragraph in `driveId`, stored as the writer leaves it. */
+const documentIn = (driveId: string, title: string) => fx!.insertDocument({
+  driveId, title, json: canonical({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: title }] }] }),
+});
+
 /** A document in its own private drive: the editor edits, editor2, the commenter and the viewer hold shares. */
 async function sharedDocument(title: string): Promise<string> {
-  const documentId = await fx!.insertDocument({ driveId: await privateDrive(), title });
+  const documentId = await documentIn(await privateDrive(), title);
   await fx!.share(documentId, { user: who.editor2 }, 'edit');
   await fx!.share(documentId, { user: who.commenter }, 'comment');
   await fx!.share(documentId, { user: who.viewer }, 'view');
@@ -152,6 +189,28 @@ async function linkedImage(uploader: string, links: Array<{ documentId: string; 
 const setInCurrent = (documentId: string, fileId: string, inCurrent: boolean) => fx!.client.query(
   'UPDATE document_attachments SET in_current = $3 WHERE document_id = $1 AND file_id = $2', [documentId, fileId, inCurrent]);
 
+const inCurrentOf = async (documentId: string, fileId: string) => (await fx!.client.query(
+  'SELECT in_current FROM document_attachments WHERE document_id = $1 AND file_id = $2', [documentId, fileId])).rows[0]?.in_current as boolean | undefined;
+
+/** An edit through the one writer, as `userId`; the stored listeners (in_current) have run when it returns. */
+const edit = (documentId: string, mutate: (d: Y.Doc) => void, userId = who.editor) =>
+  writeDocument({ orgId: fx!.orgId, documentId, actor: { kind: 'user', userId }, reason: 'import', mutate });
+
+/** Places the image `fileId` in the document and stores it, as the editor does after an upload. */
+const place = (documentId: string, fileId: string) => edit(documentId, (d) => {
+  const image = new Y.XmlElement('image');
+  image.setAttribute('fileId', fileId);
+  d.getXmlFragment('default').push([image]);
+});
+
+/** Takes the image `fileId` out of the document and stores it. */
+const unplace = (documentId: string, fileId: string) => edit(documentId, (d) => {
+  const fragment = d.getXmlFragment('default');
+  const index = fragment.toArray().findIndex((node) => node instanceof Y.XmlElement && node.getAttribute('fileId') === fileId);
+  assert.ok(index >= 0, 'the image is in the document');
+  fragment.delete(index, 1);
+});
+
 /** The second gate GET /api/files/:id passes through, called directly: the file row, or the refusal's code. */
 async function authorize(userId: string, fileId: string): Promise<string> {
   const token = tokens.get(userId)!;
@@ -189,10 +248,13 @@ test('an image uploaded into a document is visible to everyone who can open the 
     'the existing upload payload',
   );
   const { rows: links } = await fx!.client.query('SELECT document_id, in_current, added_by, org_id FROM document_attachments WHERE file_id = $1', [body.id]);
-  assert.deepEqual(links, [{ document_id: documentId, in_current: true, added_by: who.editor, org_id: fx!.orgId }], 'linked to the document');
+  assert.deepEqual(links, [{ document_id: documentId, in_current: false, added_by: who.editor, org_id: fx!.orgId }],
+    'linked to the document, not yet in its content');
   const { rows: [file] } = await fx!.client.query('SELECT staged_expires_at, task_id, message_id FROM files WHERE id = $1', [body.id]);
   assert.deepEqual(file, { staged_expires_at: null, task_id: null, message_id: null });
 
+  await place(documentId, body.id);
+  assert.equal(await inCurrentOf(documentId, body.id), true, 'placed and stored');
   assert.deepEqual(await loads(body.id, ['editor', 'editor2', 'commenter', 'viewer', 'chatMember', 'guest', 'stranger', 'viewer2', 'outsider']), {
     editor: 200, editor2: 200, commenter: 200, viewer: 200, chatMember: 200, guest: 200,
     stranger: 404, viewer2: 404, outsider: 404,
@@ -200,9 +262,10 @@ test('an image uploaded into a document is visible to everyone who can open the 
   assert.equal(await authorize(who.viewer, body.id), body.id, 'the download authority admits a viewer too');
 
   // On an open drive every member of the workspace can open the document; a guest can't.
-  const openDocument = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Images: open drive' });
+  const openDocument = await documentIn(fx!.workspaceDriveId, 'Images: open drive');
   const open = await upload(who.editor, `?document_id=${openDocument}`);
   assert.equal(open.status, 201, JSON.stringify(open.body));
+  await place(openDocument, open.body.id);
   assert.deepEqual(await loads(open.body.id, ['editor', 'stranger', 'viewer2', 'guest', 'outsider']), {
     editor: 200, stranger: 200, viewer2: 200, guest: 404, outsider: 404,
   });
@@ -330,4 +393,55 @@ test('a file linked to two documents is visible to readers of either', { skip: !
     viewer: 404, viewer2: 200, editor2: 200, stranger: 404,
   });
   assert.equal(await authorize(who.viewer, fileId), 'NOT_FOUND');
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1 (review I1, tester Low)
+
+test('a fresh upload reaches viewers only once the document stores it, and leaves them when a store removes it', { skip: !url && SKIP }, async () => {
+  const documentId = await sharedDocument('Images: placed and stored');
+  const { status, body } = await upload(who.editor, `?document_id=${documentId}`);
+  assert.equal(status, 201, JSON.stringify(body));
+  const fileId = body.id as string;
+
+  // Uploaded, not placed: nothing in the document shows it, so only its editors can fetch it.
+  assert.equal(await inCurrentOf(documentId, fileId), false, 'not in the document yet');
+  assert.deepEqual(await loads(fileId, ['editor', 'editor2', 'commenter', 'viewer', 'stranger']), {
+    editor: 200, editor2: 200, commenter: 404, viewer: 404, stranger: 404,
+  }, 'uploaded and unplaced');
+  assert.equal(await authorize(who.viewer, fileId), 'NOT_FOUND');
+
+  // Placed and stored.
+  await place(documentId, fileId);
+  assert.equal(await inCurrentOf(documentId, fileId), true);
+  assert.deepEqual(await loads(fileId, ['editor', 'commenter', 'viewer', 'stranger']), {
+    editor: 200, commenter: 200, viewer: 200, stranger: 404,
+  }, 'placed and stored');
+
+  // Removed and stored: in history only.
+  await unplace(documentId, fileId);
+  assert.equal(await inCurrentOf(documentId, fileId), false);
+  assert.deepEqual(await loads(fileId, ['editor', 'editor2', 'commenter', 'viewer', 'stranger']), {
+    editor: 200, editor2: 200, commenter: 404, viewer: 404, stranger: 404,
+  }, 'removed and stored');
+});
+
+test('a document_id that is empty or isn\'t an id is refused with 400 and stores nothing', { skip: !url && SKIP }, async () => {
+  const documentId = await sharedDocument('Images: bad ids');
+  const before = await fileCount();
+  const cases: Array<[string, string]> = [
+    ['empty', '?document_id='],
+    ['blank', '?document_id=%20%20'],
+    ['not an id', `?document_id=${encodeURIComponent('not an id!')}`],
+    ['a path', `?document_id=${encodeURIComponent('../files/x')}`],
+    ['too long', `?document_id=${'a'.repeat(201)}`],
+    ['given twice', `?document_id=${documentId}&document_id=${documentId}`],
+  ];
+  for (const [name, query] of cases) {
+    const { status, body } = await upload(who.editor, query);
+    assert.deepEqual({ status, code: body?.code }, { status: 400, code: 'VALIDATION_ERROR' }, name);
+  }
+  assert.equal(await fileCount(), before, 'nothing stored');
+  const { rows } = await fx!.client.query('SELECT 1 FROM document_attachments WHERE document_id = $1', [documentId]);
+  assert.equal(rows.length, 0, 'nothing linked');
 });

@@ -18,7 +18,7 @@ import {
 } from '@deft/db/schema';
 import { noteFiles } from '@deft/db/note-files';
 import { db } from './db.js';
-import { visibleDocumentIdSql } from './document-access.js';
+import { documentAttachmentReadableSql } from './document-attachment-access.js';
 import { visibleTaskCondition } from './task-visibility.js';
 import { visibleNoteCondition, visibleNoteConditionFromLockedGrants } from './note-visibility.js';
 import { unjoinedPublicSpaceReadableSql } from './space-membership.js';
@@ -97,16 +97,14 @@ export async function canReadAttachmentThroughNote(
 }
 
 /**
- * For a query over document_attachments: the link admits `userId` under the
- * document access check (document-access.ts). An image still in the
- * document (`in_current`, kept by document-versions.ts) needs view; one only
- * in its history needs edit, the role that may read history.
+ * For a query over document_attachments: the link admits `userId`
+ * (document-attachment-access.ts: view while the file is in the document,
+ * edit otherwise).
  */
 function documentImageReadableSql(userId: string, orgId: string): SQL {
-  const documentId = sql`${documentAttachments.document_id}`;
-  return sql`CASE WHEN ${documentAttachments.in_current}
-    THEN ${visibleDocumentIdSql(userId, orgId, documentId, 'view')}
-    ELSE ${visibleDocumentIdSql(userId, orgId, documentId, 'edit')} END`;
+  return documentAttachmentReadableSql(userId, orgId, {
+    documentId: sql`${documentAttachments.document_id}`, inCurrent: sql`${documentAttachments.in_current}`,
+  });
 }
 
 /**

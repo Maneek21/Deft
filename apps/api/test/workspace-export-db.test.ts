@@ -465,6 +465,70 @@ test('attachments: member scope equals getVisibleAttachment for every file', { s
   }
 });
 
+test('attachments: a document image follows its document in a member export, never its uploader alone (F10)', { skip }, async () => {
+  const { getVisibleAttachment } = await import('../src/lib/attachment-access.js');
+  const { a } = world;
+  const driveId = randomUUID();
+  const documentId = randomUUID();
+  const inText = randomUUID();
+  const inHistory = randomUUID();
+  const images = [inText, inHistory].sort();
+  try {
+    // A private drive the member edits; the guest views the document through a share; `other` uploaded both
+    // images and can't open it; the owner isn't a member of the drive.
+    await client.query(`INSERT INTO drives (id, org_id, name, kind, created_by) VALUES ($1, $2, 'Export images', 'private', $3)`,
+      [driveId, a.orgId, a.owner]);
+    await client.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role, added_by)
+      VALUES ($1, $2, $3, 'user', $4, 'edit', $5)`, [randomUUID(), a.orgId, driveId, a.member, a.owner]);
+    await client.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, created_by)
+      VALUES ($1, $2, $3, 'Export images', '{"type":"doc","content":[]}'::jsonb, $4)`, [documentId, a.orgId, driveId, a.member]);
+    await client.query(`INSERT INTO document_shares (id, org_id, document_id, principal_type, principal_id, role, shared_by)
+      VALUES ($1, $2, $3, 'user', $4, 'view', $5)`, [randomUUID(), a.orgId, documentId, a.guest, a.member]);
+    for (const [fileId, inCurrent] of [[inText, true], [inHistory, false]] as const) {
+      const bytes = Buffer.from(`image ${fileId}`);
+      await writeFile(join(world.uploadsDir, `${fileId}.bin`), bytes);
+      await client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, content_sha256)
+        VALUES ($1, $2, $3, 'image.png', 'image/png', $4, $5, $6)`,
+      [fileId, a.orgId, a.other, bytes.length, `${fileId}.bin`, `sha256:${createHash('sha256').update(bytes).digest('hex')}`]);
+      await client.query(`INSERT INTO document_attachments (id, org_id, document_id, file_id, in_current, added_by)
+        VALUES ($1, $2, $3, $4, $5, $6)`, [randomUUID(), a.orgId, documentId, fileId, inCurrent, a.other]);
+    }
+    const exported = async (member: string) => rows(await runExport({ scope: { kind: 'member', member } }), 'data/files.jsonl')
+      .map((row) => row.id as string).filter((id) => images.includes(id)).sort();
+    const served = async (member: string) => {
+      const ids: string[] = [];
+      for (const id of images) if (await getVisibleAttachment(id, a.orgId, member)) ids.push(id);
+      return ids;
+    };
+    const expected: Array<[string, string, string[]]> = [
+      ['the editor: in the text and only in history', a.member, images],
+      ['a viewer: only the image in the text', a.guest, [inText]],
+      ['the uploader, who can’t open the document', a.other, []],
+      ['the owner, not in the private drive', a.owner, []],
+    ];
+    for (const [name, member, ids] of expected) {
+      assert.deepEqual(await exported(member), ids, name);
+      assert.deepEqual(await served(member), ids, `${name}: as GET /api/files serves them`);
+    }
+    const whole = rows(await runExport({ scope: { kind: 'workspace' } }), 'data/files.jsonl').filter((row) => images.includes(row.id));
+    assert.deepEqual(whole.map((row) => row.id).sort(), images, 'the whole workspace has both');
+    assert.ok(whole.every((row) => row.attached_to === null), 'on no message or task');
+
+    // Access taken away: the drive membership and the share.
+    await client.query('DELETE FROM drive_members WHERE drive_id = $1', [driveId]);
+    await client.query('DELETE FROM document_shares WHERE document_id = $1', [documentId]);
+    for (const member of [a.member, a.guest]) assert.deepEqual(await exported(member), [], `revoked: ${member}`);
+  } finally {
+    await client.query('DELETE FROM document_attachments WHERE document_id = $1', [documentId]);
+    await client.query('DELETE FROM files WHERE id = ANY($1::text[])', [images]);
+    await client.query('DELETE FROM document_shares WHERE document_id = $1', [documentId]);
+    await client.query('DELETE FROM documents WHERE id = $1', [documentId]);
+    await client.query('DELETE FROM drive_members WHERE drive_id = $1', [driveId]);
+    await client.query('DELETE FROM drives WHERE id = $1', [driveId]);
+    for (const id of images) await rm(join(world.uploadsDir, `${id}.bin`), { force: true });
+  }
+});
+
 test('attachments: included bytes are exact and checksummed; every other file says why it is missing', { skip }, async () => {
   const exported = await runExport({ scope: { kind: 'workspace' } });
   const files = new Map(rows(exported, 'data/files.jsonl').map((row) => [row.id, row]));
