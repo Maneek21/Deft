@@ -56,7 +56,8 @@ import { getProjectResolvedConfig } from '../project-resolved-config.js';
 import { allowedNextStatuses, isValidTransition } from '../task-status-machine.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
 import { resolveAssigneeWithMatches } from '../resolve-assignee.js';
-import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
+import { createTaskBundle, validateTaskBundleSubtasks, type TaskBundleSubtaskInput } from '../task-bundle.js';
+import { isTaskStatus, taskPriorityError } from '../task-priority.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
 import { verifiedCitedMessage } from './cited-message.js';
@@ -372,7 +373,17 @@ async function verifyMessageVisibleToUser(
 
 // ─── task_create ──────────────────────────────────────────────────────────
 
-const VALID_PRIORITY = new Set(['p0', 'p1', 'p2', 'p3']);
+/** A task_create argument error (an unknown priority, a malformed subtask), or null. */
+function taskCreateArgsError(args: TaskCreateArgs): string | null {
+  const priorityError = taskPriorityError(args.priority);
+  if (priorityError) return `task_create: ${priorityError}`;
+  try {
+    validateTaskBundleSubtasks(Array.isArray(args.subtasks) ? args.subtasks : null);
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  return null;
+}
 
 export type TaskCreateArgs = {
   caller_employee_slug: string;
@@ -406,6 +417,8 @@ export async function executeTaskCreate(
   },
 ): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('task_create requires title');
+  const argsError = taskCreateArgsError(args);
+  if (argsError) return errorResult(argsError);
   const referenceError = await employeeMentionWriteError('task_create', args, ctx);
   if (referenceError) return errorResult(referenceError);
 
@@ -450,10 +463,7 @@ export async function executeTaskCreate(
 
     const shadowUserId = projectAccess.userId;
 
-    const priority =
-      args.priority && VALID_PRIORITY.has(args.priority)
-        ? (args.priority as 'p2')
-        : ('p2' as const);
+    const priority = args.priority ?? 'p2';
 
     if (args.source_message_id?.trim()) {
       // A capture action reads its source message as the message author only.
@@ -604,6 +614,8 @@ export async function taskCreate(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('task_create requires title');
+  const argsError = taskCreateArgsError(args);
+  if (argsError) return errorResult(argsError);
   const cited = await verifiedCitedMessage(ctx, args.source_message_id);
   if ('refusal' in cited) return errorResult(`task_create: ${cited.refusal}`);
 
@@ -627,14 +639,6 @@ export async function taskCreate(
 
 // ─── task_update ──────────────────────────────────────────────────────────
 
-const VALID_STATUS = new Set([
-  'backlog',
-  'todo',
-  'in_progress',
-  'in_review',
-  'done',
-  'cancelled',
-]);
 
 export type TaskUpdateArgs = {
   caller_employee_slug: string;
@@ -669,6 +673,8 @@ export async function executeTaskUpdate(
   if (!args.patch || Object.keys(args.patch).length === 0) {
     return errorResult('task_update requires a non-empty patch');
   }
+  const updatePriorityError = taskPriorityError(args.patch.priority);
+  if (updatePriorityError) return errorResult(`task_update: ${updatePriorityError}`);
   const referenceError = await employeeMentionWriteError('task_update', args, ctx);
   if (referenceError) return errorResult(referenceError);
 
@@ -698,7 +704,7 @@ export async function executeTaskUpdate(
 
     if (typeof patch.title === 'string') update.title = patch.title;
     if (typeof patch.description === 'string') update.description = patch.description;
-    if (patch.status !== undefined && !VALID_STATUS.has(patch.status)) {
+    if (patch.status !== undefined && !isTaskStatus(patch.status)) {
       const resolvedConfig = await getProjectResolvedConfig(existingTask.project_id);
       return errorResult(JSON.stringify({
         error: 'task_update: invalid status transition',
@@ -708,7 +714,7 @@ export async function executeTaskUpdate(
         allowed_next_statuses: allowedNextStatuses(existingTask.status, resolvedConfig),
       }));
     }
-    if (patch.status && VALID_STATUS.has(patch.status)) {
+    if (patch.status && isTaskStatus(patch.status)) {
       if (patch.status !== existingTask.status) {
         const resolvedConfig = await getProjectResolvedConfig(existingTask.project_id);
         if (!isValidTransition(existingTask.status, patch.status, resolvedConfig)) {
@@ -729,7 +735,7 @@ export async function executeTaskUpdate(
         });
       }
     }
-    if (patch.priority && VALID_PRIORITY.has(patch.priority)) {
+    if (patch.priority) {
       if (patch.priority !== existingTask.priority) {
         update.priority = patch.priority;
         activityEntries.push({
@@ -940,6 +946,8 @@ export async function taskUpdate(
   if (!args.patch || Object.keys(args.patch).length === 0) {
     return errorResult('task_update requires a non-empty patch');
   }
+  const updatePriorityError = taskPriorityError(args.patch.priority);
+  if (updatePriorityError) return errorResult(`task_update: ${updatePriorityError}`);
   const cited = await verifiedCitedMessage(ctx, args.source_message_id);
   if ('refusal' in cited) return errorResult(`task_update: ${cited.refusal}`);
 

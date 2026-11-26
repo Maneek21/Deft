@@ -4,10 +4,9 @@ import { tasks, taskActivity, projects, taskRelationships } from '@deft/db/schem
 import { reserveTaskNumberRange } from './task-numbering.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { currentAgentChannelEventAuthoritySql } from './agent-channel-authority.js';
+import { isTaskPriority, taskPriorityError, type TaskPriority } from './task-priority.js';
 
-const VALID_PRIORITY = new Set(['p0', 'p1', 'p2', 'p3']);
 const MAX_SUBTASKS_PER_DRAFT = 20;
-type TaskPriority = 'p0' | 'p1' | 'p2' | 'p3';
 
 export type TaskBundleSubtaskInput = {
   title?: string;
@@ -177,6 +176,9 @@ export function summarizeTaskBundleParams(params: {
 export async function createTaskBundle(params: TaskBundleCreateParams): Promise<TaskBundleCreateResult> {
   const title = params.title.trim();
   if (!title) throw new Error('task_create requires title');
+  const priorityError = taskPriorityError(params.priority);
+  if (priorityError) throw new Error(`task_create: ${priorityError}`);
+  validateTaskBundleSubtasks(params.subtasks);
 
   const [project] = await db
     .select({ id: projects.id, prefix: projects.prefix, name: projects.name })
@@ -185,7 +187,6 @@ export async function createTaskBundle(params: TaskBundleCreateParams): Promise<
     .limit(1);
   if (!project) throw new Error('task_create: project not found');
 
-  validateTaskBundleSubtasks(params.subtasks);
   const subtasks = await normalizeSubtasksForOrg(params.subtasks, params.orgId, params.priority, params.createdBy);
   const count = 1 + subtasks.length;
   const created = await db.transaction(async (tx) => {
@@ -363,6 +364,8 @@ export function validateTaskBundleSubtasks(subtasks: unknown): void {
     if (record.subtasks !== undefined) {
       throw new Error('task_create: nested subtasks are not supported');
     }
+    const priorityError = taskPriorityError(record.priority);
+    if (priorityError) throw new Error(`task_create: subtask ${index + 1} ${priorityError}`);
     if (record.depends_on !== undefined) {
       if (!Array.isArray(record.depends_on) || record.depends_on.some((value) => !Number.isInteger(value))) {
         throw new Error(`task_create: subtask ${index + 1} depends_on must contain subtask numbers`);
@@ -415,7 +418,7 @@ async function normalizeSubtasksForOrg(
 }
 
 export function normalizePriority(value: unknown, fallback: TaskPriority = 'p2'): TaskPriority {
-  return typeof value === 'string' && VALID_PRIORITY.has(value) ? (value as TaskPriority) : fallback;
+  return isTaskPriority(value) ? value : fallback;
 }
 
 export function normalizeDate(value: unknown): Date | null {

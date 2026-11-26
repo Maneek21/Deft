@@ -42,6 +42,7 @@ import { assertScheduleRoom } from './workspace-limits.js';
 import { resolveSpaceTarget } from './resolve-space-target.js';
 import { createTaskBundle } from './task-bundle.js';
 import { bulkUpdateTasks, BulkTaskUpdateError } from './task-bulk-update.js';
+import { isTaskPriority, isTaskStatus, TASK_STATUS_MESSAGE } from './task-priority.js';
 import {
   agentToolPolicyError,
   consumeAgentDailyActionBudget,
@@ -1916,9 +1917,11 @@ export async function executeAction(
           }
         }
 
-        // Smart priority detection if not explicitly set
-        let priority = params.priority || 'p2';
-        if (!params.priority) {
+        // Smart priority detection if not explicitly set. A priority that is
+        // set is checked by createTaskBundle (lib/task-priority.ts), so an
+        // empty or unknown one is refused rather than replaced.
+        let priority = params.priority ?? 'p2';
+        if (params.priority === undefined || params.priority === null) {
           const lowerContent = (params.description || params.title || '').toLowerCase();
           if (lowerContent.match(/\b(urgent|asap|critical|blocker|emergency|p0)\b/)) {
             priority = 'p0';
@@ -2054,6 +2057,9 @@ export async function executeAction(
           .where(and(eq(tasks.id, taskId), eq(tasks.org_id, orgId)))
           .limit(1);
         if (!existing) return { success: false, result: null, error: 'Task not found' };
+        if (!isTaskStatus(params.new_status)) {
+          return { success: false, result: null, error: `Invalid status: ${TASK_STATUS_MESSAGE}` };
+        }
 
         const oldStatus = existing.status;
         await db.update(tasks).set({ status: params.new_status }).where(eq(tasks.id, taskId));
@@ -2599,7 +2605,7 @@ export async function executeAction(
         if (!taskId) return { success: false, result: null, error: 'Task not found' };
 
         const priority = params.priority;
-        if (!['p0', 'p1', 'p2', 'p3'].includes(priority)) {
+        if (!isTaskPriority(priority)) {
           return { success: false, result: null, error: `Invalid priority: ${priority}` };
         }
 
