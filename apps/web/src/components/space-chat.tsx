@@ -86,6 +86,9 @@ import {
   readHistoryPage,
 } from '@/lib/chat-history-merge';
 import { ChatLoadError } from './chat-load-error';
+import { MessageDocuments, useDocumentCardsRefresh } from './documents/document-card';
+import { DocumentPicker, PendingDocuments, type PickedDocument } from './documents/document-picker';
+import { SpaceDocsTab } from './documents/space-docs-tab';
 import {
   approvalContinuationGate,
   approvalContinuationIdempotencyKey,
@@ -635,6 +638,13 @@ export function SpaceChat({
   const [continuingApprovalId, setContinuingApprovalId] = useState<string | null>(null);
   const continuingApprovalIdRef = useRef<string | null>(null);
   const [continuedApprovalIds, setContinuedApprovalIds] = useState<Set<string>>(new Set());
+  // Documents in chat (F13): the header's Chat and Docs tabs, the documents
+  // waiting to be posted, and the poster's prompts (message id -> documents).
+  const [activeTab, setActiveTab] = useState<'chat' | 'docs'>('chat');
+  const [pendingDocuments, setPendingDocuments] = useState<PickedDocument[]>([]);
+  const [documentPickerOpen, setDocumentPickerOpen] = useState(false);
+  const [postingPrompts, setPostingPrompts] = useState<Record<string, string[]>>({});
+  useDocumentCardsRefresh(sessionCacheScope);
 
   // P4-4 — pending agent_actions keyed by message_id for this space, re-read
   // when the viewer's approval Inbox events arrive (hooks/use-room-pending-approvals-refresh.ts).
@@ -867,6 +877,10 @@ export function SpaceChat({
     setMobileActionMsg(null);
     setEmojiPickerMsgId(null);
     setReminderMenuId(null);
+    setActiveTab('chat');
+    setPendingDocuments([]);
+    setDocumentPickerOpen(false);
+    setPostingPrompts({});
   }, [spaceId, setThreadMessage]);
 
   // Sync mute status from spaces list
@@ -1315,6 +1329,7 @@ export function SpaceChat({
     const requestSpaceId = spaceId;
     const quotedMessageToSend = quotedMessage;
     const pendingFilesToSend = [...pendingFiles];
+    const pendingDocumentsToSend = [...pendingDocuments];
     let content = serializeMentions(html);
     // Prepend quoted message if present
     if (quotedMessageToSend) {
@@ -1327,6 +1342,7 @@ export function SpaceChat({
     const body = {
       content: content || '(attached files)',
       file_ids: pendingFilesToSend.map((file) => file.id),
+      ...(pendingDocumentsToSend.length > 0 ? { document_ids: pendingDocumentsToSend.map((doc) => doc.id) } : {}),
     };
     if (messageIntentRef.current?.spaceId !== requestSpaceId) {
       messageIntentRef.current = { spaceId: requestSpaceId, intent: createNativeCreateIntent(`message:${requestSpaceId}`) };
@@ -1344,6 +1360,11 @@ export function SpaceChat({
     if (activeSpaceIdRef.current !== requestSpaceId) return;
     const sentFileIds = new Set(pendingFilesToSend.map((file) => file.id));
     setPendingFiles((current) => current.filter((file) => !sentFileIds.has(file.id)));
+    if (pendingDocumentsToSend.length > 0) {
+      const sentDocumentIds = new Set(pendingDocumentsToSend.map((doc) => doc.id));
+      setPendingDocuments((current) => current.filter((doc) => !sentDocumentIds.has(doc.id)));
+      setPostingPrompts((current) => ({ ...current, [createdMessage.id]: [...sentDocumentIds] }));
+    }
     if (quotedMessageToSend) {
       setQuotedMessage((current) => current === quotedMessageToSend ? null : current);
     }
@@ -1498,6 +1519,24 @@ export function SpaceChat({
               </>
             )}
 
+            {/* Chat and Docs tabs (F13) */}
+            {(['chat', 'docs'] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab}
+                onClick={() => setActiveTab(tab)}
+                className="deft-pill ml-1 min-h-[38px] flex-shrink-0 md:min-h-[30px]"
+                style={{
+                  color: activeTab === tab ? 'var(--primary)' : 'var(--on-surface-variant)',
+                  background: activeTab === tab ? 'var(--accent-muted)' : undefined,
+                }}
+              >
+                {tab === 'chat' ? 'Chat' : 'Docs'}
+              </button>
+            ))}
+
             {/* Spacer */}
             <div className="flex-1" />
 
@@ -1636,10 +1675,12 @@ export function SpaceChat({
           />
         )}
         {/* Pinned messages bar — persistent at top of chat */}
-        <PinnedBar spaceId={spaceId} />
+        {activeTab === 'chat' && <PinnedBar spaceId={spaceId} />}
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-2 md:px-4 py-0.5 relative" ref={scrollContainerRef} onScroll={(e) => {
+        {activeTab === 'docs' && <SpaceDocsTab spaceId={spaceId} spaceName={spaceName} isDm={isDm} />}
+
+        {/* Messages (kept mounted, and hidden, while the Docs tab shows) */}
+        <div className={`flex-1 overflow-y-auto px-2 md:px-4 py-0.5 relative ${activeTab === 'docs' ? 'hidden' : ''}`} ref={scrollContainerRef} onScroll={(e) => {
           const el = e.currentTarget;
           setShowJumpToLatest(el.scrollHeight - el.scrollTop - el.clientHeight > 200);
         }}>
@@ -2127,6 +2168,19 @@ export function SpaceChat({
                                   {linkPreviews.get(msg.id)?.map((preview, pi) => (
                                     <LinkPreviewCard key={`lp-${pi}`} preview={preview} />
                                   ))}
+                                  <MessageDocuments
+                                    metadata={meta}
+                                    spaceId={spaceId}
+                                    spaceName={spaceName}
+                                    isDm={isDm}
+                                    promptIds={msg.user_id === user?.id ? postingPrompts[msg.id] : undefined}
+                                    onPromptClosed={(documentId) => setPostingPrompts((current) => {
+                                      const left = (current[msg.id] ?? []).filter((id) => id !== documentId);
+                                      const next = { ...current };
+                                      if (left.length > 0) next[msg.id] = left; else delete next[msg.id];
+                                      return next;
+                                    })}
+                                  />
                                 </>
                               );
                             })()}
@@ -2290,6 +2344,19 @@ export function SpaceChat({
                                   {linkPreviews.get(msg.id)?.map((preview, pi) => (
                                     <LinkPreviewCard key={`lp-${pi}`} preview={preview} />
                                   ))}
+                                  <MessageDocuments
+                                    metadata={meta}
+                                    spaceId={spaceId}
+                                    spaceName={spaceName}
+                                    isDm={isDm}
+                                    promptIds={msg.user_id === user?.id ? postingPrompts[msg.id] : undefined}
+                                    onPromptClosed={(documentId) => setPostingPrompts((current) => {
+                                      const left = (current[msg.id] ?? []).filter((id) => id !== documentId);
+                                      const next = { ...current };
+                                      if (left.length > 0) next[msg.id] = left; else delete next[msg.id];
+                                      return next;
+                                    })}
+                                  />
                                 </>
                               );
                             })()}
@@ -2396,6 +2463,7 @@ export function SpaceChat({
         {/* Hidden file input */}
         <input ref={fileInputRef} type="file" className="hidden" multiple onChange={handleFileSelect} />
 
+        <div className={activeTab === 'docs' ? 'hidden' : 'contents'}>
         {/* Clip recorder — replaces composer entirely while recording.
             Matches WhatsApp/iMessage pattern (recorder takes over the input area
             instead of stacking above the composer). The whole space-chat composer
@@ -2427,6 +2495,8 @@ export function SpaceChat({
           </div>
         )}
 
+        <PendingDocuments documents={pendingDocuments} onRemove={(id) => setPendingDocuments((current) => current.filter((doc) => doc.id !== id))} />
+
         {/* Rich text composer — hidden while recording so the recorder
             owns the input area (single focused interaction). */}
         {!clipRecording && (
@@ -2439,6 +2509,8 @@ export function SpaceChat({
           pendingFiles={pendingFiles}
           onRemovePendingFile={(id) => setPendingFiles((prev) => prev.filter((f) => f.id !== id))}
           onFileSelect={() => fileInputRef.current?.click()}
+          onAttachDocument={() => setDocumentPickerOpen(true)}
+          pendingDocumentCount={pendingDocuments.length}
           onPaste={handlePaste}
           uploading={uploading}
           uploadProgress={progress}
@@ -2531,6 +2603,15 @@ export function SpaceChat({
             }
           }}
         />
+        )}
+        </div>
+
+        {documentPickerOpen && (
+          <DocumentPicker
+            alreadyPicked={pendingDocuments}
+            onPick={(picked) => setPendingDocuments((current) => [...current, ...picked.filter((doc) => !current.some((item) => item.id === doc.id))])}
+            onClose={() => setDocumentPickerOpen(false)}
+          />
         )}
 
         {/* Scheduled messages panel */}

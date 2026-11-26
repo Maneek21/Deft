@@ -33,6 +33,7 @@ import {
   visibleDriveCondition,
 } from '../src/lib/document-access.js';
 import { breadcrumbChainQuery, driveTreeDocumentsQuery, favoriteDocumentsQuery, recentDocumentsQuery } from '../src/lib/documents.js';
+import { documentCardsQuery, postableDocumentsQuery, spaceSharedDocumentsQuery } from '../src/lib/chat-documents.js';
 import { newlyReachedQuery } from '../src/lib/document-shares.js';
 import { driveListQuery, drivesWithoutManagerQuery } from '../src/lib/drives.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
@@ -154,6 +155,22 @@ test('the drive tree and the recent list plan within budget', async (t) => {
       ['favourite documents', favoriteDocumentsQuery(member, fx.orgId).toSQL()],
       // The breadcrumb's page chain, each page held to the access check (GET /api/documents/:id).
       ['breadcrumb page chain', query(breadcrumbChainQuery(member, fx.orgId, document!.id))],
+    ];
+  });
+});
+
+test('the chat document forms plan within budget (F13)', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  await withinBudget(t, async (fx) => {
+    const { member, member2 } = fx.people;
+    const ids = (await db.select({ id: documents.id }).from(documents).where(eq(documents.org_id, fx.orgId)).limit(50)).map((row) => row.id);
+    return [
+      // POST /api/documents/cards: up to 50 cards, each with the viewer's role and the drive's name where they can see it.
+      ['document cards (50 ids)', query(documentCardsQuery(member, fx.orgId, ids))],
+      // GET /api/spaces/:id/documents: the documents shared into a chat (the seed shares one in four with `other`).
+      ['documents shared into a chat', query(spaceSharedDocumentsQuery(member2, fx.orgId, fx.spaces.other))],
+      // Posting a message with documents: the poster can open each one (at most five).
+      ['posting check (5 ids)', postableDocumentsQuery(member, fx.orgId, ids.slice(0, 5)).toSQL()],
     ];
   });
 });

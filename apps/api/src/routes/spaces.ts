@@ -11,6 +11,7 @@ import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message
 import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
 import { applyAccessLossInTx, finishAccessLoss } from '../lib/document-access-change.js';
+import { spaceDocuments } from '../lib/chat-documents.js';
 
 export const spaceRoutes = new Hono();
 
@@ -457,6 +458,28 @@ spaceRoutes.get('/:id', async (c) => {
   } catch (err) {
     console.error('Failed to fetch space:');
     return c.json({ error: 'Failed to fetch space', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// GET /api/spaces/:id/documents — the chat's Docs tab (F13; lib/chat-documents.ts):
+// its linked drive and the documents shared into it, as far as the caller can
+// open them, each with the caller's role; hidden drive and folder names are
+// null. Needs a seat in the chat (a public chat's reader who hasn't joined is
+// refused, like a missing chat). The seat check and the reads share one
+// read-only, repeatable-read snapshot.
+spaceRoutes.get('/:id/documents', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = c.req.param('id');
+    const listed = await db.transaction(async (tx) => {
+      if (!(await requireSpaceMembership(spaceId, user.id, user.org_id, tx))) return null;
+      return spaceDocuments(tx, user.id, user.org_id, spaceId);
+    }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
+    if (!listed) return c.json(NOT_A_MEMBER, 403);
+    return c.json(listed);
+  } catch (err) {
+    console.error('Failed to list the space’s documents:');
+    return c.json({ error: 'Failed to list the documents', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 

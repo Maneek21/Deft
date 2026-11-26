@@ -23,6 +23,12 @@
 // on the same terms: none, or `{ include_subpages }`; any other JSON value
 // (null aside) is 400 too.
 //
+// Cards (F13; lib/chat-documents.ts): POST /cards { ids } answers, for at most
+// 50 ids, a card for each document the caller can open and null for every
+// other id, one that doesn't exist or belongs to another workspace included,
+// so it can't be used to find out whether a document exists. A drive the
+// caller can't see is named null.
+//
 // Sharing (F9; the rules, the lock order and who is told are in
 // lib/document-shares.ts): GET /:id/shares needs edit; POST /:id/shares,
 // PATCH and DELETE /:id/shares/:shareId need edit, and a share gives at most
@@ -45,6 +51,7 @@ import {
   changeShareRole, documentAudience, listDocumentShares, removeShare, shareDocument, shareShape,
 } from '../lib/document-shares.js';
 import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
+import { documentCards, MAX_DOCUMENT_CARDS } from '../lib/chat-documents.js';
 
 export const documentRoutes = new Hono();
 
@@ -80,6 +87,7 @@ const shareSchema = z.object({
 const shareRoleChangeSchema = z.object({ role: shareRoleSchema, include_subpages: z.boolean().optional() });
 /** DELETE's optional body. */
 const shareRemoveSchema = z.object({ include_subpages: z.boolean().optional() });
+const cardsSchema = z.object({ ids: z.array(idSchema).max(MAX_DOCUMENT_CARDS) });
 
 /** One snapshot for GET /:id's role, document, drive and breadcrumb. */
 const READ_SNAPSHOT: PgTransactionConfig = { isolationLevel: 'repeatable read', accessMode: 'read only' };
@@ -117,6 +125,18 @@ documentRoutes.post('/', async (c) => {
     return c.json({ document: view }, 201);
   } catch (error) {
     return failed(c, error, 'create the document');
+  }
+});
+
+// POST /api/documents/cards { ids }: the cards a chat message shows, as this caller may see them (F13).
+documentRoutes.post('/cards', async (c) => {
+  try {
+    const user = c.get('user');
+    const parsed = cardsSchema.safeParse(await jsonBody(c));
+    if (!parsed.success) return invalid(c);
+    return c.json({ cards: await documentCards(user.id, user.org_id, parsed.data.ids) });
+  } catch (error) {
+    return failed(c, error, 'load the document cards');
   }
 });
 

@@ -105,6 +105,10 @@ type Props = {
   pendingFiles: PendingFile[];
   onRemovePendingFile: (id: string) => void;
   onFileSelect: () => void;
+  /** "Attach document" in the + menu (F13): opens the chat's document picker. */
+  onAttachDocument?: () => void;
+  /** Documents waiting to be posted: like pending files, they let a message send without text. */
+  pendingDocumentCount?: number;
   onPaste: (e: React.ClipboardEvent) => void;
   uploading: boolean;
   uploadProgress: number;
@@ -134,6 +138,8 @@ export function RichComposer({
   pendingFiles,
   onRemovePendingFile,
   onFileSelect,
+  onAttachDocument,
+  pendingDocumentCount = 0,
   onPaste,
   uploading,
   uploadProgress,
@@ -362,7 +368,7 @@ export function RichComposer({
     if (!editor || sending || disabled) return;
     const html = editor.getHTML();
     const text = editor.getText();
-    if (!text.trim() && pendingFiles.length === 0) return;
+    if (!text.trim() && pendingFiles.length === 0 && pendingDocumentCount === 0) return;
 
     // Intercept slash commands with args: "/command args..."
     const cmdMatch = text.trim().match(/^\/(\w+)\s+(.+)$/s);
@@ -417,7 +423,7 @@ export function RichComposer({
     } finally {
       setSending(false);
     }
-  }, [disabled, editor, onSend, onSlashCommand, pendingFiles.length, sending]);
+  }, [disabled, editor, onSend, onSlashCommand, pendingDocumentCount, pendingFiles.length, sending]);
 
   const handleScheduleSend = useCallback(async (isoTime: string) => {
     if (!editor || !onScheduleSend || sending || disabled) return;
@@ -504,7 +510,7 @@ export function RichComposer({
 
   if (!editor) return null;
 
-  const hasContent = editor.getText().trim().length > 0 || pendingFiles.length > 0;
+  const hasContent = editor.getText().trim().length > 0 || pendingFiles.length > 0 || pendingDocumentCount > 0;
   const runSheetAction = (action: () => void | Promise<void>) => {
     setFormatSheetOpen(false);
     void Promise.resolve().then(action).catch((error) => {
@@ -675,6 +681,18 @@ export function RichComposer({
               <Paperclip size={18} strokeWidth={1.5} />
               <span className="text-[0.6875rem]">Attach</span>
             </button>
+            {onAttachDocument && (
+              <button
+                type="button"
+                onClick={() => { setFormatSheetOpen(false); onAttachDocument(); }}
+                aria-label="Attach document"
+                className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+                style={{ color: 'var(--on-surface-variant)' }}
+              >
+                <FileText size={18} strokeWidth={1.5} />
+                <span className="text-[0.6875rem]">Document</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => { setFormatSheetOpen(false); setEmojiOpen(true); }}
@@ -992,6 +1010,14 @@ export function RichComposer({
                       description="Add an image, document, or context file"
                       onClick={() => runDesktopAction(onFileSelect)}
                     />
+                    {onAttachDocument && (
+                      <DesktopActionButton
+                        icon={<FileText size={16} strokeWidth={1.6} />}
+                        label="Attach document"
+                        description="Post a document from one of your drives"
+                        onClick={() => runDesktopAction(onAttachDocument)}
+                      />
+                    )}
                   </div>
                 </div>
               )}
