@@ -10,6 +10,13 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.156] — 2026-11-27 (prerelease)
+
+Changes since `v0.3.0-preview.155`: #620, #621 and #622. Release scope `core` (no Hermes
+compatibility claim). Cut from master at `e7bbd39d`. No database migration:
+`packages/db/upgrades` is unchanged since 155, and `DEFT_SCHEMA_HEAD` stays
+`0.3.0-preview.154`.
+
 ### "Email me about this report" starts unticked
 
 - On hosted Deft, the **Email me about this report** box in **Report a problem** (user
