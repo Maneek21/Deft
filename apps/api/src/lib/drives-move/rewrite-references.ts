@@ -12,6 +12,10 @@
 // kept. A row whose rewrite would repeat a row of another workspace is a
 // conflict: it is left as it is and reported as an error, so the move doesn't
 // finish and an operator decides; nothing of the other workspace is touched.
+// Every read here is of this workspace's rows, except one probe per key: a
+// boolean EXISTS across workspaces on that unique key (consult rule C7). It
+// reads nothing of the other row, and a conflict report names only this
+// workspace's row and the key it would take.
 // Each rewritten row is recorded on its note's map row
 // (`details.rewritten_refs`), so the post-move check can confirm it names
 // that note's document.
@@ -19,11 +23,12 @@
 // display time through note_document_map (F15). A reference to a note that
 // isn't mapped in this workspace is left. Runs in one transaction under the
 // workspace's move lock; a second run finds nothing left to change.
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db.js';
 import { lockOrgInTx, rowsOf, type Tx } from './placement.js';
 
-export type ReferenceConflict = { table: string; id: string };
+/** A rewrite that would repeat another workspace's row: this workspace's row and the key it would take (all this workspace's values). */
+export type ReferenceConflict = { table: string; id: string; key: Record<string, string> };
 export type ReferenceRewrite = {
   crossReferences: number; entityTags: number; teamResources: number; attentionItems: number; duplicatesRemoved: number;
   conflicts: ReferenceConflict[];
@@ -70,16 +75,21 @@ export async function rewriteReferences(orgId: string): Promise<ReferenceRewrite
 }
 
 /**
- * What to do with a row whose rewritten key is `key`: `others` are the rows
- * already holding that key (with their workspace). Another workspace's row is
- * a conflict; one of this workspace, or a row of this run that took the key
- * first, makes it a duplicate.
+ * What to do with a row whose rewritten key is `key`: `elsewhere` says
+ * another workspace already holds that key (a conflict); `here` that a row of
+ * this workspace does, or a row of this run took it first (a duplicate).
  */
-function settle(orgId: string, key: string, others: Array<{ org_id: string }>, taken: Set<string>): 'conflict' | 'duplicate' | 'rewrite' {
-  if (others.some((other) => other.org_id !== orgId)) return 'conflict';
-  if (others.length > 0 || taken.has(key)) return 'duplicate';
+function settle(key: string, here: boolean, elsewhere: boolean, taken: Set<string>): 'conflict' | 'duplicate' | 'rewrite' {
+  if (elsewhere) return 'conflict';
+  if (here || taken.has(key)) return 'duplicate';
   taken.add(key);
   return 'rewrite';
+}
+
+/** One boolean of a query: `SELECT EXISTS (...) AS found`. */
+async function exists(tx: Tx, query: SQL): Promise<boolean> {
+  const [row] = rowsOf<{ found: boolean }>(await tx.execute(query));
+  return row?.found === true;
 }
 
 async function deleteRows(tx: Tx, table: 'entity_tags' | 'cross_references' | 'team_resources', orgId: string, ids: string[]): Promise<void> {
@@ -98,10 +108,16 @@ async function rewriteEntityTags(tx: Tx, orgId: string, out: ReferenceRewrite, l
   const taken = new Set<string>();
   const duplicates: string[] = [];
   for (const row of rows) {
-    const others = rowsOf<{ org_id: string }>(await tx.execute(sql`SELECT org_id FROM entity_tags
-      WHERE tag_id = ${row.tag_id} AND entity_type = 'document' AND entity_id = ${row.target_id}`));
-    const outcome = settle(orgId, `${row.tag_id}\u0000${row.target_id}`, others, taken);
-    if (outcome === 'conflict') out.conflicts.push({ table: 'entity_tags', id: row.id });
+    const here = await exists(tx, sql`SELECT EXISTS (SELECT 1 FROM entity_tags
+      WHERE org_id = ${orgId} AND tag_id = ${row.tag_id} AND entity_type = 'document' AND entity_id = ${row.target_id}) AS found`);
+    const elsewhere = await exists(tx, sql`
+      -- C7: cross-workspace existence probe on a globally unique key; reads nothing else (conflict is reported, not resolved)
+      SELECT EXISTS (SELECT 1 FROM entity_tags
+      WHERE org_id <> ${orgId} AND tag_id = ${row.tag_id} AND entity_type = 'document' AND entity_id = ${row.target_id}) AS found`);
+    const outcome = settle(`${row.tag_id}\u0000${row.target_id}`, here, elsewhere, taken);
+    if (outcome === 'conflict') {
+      out.conflicts.push({ table: 'entity_tags', id: row.id, key: { tag_id: row.tag_id, entity_type: 'document', entity_id: row.target_id } });
+    }
     else if (outcome === 'duplicate') duplicates.push(row.id);
     else {
       await tx.execute(sql`UPDATE entity_tags SET entity_type = 'document', entity_id = ${row.target_id}, updated_at = now()
@@ -133,15 +149,25 @@ async function rewriteCrossReferences(tx: Tx, orgId: string, out: ReferenceRewri
     WHERE edge.org_id = ${orgId} AND (source_map.target_id IS NOT NULL OR target_map.target_id IS NOT NULL)
     ORDER BY edge.created_at, edge.id
     FOR UPDATE OF edge`));
-  const rewriting = new Set(rows.map((row) => row.id));
+  const rewriting = rows.map((row) => row.id);
   const taken = new Set<string>();
   const duplicates: string[] = [];
   for (const row of rows) {
-    const others = rowsOf<{ id: string; org_id: string }>(await tx.execute(sql`SELECT id, org_id FROM cross_references
-      WHERE source_type = ${row.source_type} AND source_id = ${row.source_id} AND target_type = ${row.target_type} AND target_id = ${row.target_id}`))
-      .filter((other) => !rewriting.has(other.id));
-    const outcome = settle(orgId, `${row.source_type}\u0000${row.source_id}\u0000${row.target_type}\u0000${row.target_id}`, others, taken);
-    if (outcome === 'conflict') out.conflicts.push({ table: 'cross_references', id: row.id });
+    // This workspace's other rows with the key (the rows being rewritten still hold their old keys, and are left out).
+    const here = await exists(tx, sql`SELECT EXISTS (SELECT 1 FROM cross_references
+      WHERE org_id = ${orgId} AND source_type = ${row.source_type} AND source_id = ${row.source_id}
+        AND target_type = ${row.target_type} AND target_id = ${row.target_id} AND NOT (id = ANY(${sql.param(rewriting)}::text[]))) AS found`);
+    const elsewhere = await exists(tx, sql`
+      -- C7: cross-workspace existence probe on a globally unique key; reads nothing else (conflict is reported, not resolved)
+      SELECT EXISTS (SELECT 1 FROM cross_references
+      WHERE org_id <> ${orgId} AND source_type = ${row.source_type} AND source_id = ${row.source_id}
+        AND target_type = ${row.target_type} AND target_id = ${row.target_id}) AS found`);
+    const outcome = settle(`${row.source_type}\u0000${row.source_id}\u0000${row.target_type}\u0000${row.target_id}`, here, elsewhere, taken);
+    if (outcome === 'conflict') {
+      out.conflicts.push({ table: 'cross_references', id: row.id, key: {
+        source_type: row.source_type, source_id: row.source_id, target_type: row.target_type, target_id: row.target_id,
+      } });
+    }
     else if (outcome === 'duplicate') duplicates.push(row.id);
     else {
       await tx.execute(sql`UPDATE cross_references SET source_type = ${row.source_type}, source_id = ${row.source_id},
@@ -167,10 +193,16 @@ async function rewriteTeamResources(tx: Tx, orgId: string, out: ReferenceRewrite
   const taken = new Set<string>();
   const duplicates: string[] = [];
   for (const row of rows) {
-    const others = rowsOf<{ org_id: string }>(await tx.execute(sql`SELECT org_id FROM team_resources
-      WHERE team_id = ${row.team_id} AND resource_type = 'document' AND resource_id = ${row.target_id}`));
-    const outcome = settle(orgId, `${row.team_id}\u0000${row.target_id}`, others, taken);
-    if (outcome === 'conflict') out.conflicts.push({ table: 'team_resources', id: row.id });
+    const here = await exists(tx, sql`SELECT EXISTS (SELECT 1 FROM team_resources
+      WHERE org_id = ${orgId} AND team_id = ${row.team_id} AND resource_type = 'document' AND resource_id = ${row.target_id}) AS found`);
+    const elsewhere = await exists(tx, sql`
+      -- C7: cross-workspace existence probe on a globally unique key; reads nothing else (conflict is reported, not resolved)
+      SELECT EXISTS (SELECT 1 FROM team_resources
+      WHERE org_id <> ${orgId} AND team_id = ${row.team_id} AND resource_type = 'document' AND resource_id = ${row.target_id}) AS found`);
+    const outcome = settle(`${row.team_id}\u0000${row.target_id}`, here, elsewhere, taken);
+    if (outcome === 'conflict') {
+      out.conflicts.push({ table: 'team_resources', id: row.id, key: { team_id: row.team_id, resource_type: 'document', resource_id: row.target_id } });
+    }
     else if (outcome === 'duplicate') duplicates.push(row.id);
     else {
       await tx.execute(sql`UPDATE team_resources SET resource_type = 'document', resource_id = ${row.target_id}

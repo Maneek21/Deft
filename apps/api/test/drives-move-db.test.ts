@@ -735,8 +735,14 @@ test('a reference rewrite that would repeat another workspace\'s row is reported
     VALUES ($1, $2, 'note', $3, 'task', $4, $5)`, [ours, fx.orgId, s.tagged, task, fx.people.member]);
   try {
     const again = await moveOrg(fx.orgId);
-    assert.deepEqual(again.references.conflicts, [{ table: 'cross_references', id: ours }]);
+    assert.deepEqual(again.references.conflicts, [{
+      table: 'cross_references', id: ours, key: { source_type: 'document', source_id: doc.id, target_type: 'task', target_id: task },
+    }], 'the conflict names this workspace\'s row and the key it would take');
     assert.ok(again.errors.some((error) => error.sourceId === ours), 'reported as an error, so the move does not finish');
+    const reported = JSON.stringify(again);
+    for (const other of [theirs, fx.otherOrgId, fx.people.outsider]) {
+      assert.equal(reported.includes(other), false, 'the report carries no id of the other workspace');
+    }
     assert.deepEqual((await q('SELECT org_id, source_type, source_id FROM cross_references WHERE id = ANY($1::text[]) ORDER BY org_id = $2',
       [[ours, theirs], fx.orgId])).rows, [
       { org_id: fx.otherOrgId, source_type: 'document', source_id: doc.id },

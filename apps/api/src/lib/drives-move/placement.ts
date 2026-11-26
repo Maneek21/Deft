@@ -99,7 +99,8 @@ export async function mappedTarget(tx: Tx, orgId: string, legacyType: NoteMoveSo
     SELECT target_id FROM note_document_map WHERE org_id = ${orgId} AND source_type = ${legacyType} AND source_id = ${sourceId}`));
   if (row) return row.target_id;
   const [taken] = rowsOf<{ taken: boolean }>(await tx.execute(sql`
-    SELECT EXISTS (SELECT 1 FROM note_document_map WHERE source_type = ${legacyType} AND source_id = ${sourceId}) AS taken`));
+    -- C7: cross-workspace existence probe on a globally unique key; reads nothing else (conflict is reported, not resolved)
+    SELECT EXISTS (SELECT 1 FROM note_document_map WHERE org_id <> ${orgId} AND source_type = ${legacyType} AND source_id = ${sourceId}) AS taken`));
   if (taken?.taken) throw new MoveError('mapped_in_another_workspace', 'This source is already mapped in another workspace');
   return null;
 }
