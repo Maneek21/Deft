@@ -10,6 +10,13 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.156] — 2026-11-27 (prerelease)
+
+Changes since `v0.3.0-preview.155`: #620, #621 and #622. Release scope `core` (no Hermes
+compatibility claim). Cut from master at `e7bbd39d`. No database migration:
+`packages/db/upgrades` is unchanged since 155, and `DEFT_SCHEMA_HEAD` stays
+`0.3.0-preview.154`.
+
 ### "Email me about this report" starts unticked
 
 - On hosted Deft, the **Email me about this report** box in **Report a problem** (user
@@ -31,15 +38,18 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   installed app no longer offers **Update**. The check now says the file's version is not
   higher than the installed one, names both versions, and suggests the next one: "The
   installed app is 1.2.0 and this file is 1.0.5. Give the file a higher version, such as
-  1.2.1." The server refuses such an update with the same words (it used to suggest 1.0.1
-  whatever the installed version was), and the page no longer adds "Refresh and try again."
+  1.2.1." The server refuses such an update with the same words, and the page no longer
+  adds "Refresh and try again." The server used to suggest 1.0.1 whatever the installed
+  version was, and a file identical to the installed one got only "No newer version of this
+  app is available".
 - Removing a record type that still holds records is refused, as before, with a line that
   says so and names the records, such as: "Roles: record type removed, but it still holds the
   records "Product designer" and "Backend engineer"". It used to read "Roles → Record: does
   not fit in …".
-- A `"$schema"` that is not a text URL of at most 2,048 characters is now reported as
-  "$schema: must be a text URL (found a number)" (or "of at most 2048 characters") instead of
-  "unknown key "$schema"".
+- A `"$schema"` that is not text of at most 2,048 characters is now reported as
+  "$schema: must be a text URL (found a number)" (or "must be a text URL of at most 2048
+  characters (you have …)") instead of "unknown key "$schema"". Deft checks only that it is
+  text and its length, not that it is a URL.
 
 ## [0.3.0-preview.155] — 2026-11-26 (prerelease)
 
