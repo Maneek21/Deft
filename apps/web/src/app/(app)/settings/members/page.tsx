@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Bot,
@@ -314,7 +314,16 @@ export default function MembersPage() {
   const [copied, setCopied] = useState(false);
   const [roleDropdown, setRoleDropdown] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
-  const [offboardingPreview, setOffboardingPreview] = useState<OffboardingPreview | null>(null);
+  // The loaded preview and the member it is for. Each request has a number
+  // (offboardingPreviewRequest); only the latest one writes the preview, the
+  // error or the loading flag, so a slow answer for someone the dialog has
+  // moved on from never lands. Closing the dialog supersedes them all.
+  const [offboardingPreviewState, setOffboardingPreviewState] = useState<{ memberId: string; preview: OffboardingPreview } | null>(null);
+  const offboardingPreviewRequest = useRef(0);
+  // The preview counts only for the member the dialog is removing.
+  const offboardingPreview = offboardingPreviewState && offboardingPreviewState.memberId === confirmRemove
+    ? offboardingPreviewState.preview
+    : null;
   const [offboardingReplacementId, setOffboardingReplacementId] = useState('');
   const [offboardingDriveChoice, setOffboardingDriveChoice] = useState<'hand_over' | 'freeze' | null>(null);
   const [offboardingLoading, setOffboardingLoading] = useState(false);
@@ -456,7 +465,7 @@ export default function MembersPage() {
 
   const openRemovePreview = async (memberId: string) => {
     setConfirmRemove(memberId);
-    setOffboardingPreview(null);
+    setOffboardingPreviewState(null);
     const defaultReplacement = members.find((member) => (
       member.id !== memberId &&
       member.lifecycle_status === 'active'
@@ -470,24 +479,29 @@ export default function MembersPage() {
   // included: removal stays disabled until one has loaded, and a failed load
   // offers a retry.
   const loadOffboardingPreview = async (memberId: string) => {
-    setOffboardingPreview(null);
+    const request = ++offboardingPreviewRequest.current;
+    const latest = () => request === offboardingPreviewRequest.current;
+    setOffboardingPreviewState(null);
     setOffboardingError('');
     setOffboardingLoading(true);
     try {
       const res = await api.get(`/api/members/${memberId}/offboarding-preview`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Failed to load offboarding preview');
-      setOffboardingPreview(data);
+      if (latest()) setOffboardingPreviewState({ memberId, preview: data });
     } catch (err: any) {
-      setOffboardingError(err.message || 'Failed to load offboarding preview');
+      if (latest()) setOffboardingError(err.message || 'Failed to load offboarding preview');
     } finally {
-      setOffboardingLoading(false);
+      if (latest()) setOffboardingLoading(false);
     }
   };
 
   const closeRemovePreview = () => {
+    // Any preview still on its way is for a dialog that is gone.
+    offboardingPreviewRequest.current += 1;
     setConfirmRemove(null);
-    setOffboardingPreview(null);
+    setOffboardingPreviewState(null);
+    setOffboardingLoading(false);
     setOffboardingReplacementId('');
     setOffboardingDriveChoice(null);
     setOffboardingError('');

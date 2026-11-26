@@ -230,3 +230,92 @@ test('Members page: the remove dialog hands My drive to the chosen replacement, 
     await browser.close();
   }
 });
+
+/**
+ * Open A's removal, cancel while its preview is still loading, open B's; B's
+ * preview fails, then A's slow preview arrives (no work, no drive: had it
+ * landed, Confirm would be enabled, aimed at B). It must change nothing.
+ */
+test('Members page: a late preview for a member the dialog has left never enables removing another', async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  try {
+    const tab = await browser.newPage();
+    tab.setDefaultTimeout(6000);
+    let heldA: any = null;
+    let bPreviews = 0;
+    const deletes: Array<{ path: string; body: Record<string, unknown> }> = [];
+    await tab.route('**/*', (route: any) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      if (url.origin !== 'http://127.0.0.1') return route.abort();
+      if (url.pathname === '/settings/members') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' });
+      if (url.pathname === '/api/auth/me') {
+        return json({ user: { id: 'viewer', name: 'Viewer', email: 'viewer@example.test', timezone: 'UTC', role: 'owner' }, org: { id: 'org', name: 'Org', slug: 'org' } });
+      }
+      if (url.pathname === '/api/members/directory') return json({ members: MEMBERS, invites: [], summary: { active: 3, pending: 0, inactive: 0, agents: 0 } });
+      if (url.pathname === '/api/members/seats') return json({ hosted: false });
+      // A's preview is held until the test lets it through.
+      if (url.pathname === '/api/members/leaver/offboarding-preview') { heldA = route; return undefined; }
+      if (url.pathname === '/api/members/other/offboarding-preview') {
+        bPreviews += 1;
+        if (bPreviews === 1) {
+          return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Failed to load offboarding preview', code: 'INTERNAL_ERROR' }) });
+        }
+        return json(preview(0, false));
+      }
+      if (request.method() === 'DELETE') {
+        deletes.push({ path: url.pathname, body: JSON.parse(request.postData() ?? '{}') });
+        return json({ success: true, receipt: {} });
+      }
+      const detail = /^\/api\/members\/([^/]+)\/detail$/.exec(url.pathname);
+      if (detail) {
+        return json({ member: MEMBERS.find((m) => m.id === detail[1]), spaces: [], open_tasks: [], led_projects: [], pending_invites: [], mcp_tokens: [], oauth_grants: [] });
+      }
+      return route.abort();
+    });
+    await tab.goto('http://127.0.0.1/settings/members');
+    await tab.evaluate((access: string) => {
+      localStorage.setItem('deft-access-token', access);
+      localStorage.setItem('deft-refresh-token', access);
+    }, token({ id: 'viewer', org_id: 'org', sid: 'session', jti: 'v1' }));
+    await tab.addScriptTag({ content: await bundle() });
+
+    // A: open the removal, and cancel while its preview is still loading.
+    await tab.getByRole('button', { name: /Lea Leaver/ }).first().click();
+    await tab.getByText('Admin actions').waitFor();
+    await tab.getByRole('button', { name: 'Remove', exact: true }).click();
+    await tab.getByText('Loading offboarding preview...').waitFor();
+    for (let waited = 0; !heldA && waited < 5000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(heldA, 'A’s preview request is in flight');
+    await tab.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await tab.getByText('Remove Lea Leaver?').waitFor({ state: 'detached' });
+
+    // B: open the removal; its preview fails.
+    await tab.getByRole('button', { name: /Ola Other/ }).first().click();
+    await tab.waitForFunction(() => Array.from(document.querySelectorAll('p,h2,h3')).some((el) => el.textContent?.trim() === 'Ola Other'));
+    await tab.getByRole('button', { name: 'Remove', exact: true }).click();
+    await tab.getByText('Remove Ola Other?').waitFor();
+    await tab.getByTestId('offboarding-preview-retry').waitFor();
+
+    // A's preview arrives late: no open work and no drive.
+    await heldA.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(preview(0, false)) });
+    await tab.waitForTimeout(300);
+    const confirm = tab.getByRole('button', { name: 'Confirm remove' });
+    assert.equal(await confirm.isDisabled(), true, 'Confirm stays disabled');
+    assert.equal(await tab.getByTestId('offboarding-preview-retry').isVisible(), true, 'B’s Retry is still shown');
+    assert.equal((await tab.getByText('Failed to load offboarding preview').textContent())?.trim(), 'Failed to load offboarding preview', 'B’s error is still shown');
+    assert.equal(await tab.getByText(/Also revokes/).count(), 0, 'A’s preview is not shown');
+    assert.deepEqual(deletes, []);
+
+    // B's retry loads B's own preview; only then can B be removed.
+    await tab.getByTestId('offboarding-preview-retry').click();
+    await tab.getByText(/Also revokes/).waitFor();
+    assert.equal(await confirm.isDisabled(), false);
+    await confirm.click();
+    await tab.waitForFunction(() => !document.body.textContent?.includes('Remove Ola Other?'));
+    assert.deepEqual(deletes, [{ path: '/api/members/other', body: { replacement_user_id: null, personal_drive: 'freeze' } }]);
+  } finally {
+    await browser.close();
+  }
+});
