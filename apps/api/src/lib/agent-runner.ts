@@ -29,6 +29,7 @@ import {
 } from './agent-module-next-reads.js';
 import { executeActionDirect, isModuleWriteAction } from './agent-actions.js';
 import { toolInputWithContentOmitted } from './legacy-notes.js';
+import { citationForStorage, documentToolCallForStorage, sendWithheldDocumentNotice, type WithheldRef } from './document-audience.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier, type TrustLevel } from './agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
 import { getIO } from '../socket.js';
@@ -593,6 +594,8 @@ export async function runAgentQuery(params: {
   let allCitations: any[] = [];
   let pendingActions: any[] = [];
   let executedActions: any[] = [];
+  /** What the document tools left out of this shared conversation (lib/document-audience.ts). */
+  const withheldDocuments: WithheldRef[] = [];
   const moduleNextReads = createModuleNextReadsResolver({
     availableToolNames: tools.map((tool) => tool.name),
     executeRead: async (operation, input) => {
@@ -916,7 +919,7 @@ export async function runAgentQuery(params: {
             ? { ...(tool.input as Record<string, unknown>), query: 'blocked' }
             : tool.input as Record<string, unknown>, content, params.spaceContext, params.conversationId)
           : tool.input as any;
-        const { result: rawResult, citations } = await executeToolCall(
+        const { result: rawResult, citations, withheld } = await executeToolCall(
           readToolName,
           readInput,
           orgId,
@@ -924,13 +927,19 @@ export async function runAgentQuery(params: {
           params.conversationId,
           agentEmployeeId,
         );
+        if (withheld?.length) withheldDocuments.push(...withheld);
         const result = mode === 'chat_mention' ? formatDeftyChatReadResult(readToolName, rawResult) : rawResult;
+        // M3 (rule C4): a document read is recorded as references only, wherever
+        // this run keeps it (the executed actions, the assistant blocks callers
+        // store as agent_blocks, the citations they store); the model is given
+        // the result itself below.
+        const stored = documentToolCallForStorage(tool.name, tool.input, result);
         executedActions.push({
           actionId: null,
           action: tool.name,
-          params: tool.input,
+          params: stored.input,
           success: !(result && typeof result === 'object' && 'error' in result),
-          result,
+          result: stored.result,
           readOnly: !installedWrites.has(tool.name) && !['app_action_batch_propose', 'app_action_batch_cancel'].includes(tool.name),
         });
 
@@ -941,7 +950,8 @@ export async function runAgentQuery(params: {
           result,
           sources: citations,
         });
-        allCitations.push(...formatted.sources);
+        tool.input = stored.input as typeof tool.input;
+        allCitations.push(...formatted.sources.map(citationForStorage));
         toolResults.push({
           type: 'tool_result' as const,
           tool_use_id: tool.id,
@@ -950,6 +960,8 @@ export async function runAgentQuery(params: {
         });
         } catch (error) {
           const result = agentToolFailure(error);
+          // A failed document read keeps its references only too (M3).
+          tool.input = documentToolCallForStorage(tool.name, tool.input, result).input as typeof tool.input;
           executedActions.push({ actionId: null, action: tool.name, params: tool.input, success: false, result, readOnly: true });
           toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify(result), is_error: true });
         }
@@ -1004,6 +1016,22 @@ export async function runAgentQuery(params: {
   // A no-tools run returns only text that passed its content checks.
   if (shouldVerify && !noTools && responseText && responseText.length > 50) {
     verifiedText = await verifyResponse(content, responseText, allCitations, orgName, orgId);
+  }
+
+  // M3: after the reply, the asker is told privately (in their own DM with
+  // Defty) what was left out of it because not everyone in this shared
+  // conversation can open it: once per reply, keyed on the message it
+  // answers, so a redelivered run doesn't repeat it. Best-effort: the reply
+  // stands without it.
+  if (withheldDocuments.length > 0 && params.conversationId && verifiedText.trim() !== 'NO_REPLY') {
+    try {
+      await sendWithheldDocumentNotice({
+        orgId, askerId: userId, spaceId: params.conversationId, withheld: withheldDocuments,
+        replyKey: `${params.conversationId}:${params.sourceMessageId ?? crypto.randomUUID()}`,
+      });
+    } catch {
+      console.warn('[agent-runner] The withheld-documents notice could not be sent');
+    }
   }
 
   return {

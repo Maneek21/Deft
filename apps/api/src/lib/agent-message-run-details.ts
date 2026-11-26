@@ -1,9 +1,11 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { agentActions, messages, orgMembers } from '@deft/db/schema';
+import { documents } from '@deft/db/documents';
 import { db } from './db.js';
 import { captureRealtimeAccessGeneration, isRealtimeAccessGenerationCurrent } from '../socket.js';
 import { projectPendingDeftyMetadataForOutbound } from './defty-pending-action.js';
 import { canonicalDeftyActionSql, visibleModuleActionSql } from './module-action-visibility.js';
+import { visibleDocumentCondition } from './document-access.js';
 
 /**
  * Run details in chat message metadata follow the Defty action audience.
@@ -22,6 +24,12 @@ import { canonicalDeftyActionSql, visibleModuleActionSql } from './module-action
  *
  * `pending_actions` entries never carry params on any outbound path: approval
  * cards load action details from the audience-checked action endpoints.
+ *
+ * Documents (consult rule C4; plan Task M3): a run stores a document only as
+ * a reference (lib/document-audience.ts), and a document citation is shown
+ * only to a viewer in that audience who can open the document now, with its
+ * current title (withViewerDocumentCitations). Owners and admins included:
+ * the action audience doesn't open a document.
  */
 
 export type MessageDetailViewer = { id: string; org_id: string; role?: string | null };
@@ -230,10 +238,56 @@ export async function agentRunDetailAudience(viewer: MessageDetailViewer, rows: 
   return granted;
 }
 
+/** At most this many documents are named in one projection (a page of messages). */
+const MAX_PROJECTED_DOCUMENTS = 200;
+
+/** The documents a message's run details cite (`citations` of type `document`). */
+function documentCitationIds(metadata: unknown): string[] {
+  if (!isRecord(metadata) || !Array.isArray(metadata.citations)) return [];
+  return metadata.citations.flatMap((citation: unknown) => (isRecord(citation) && citation.type === 'document'
+    && typeof citation.id === 'string' && citation.id.length > 0 && citation.id.length <= 255 ? [citation.id] : []));
+}
+
+/** The statement openableDocumentTitles runs: which of `ids` the viewer can open, with their titles. Exported for its planning test. */
+export function openableDocumentTitlesQuery(viewerId: string, orgId: string, ids: readonly string[]) {
+  return db.select({ id: documents.id, title: documents.title }).from(documents)
+    .where(and(inArray(documents.id, [...ids]), visibleDocumentCondition(viewerId, orgId)));
+}
+
+/** The current title of each of `ids` the viewer can open now, through the one access check. */
+async function openableDocumentTitles(viewer: MessageDetailViewer, ids: readonly string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(ids)].slice(0, MAX_PROJECTED_DOCUMENTS);
+  if (unique.length === 0) return new Map();
+  const rows = await openableDocumentTitlesQuery(viewer.id, viewer.org_id, unique);
+  return new Map(rows.map((row) => [row.id, row.title.trim() || 'Untitled']));
+}
+
+/**
+ * The metadata's document citations as this viewer may see them (rule C4):
+ * each document they can open now (`titles`, from openableDocumentTitles)
+ * with its current title and link, and none of the others. Other citations
+ * are kept as they are.
+ */
+function withViewerDocumentCitations<T>(metadata: T, titles: ReadonlyMap<string, string>): T {
+  if (!isRecord(metadata) || !Array.isArray(metadata.citations)) return metadata;
+  if (!metadata.citations.some((citation: unknown) => isRecord(citation) && citation.type === 'document')) return metadata;
+  const citations = metadata.citations.flatMap((citation: unknown) => {
+    if (!isRecord(citation) || citation.type !== 'document') return [citation];
+    const title = typeof citation.id === 'string' ? titles.get(citation.id) : undefined;
+    return title === undefined ? [] : [{ type: 'document', id: citation.id, title, url: `/d/${citation.id}` }];
+  });
+  return { ...metadata, citations } as T;
+}
+
 /** Project a batch of message rows for one viewer. */
 export async function projectMessagesForViewer<T extends DetailMessage>(viewer: MessageDetailViewer, rows: readonly T[]): Promise<T[]> {
   const audience = await agentRunDetailAudience(viewer, rows);
-  return rows.map((row) => ({ ...row, metadata: projectAgentMessageMetadata(row.metadata, audience.has(row.id)) }));
+  const titles = await openableDocumentTitles(viewer, rows.filter((row) => audience.has(row.id)).flatMap((row) => documentCitationIds(row.metadata)));
+  return rows.map((row) => {
+    const withDetails = audience.has(row.id);
+    const metadata = projectAgentMessageMetadata(row.metadata, withDetails);
+    return { ...row, metadata: withDetails ? withViewerDocumentCitations(metadata, titles) : metadata };
+  });
 }
 
 /**
@@ -297,17 +351,23 @@ export async function emitMessageToSpaceViewers(io: SpaceEmitter, input: {
   // Access changes (space removal, org removal, role change) bump the realtime
   // generation; if one happened while delivery was resolved, nobody gets details.
   const generation = captureRealtimeAccessGeneration();
-  let resolved: { allowed: Set<string>; current: ListedSocket[] } | null = null;
+  let resolved: { allowed: Map<string, typeof full>; current: ListedSocket[] } | null = null;
   try {
     const sockets = await io.in(room).fetchSockets();
     const userIds = [...new Set(sockets.map((socket) => socketUser(socket.rooms, input.orgId)).filter((id): id is string => Boolean(id)))];
     const members = userIds.length ? await db.select({ user_id: orgMembers.user_id, role: orgMembers.role }).from(orgMembers).where(and(
       eq(orgMembers.org_id, input.orgId), inArray(orgMembers.user_id, userIds), eq(orgMembers.is_active, true),
     )) : [];
-    const allowed = new Set<string>();
+    // Each viewer with details gets their own copy when it cites documents:
+    // only those they can open, by their current title (rule C4).
+    const citedDocuments = documentCitationIds(full.metadata);
+    const allowed = new Map<string, typeof full>();
     for (const member of members) {
-      const audience = await agentRunDetailAudience({ id: member.user_id, org_id: input.orgId, role: member.role }, [input.message]);
-      if (audience.has(input.message.id)) allowed.add(member.user_id);
+      const viewer = { id: member.user_id, org_id: input.orgId, role: member.role };
+      const audience = await agentRunDetailAudience(viewer, [input.message]);
+      if (!audience.has(input.message.id)) continue;
+      allowed.set(member.user_id, citedDocuments.length === 0 ? full
+        : { ...full, metadata: withViewerDocumentCitations(full.metadata, await openableDocumentTitles(viewer, citedDocuments)) });
     }
     // Deliver to the sockets in the room now, not the ones listed before the
     // queries: a socket that left the room gets nothing, a new one gets the
@@ -329,6 +389,6 @@ export async function emitMessageToSpaceViewers(io: SpaceEmitter, input: {
   }
   for (const socket of current) {
     const userId = socketUser(socket.rooms, input.orgId);
-    socket.emit(input.event, userId && allowed.has(userId) ? full : redacted);
+    socket.emit(input.event, (userId && allowed.get(userId)) || redacted);
   }
 }

@@ -35,6 +35,8 @@ import { getMCPToolsForAgent, parseMCPToolName } from './mcp-tools.js';
 import { isDestructiveAction } from './agent-approval.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
 import { readCanvasDocument, readNoteDocument, searchNoteDocuments } from './legacy-notes.js';
+import { runDocumentReadTool } from './agent-document-tools.js';
+import { holdDocumentToolResponse, type WithheldRef } from './document-audience.js';
 import { capabilityService } from './capability-service.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
 import { resolveReadableRoom, retrieveContext, retrievedWikiAudienceCondition } from './retrieve-context.js';
@@ -123,7 +125,9 @@ export async function executeToolCall(
   agentEmployeeId?: string,
   /** Set only by the plan executor for a plan's own create_plan step (DFX3). */
   planOrigin?: { sourceMessageId?: string; createdVia?: 'api' },
-): Promise<{ result: any; citations: Citation[] }> {
+  // `withheld`: what a document tool left out of `result` in a shared
+  // conversation (lib/document-audience.ts), for the asker's private notice.
+): Promise<{ result: any; citations: Citation[]; withheld?: WithheldRef[] }> {
   const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
   if (policyError) return { result: { error: policyError }, citations: [] };
 
@@ -2543,6 +2547,8 @@ export async function executeToolCall(
     // lib/legacy-notes.ts): each read answers with the asker's access to the
     // document (lib/document-access.ts), and a canvas only for a room the
     // asker belongs to. Content comes back as Markdown.
+    // In a shared conversation each of these is held to its audience, as the
+    // document tools are (lib/document-audience.ts).
     case 'read_canvas': {
       await requireActiveOrgMembership(orgId, _userId);
       const spaceName = typeof params.space_name === 'string' ? params.space_name : '';
@@ -2555,10 +2561,10 @@ export async function executeToolCall(
       const room = resolvedRoom.room;
       const canvas = await readCanvasDocument(orgId, _userId, room.id);
       if (!canvas) return { result: { space: room.name, canvas: null, exists: false }, citations: [] };
-      return {
+      return holdDocumentToolResponse({ orgId, askerId: _userId, conversationId, toolName, response: {
         result: { space: room.name, canvas, exists: true },
         citations: [{ type: 'document', id: canvas.id, title: `${room.name} canvas`.slice(0, 80), url: canvas.url }],
-      };
+      } });
     }
 
     case 'search_notes': {
@@ -2568,10 +2574,10 @@ export async function executeToolCall(
       const scope = ['mine', 'org', 'all'].includes(params.scope) ? params.scope : 'all';
       const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 50);
       const rows = await searchNoteDocuments({ orgId, userId: _userId, query: query.slice(0, 200), scope, limit });
-      return {
+      return holdDocumentToolResponse({ orgId, askerId: _userId, conversationId, toolName, response: {
         result: { notes: rows, count: rows.length },
         citations: rows.map((row) => ({ type: 'document', id: row.id, title: (row.title || 'Untitled').slice(0, 80), url: row.url })),
-      };
+      } });
     }
 
     case 'read_note': {
@@ -2580,12 +2586,20 @@ export async function executeToolCall(
       if (!noteId) return { result: { error: 'note_id is required', code: 'NOTE_REQUIRED' }, citations: [] };
       const row = await readNoteDocument(orgId, _userId, noteId);
       if (!row) return { result: { error: 'Note not found or not visible to caller', code: 'NOTE_NOT_FOUND' }, citations: [] };
-      return {
+      return holdDocumentToolResponse({ orgId, askerId: _userId, conversationId, toolName, response: {
         result: { id: row.id, document_id: row.id, title: row.title, content: row.content, content_format: row.content_format,
           updated_at: row.updated_at, url: row.url },
         citations: [{ type: 'document', id: row.id, title: (row.title || 'Untitled').slice(0, 80), url: row.url }],
-      };
+      } });
     }
+
+    // Documents (M3): read with the asker's access (lib/agent-document-tools.ts),
+    // then held to a shared conversation's audience (lib/document-audience.ts).
+    case 'search_documents':
+    case 'read_document':
+    case 'list_drive':
+      return holdDocumentToolResponse({ orgId, askerId: _userId, conversationId, toolName,
+        response: await runDocumentReadTool(toolName, params, orgId, _userId) });
 
     default:
       return { result: { error: `Unknown tool: ${toolName}` }, citations: [] };

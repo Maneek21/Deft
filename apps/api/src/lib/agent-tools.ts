@@ -763,6 +763,46 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ['parent_message_id', 'content'],
     },
   },
+  // ─── Documents (drives, M3): read with the asker's access ───────────
+  {
+    name: 'search_documents',
+    description:
+      'Search the documents the caller can open, by words in their title or text. Returns up to `limit` matches (default 8, at most 20), each with its title, drive name, a short snippet and its /d/ link. Use read_document for the full text. In a shared chat, a match that not everyone there can open comes back as { id, withheld: true }: never guess or describe it; the caller is told privately.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', minLength: 1, maxLength: 200, description: 'Search words' },
+        drive_id: { type: 'string', description: 'Optional: search only this drive' },
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Max results (default 8)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_document',
+    description:
+      'Read one document the caller can open, by id. Returns its title, drive, the caller\'s role and its content as Markdown, each top-level block after a <!-- block:<id> --> line, and its /d/ link. In a shared chat, a document that not everyone there can open comes back as { id, withheld: true }: never guess its content; the caller is told privately.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        document_id: { type: 'string', description: 'Document id' },
+      },
+      required: ['document_id'],
+    },
+  },
+  {
+    name: 'list_drive',
+    description:
+      'With no drive_id, list the drives the caller can open. With a drive_id, and optionally a folder_id in it, list that drive\'s folders and the documents the caller can open there. In a shared chat, a drive or document that not everyone there can see comes back as { id, withheld: true }.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        drive_id: { type: 'string', description: 'Optional: the drive to list' },
+        folder_id: { type: 'string', description: 'Optional: a folder of that drive' },
+      },
+      required: [],
+    },
+  },
   // ─── Block 2.1 — note tools ─────────────────────────────────────────
   {
     name: 'search_notes',

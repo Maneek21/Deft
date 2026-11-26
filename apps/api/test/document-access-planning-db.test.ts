@@ -40,6 +40,9 @@ import { DRIVES_DOCUMENTS, documentMarkdownQuery } from '../src/lib/workspace-ex
 import type { ExportContext } from '../src/lib/workspace-export/scope.js';
 import { driveListQuery, drivesWithoutManagerQuery } from '../src/lib/drives.js';
 import { briefCitationsVisibleSql, linkedDocumentsQuery, previousMeetingNotesQuery } from '../src/lib/meeting-notes.js';
+import { driveFolderDocumentsQuery, searchDocumentsQuery } from '../src/lib/agent-document-tools.js';
+import { documentAudienceQuery, documentsOpenableByAllQuery, drivesVisibleToAllQuery } from '../src/lib/document-audience.js';
+import { openableDocumentTitlesQuery } from '../src/lib/agent-message-run-details.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { planningGrowth, type Growth } from './fixtures/planning-growth.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -179,6 +182,31 @@ test('the meeting notes forms plan within budget (M2)', async (t) => {
       // GET /api/calendar/briefs: each brief held to the notes it cites (fix round 1).
       ['meeting briefs, held to their cited notes', db.select({ id: meetingBriefs.id }).from(meetingBriefs)
         .where(and(eq(meetingBriefs.org_id, fx.orgId), briefCitationsVisibleSql(member, fx.orgId))).limit(50).toSQL()],
+    ];
+  });
+});
+
+test('Defty\'s document tools and the shared-chat rule plan within budget (M3)', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  await withinBudget(t, async (fx) => {
+    const { member, member2, guest, agentUser } = fx.people;
+    const ids = (await db.select({ id: documents.id }).from(documents).where(eq(documents.org_id, fx.orgId)).limit(50)).map((row) => row.id);
+    const driveIds = (await db.select({ id: drives.id }).from(drives).where(eq(drives.org_id, fx.orgId))).map((row) => row.id);
+    // The `team` chat's audience: its members who can hold access.
+    const audience = [member, member2, guest, agentUser];
+    return [
+      // search_documents: the asker's documents matching the words, best 20, each held to the drive check for its name.
+      ['search_documents', query(searchDocumentsQuery({ orgId: fx.orgId, askerId: member, query: 'seed document', limit: 20 }))],
+      ['search_documents in one drive', query(searchDocumentsQuery({
+        orgId: fx.orgId, askerId: member, query: 'seed document', driveId: fx.workspaceDriveId, limit: 20 }))],
+      // list_drive in a drive: the documents of its top level the asker can open.
+      ['list_drive documents', driveFolderDocumentsQuery(member, fx.orgId, fx.workspaceDriveId, null).toSQL()],
+      // A shared conversation: who is in it, then which results every one of them can open or see.
+      ['conversation audience', query(documentAudienceQuery(fx.orgId, fx.spaces.team))],
+      ['documents openable by a chat (50 ids, 4 members)', query(documentsOpenableByAllQuery(fx.orgId, ids, audience))],
+      ['drives visible to a chat (4 members)', query(drivesVisibleToAllQuery(fx.orgId, driveIds, audience))],
+      // Run details: the cited documents a viewer can open now, with their titles.
+      ['run details, cited documents (50 ids)', openableDocumentTitlesQuery(member, fx.orgId, ids).toSQL()],
     ];
   });
 });
