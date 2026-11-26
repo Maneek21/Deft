@@ -109,13 +109,16 @@ export function createDocumentAndOpen(
   return run;
 }
 
-/** A thread composer's slash commands: `note` makes a document; the rest belong to the main chat. */
+/** The only slash command a thread composer acts on; every other one behaves as it did before (posted as text, or ignored). */
+export const THREAD_SLASH_COMMANDS = ['note'] as const;
+
+/** A thread composer's `/note` makes a document. Any other command is left alone: no request, no rejection. */
 export async function runThreadSlashCommand(
   command: string,
   args: string,
   deps: { api: Pick<Api, 'post'>; router: Pick<Router, 'push'> },
 ): Promise<void> {
-  if (command !== 'note') throw new Error(`/${command} works in the main chat, not in a thread.`);
+  if (command !== 'note') return;
   const outcome = await createDocumentAndOpen(deps.api, deps.router, args || undefined);
   if (!outcome.ok) throw new Error(outcome.message);
 }

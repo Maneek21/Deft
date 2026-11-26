@@ -10,7 +10,7 @@ import { formatChatInline } from '@/lib/chat-links';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
-import { runThreadSlashCommand } from '@/lib/quick-actions';
+import { runThreadSlashCommand, THREAD_SLASH_COMMANDS } from '@/lib/quick-actions';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
@@ -854,6 +854,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
           uploadProgress={uploadProgress}
           spaceId={spaceId}
           onSlashCommand={(command, args) => runThreadSlashCommand(command, args, { api, router })}
+          slashCommandsOnly={THREAD_SLASH_COMMANDS}
         />
       </div>
     </div>

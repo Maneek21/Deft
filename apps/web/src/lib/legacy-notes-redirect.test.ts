@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { legacyNoteId, legacyNotesHref, legacyNotesTarget, noteResultHref, resolveLegacyNote } from './legacy-notes-redirect';
 import { bucketByDay, calNoteHref, type CalendarData } from './calendar';
-import { createDocumentAndOpen, runThreadSlashCommand } from './quick-actions';
+import { createDocumentAndOpen, runThreadSlashCommand, THREAD_SLASH_COMMANDS } from './quick-actions';
+import { forwardMenuCommand, interceptsBare, interceptsWithArgs, offersCommand } from './slash-command-gate';
 
 // Old /notes links (plan Task F16): the page asks the API where the note went
 // and sends the person to the document, or to Drive when it is not mapped.
@@ -145,8 +146,55 @@ test('a thread composer\'s /note creates a document; other commands say they bel
   assert.deepEqual(api.calls[1], { path: '/api/documents', body: { drive_id: 'd1', title: 'Retro' } });
   assert.deepEqual(r.pushed, ['/d/doc-7']);
 
-  await assert.rejects(runThreadSlashCommand('task', 'x', { api: api as never, router: r as never }), /works in the main chat/);
+  // Any other command is left alone, as before F16: no rejection, no request.
+  const callsBefore = api.calls.length;
+  await runThreadSlashCommand('task', 'x', { api: api as never, router: r as never });
+  assert.equal(api.calls.length, callsBefore);
 
   const refused = fakeApi({ '/api/drives/mine': () => reply(503, { error: 'paused', code: 'PAUSED' }) });
   await assert.rejects(runThreadSlashCommand('note', '', { api: refused as never, router: router() as never }), /paused/);
+});
+
+// ── what a thread composer acts on ──
+
+test('in a thread only /note is intercepted: /task x and the other commands still submit as before', () => {
+  const only = THREAD_SLASH_COMMANDS;
+  assert.equal(interceptsWithArgs('note', only), true);
+  for (const name of ['task', 'status', 'remind', 'mute', 'unmute', 'dnd', 'search']) {
+    assert.equal(interceptsWithArgs(name, only), false, `/${name} x`);
+  }
+  for (const name of ['mute', 'unmute', 'dnd', 'search']) assert.equal(interceptsBare(name, only), false, `/${name}`);
+  assert.equal(interceptsBare('note', only), false);
+  // The main chat (no restriction) still intercepts the whole set.
+  for (const name of ['remind', 'task', 'status', 'note', 'mute', 'unmute', 'dnd', 'search']) assert.equal(interceptsWithArgs(name), true);
+  for (const name of ['mute', 'unmute', 'dnd', 'search']) assert.equal(interceptsBare(name), true);
+  assert.equal(interceptsWithArgs('unknown', only), false);
+  // The thread shows a New note button but no task draft button.
+  assert.equal(offersCommand('note', only), true);
+  assert.equal(offersCommand('task', only), false);
+  assert.equal(offersCommand('task'), true);
+});
+
+test('a slash-menu command in a thread: others are ignored without calling the handler; /note failures are shown, not unhandled', async () => {
+  const seen: string[] = [];
+  const errors: string[] = [];
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const handler = async (command: string, args: string) => { seen.push(`${command}:${args}`); throw new Error('paused'); };
+    for (const name of ['mute', 'dnd', 'search']) forwardMenuCommand(handler, THREAD_SLASH_COMMANDS, name, '', (m) => errors.push(m));
+    assert.equal(seen.length, 0);
+    assert.equal(errors.length, 0);
+
+    forwardMenuCommand(handler, THREAD_SLASH_COMMANDS, 'note', 'x', (m) => errors.push(m));
+    forwardMenuCommand(() => { throw new Error('sync boom'); }, undefined, 'dnd', '', (m) => errors.push(m));
+    forwardMenuCommand(undefined, undefined, 'dnd', '', (m) => errors.push(m));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(seen, ['note:x']);
+    assert.deepEqual([...errors].sort(), ['paused', 'sync boom']);
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
 });

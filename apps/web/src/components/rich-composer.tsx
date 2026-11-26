@@ -8,6 +8,7 @@ import Link from '@tiptap/extension-link';
 import { createBaseExtensions } from '@/lib/editor/shared-config';
 import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
 import { registerChatCommands } from '@/lib/editor/chat-commands';
+import { forwardMenuCommand, interceptsBare, interceptsWithArgs, offersCommand } from '@/lib/slash-command-gate';
 import { CodeBlock } from '@/lib/editor/blocks/code-block';
 
 registerChatCommands();
@@ -117,6 +118,8 @@ type Props = {
   onViewScheduled?: () => void;
   onClipRecord?: () => void;
   onSlashCommand?: (command: string, args: string) => void | Promise<void>;
+  /** Act on only these slash commands (a thread composer: `note`); the rest behave as if there were no handler. */
+  slashCommandsOnly?: readonly string[];
   onAskDefty?: () => void;
   spaceId?: string;
 };
@@ -151,6 +154,7 @@ export function RichComposer({
   onViewScheduled,
   onClipRecord,
   onSlashCommand,
+  slashCommandsOnly,
   onAskDefty,
   spaceId,
 }: Props) {
@@ -199,6 +203,8 @@ export function RichComposer({
   const [showMentions, setShowMentions] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
+  const sendErrorRef = useRef<(message: string) => void>(() => {});
+  sendErrorRef.current = setSendError;
   const [, setContentVersion] = useState(0);
   // Anchor (start of @) + end (current cursor) at the moment the mention
   // autocomplete opened. Captured in onUpdate so handleMentionSelect can
@@ -213,6 +219,8 @@ export function RichComposer({
   // into the editor at mount) always sees the latest handler from props.
   const onSlashCommandRef = useRef(onSlashCommand);
   onSlashCommandRef.current = onSlashCommand;
+  const slashOnlyRef = useRef(slashCommandsOnly);
+  slashOnlyRef.current = slashCommandsOnly;
   // True while the BlockSlashMenu popup is open — `editorProps.handleKeyDown`
   // checks this to let Enter fall through to the Suggestion plugin so the
   // user's selected command actually fires.
@@ -245,7 +253,7 @@ export function RichComposer({
         surface: 'chat',
         placeholder: placeholder ?? 'Message #channel… Type / for commands.',
         disable: ['link', 'codeBlock', 'heading'],
-        onChatCommand: (name, args) => onSlashCommandRef.current?.(name, args),
+        onChatCommand: (name, args) => forwardMenuCommand(onSlashCommandRef.current, slashOnlyRef.current, name, args, (message) => sendErrorRef.current(message)),
         onMenuStateChange: (open) => { slashMenuOpenRef.current = open; },
       }),
       Link.configure({
@@ -378,8 +386,8 @@ export function RichComposer({
     if (cmdMatch && onSlashCommand) {
       const cmdName = cmdMatch[1]!.toLowerCase();
       const args = cmdMatch[2]!.trim();
-      const known = ['remind', 'task', 'status', 'note', 'mute', 'unmute', 'dnd', 'search'];
-      if (known.includes(cmdName)) {
+      const known = interceptsWithArgs(cmdName, slashCommandsOnly);
+      if (known) {
         setSending(true);
         setSendError('');
         try {
@@ -398,8 +406,8 @@ export function RichComposer({
     const bareCmd = text.trim().match(/^\/(\w+)$/);
     if (bareCmd && onSlashCommand) {
       const cmdName = bareCmd[1]!.toLowerCase();
-      const noArgCmds = ['mute', 'unmute', 'dnd', 'search'];
-      if (noArgCmds.includes(cmdName)) {
+      const noArg = interceptsBare(cmdName, slashCommandsOnly);
+      if (noArg) {
         setSending(true);
         setSendError('');
         try {
@@ -426,7 +434,7 @@ export function RichComposer({
     } finally {
       setSending(false);
     }
-  }, [disabled, editor, onSend, onSlashCommand, pendingDocumentCount, pendingFiles.length, sending]);
+  }, [disabled, editor, onSend, onSlashCommand, slashCommandsOnly, pendingDocumentCount, pendingFiles.length, sending]);
 
   const handleScheduleSend = useCallback(async (isoTime: string) => {
     if (!editor || !onScheduleSend || sending || disabled) return;
@@ -659,18 +667,22 @@ export function RichComposer({
             )}
             {onSlashCommand && (
               <>
-                <SheetActionButton
-                  icon={<CheckSquare size={18} strokeWidth={1.6} />}
-                  label="Create task draft"
-                  description="Turn the current discussion into assigned work"
-                  onClick={() => runSheetAction(() => onSlashCommand('task', 'New task'))}
-                />
-                <SheetActionButton
-                  icon={<FileText size={18} strokeWidth={1.6} />}
-                  label="New note"
-                  description="Save a structured note from this conversation"
-                  onClick={() => runSheetAction(() => onSlashCommand('note', 'Chat note'))}
-                />
+                {offersCommand('task', slashCommandsOnly) && (
+                  <SheetActionButton
+                    icon={<CheckSquare size={18} strokeWidth={1.6} />}
+                    label="Create task draft"
+                    description="Turn the current discussion into assigned work"
+                    onClick={() => runSheetAction(() => onSlashCommand('task', 'New task'))}
+                  />
+                )}
+                {offersCommand('note', slashCommandsOnly) && (
+                  <SheetActionButton
+                    icon={<FileText size={18} strokeWidth={1.6} />}
+                    label="New note"
+                    description="Save a structured note from this conversation"
+                    onClick={() => runSheetAction(() => onSlashCommand('note', 'Chat note'))}
+                  />
+                )}
               </>
             )}
           </div>
@@ -997,18 +1009,22 @@ export function RichComposer({
                     )}
                     {onSlashCommand && (
                       <>
-                        <DesktopActionButton
-                          icon={<CheckSquare size={16} strokeWidth={1.6} />}
-                          label="Create task draft"
-                          description="Turn this discussion into work"
-                          onClick={() => runDesktopAction(() => onSlashCommand('task', 'New task'))}
-                        />
-                        <DesktopActionButton
-                          icon={<FileText size={16} strokeWidth={1.6} />}
-                          label="New note"
-                          description="Capture a structured note"
-                          onClick={() => runDesktopAction(() => onSlashCommand('note', 'Chat note'))}
-                        />
+                        {offersCommand('task', slashCommandsOnly) && (
+                          <DesktopActionButton
+                            icon={<CheckSquare size={16} strokeWidth={1.6} />}
+                            label="Create task draft"
+                            description="Turn this discussion into work"
+                            onClick={() => runDesktopAction(() => onSlashCommand('task', 'New task'))}
+                          />
+                        )}
+                        {offersCommand('note', slashCommandsOnly) && (
+                          <DesktopActionButton
+                            icon={<FileText size={16} strokeWidth={1.6} />}
+                            label="New note"
+                            description="Capture a structured note"
+                            onClick={() => runDesktopAction(() => onSlashCommand('note', 'Chat note'))}
+                          />
+                        )}
                       </>
                     )}
                     <DesktopActionButton
