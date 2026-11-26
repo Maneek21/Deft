@@ -846,29 +846,32 @@ test('member changes on several drives at once finish: chat checks run on the dr
   assert.ok(Date.now() - started < 4_000, `took ${Date.now() - started} ms`);
 });
 
-test('a notification naming a document fails closed: with a drive it needs that drive, and without one it is never shown', async (t) => {
+test('a notification naming a document follows the document (F9): shown while its reader can open it, with or without a drive', async (t) => {
   if (!fx) return t.skip(SKIP);
   const { member, member2 } = fx.people;
   const drive = await createDrive(member, { name: 'Document notices', kind: 'private' });
   await addMember(member, drive, { user: member2 }, 'view');
-  const [withDrive, withoutDrive] = [randomUUID(), randomUUID()];
+  const document = await fx.insertDocument({ driveId: drive, title: 'Noticed' });
+  const [withDrive, withoutDrive, missing] = [randomUUID(), randomUUID(), randomUUID()];
   await fx.client.query(`INSERT INTO notifications (id, org_id, user_id, type, title, metadata) VALUES
-    ($1, $3, $4, 'system', 'A document', jsonb_build_object('document_id', $5::text, 'drive_id', $6::text)),
-    ($2, $3, $4, 'system', 'A document', jsonb_build_object('document_id', $7::text))`,
-  [withDrive, withoutDrive, fx.orgId, member2, randomUUID(), drive, randomUUID()]);
+    ($1, $4, $5, 'system', 'A document', jsonb_build_object('document_id', $6::text, 'drive_id', $7::text)),
+    ($2, $4, $5, 'system', 'A document', jsonb_build_object('document_id', $6::text)),
+    ($3, $4, $5, 'system', 'A document', jsonb_build_object('document_id', $8::text, 'drive_id', $7::text))`,
+  [withDrive, withoutDrive, missing, fx.orgId, member2, document, drive, randomUUID()]);
   const inbox = async () => {
     const body = await call(member2, 'GET', '/api/notifications', undefined, 200);
     const ids = new Set((body.notifications as any[]).map((row) => row.id));
-    return { withDrive: ids.has(withDrive), withoutDrive: ids.has(withoutDrive), unread: body.unread_count as number };
+    return { withDrive: ids.has(withDrive), withoutDrive: ids.has(withoutDrive), missing: ids.has(missing), unread: body.unread_count as number };
   };
   const before = await inbox();
-  assert.equal(before.withDrive, true, 'naming a drive member2 can view');
-  assert.equal(before.withoutDrive, false, 'a document with no drive is never shown (no document rule yet)');
+  assert.equal(before.withDrive, true, 'a document member2 can open, naming its drive');
+  assert.equal(before.withoutDrive, true, 'the same document, naming no drive');
+  assert.equal(before.missing, false, 'a document that does not exist is never shown, even naming a drive member2 can view');
   await call(member, 'DELETE', `/api/drives/${drive}/members/${await memberRowId(drive, member2)}`, undefined, 200);
   const after = await inbox();
-  assert.equal(after.withDrive, false, 'a document_id does not skip the drive check');
+  assert.equal(after.withDrive, false);
   assert.equal(after.withoutDrive, false);
-  assert.equal(after.unread, before.unread - 2, 'this notice and the drive_member notice leave the count');
+  assert.equal(after.unread, before.unread - 3, 'both document notices and the drive_member notice leave the count');
 });
 
 test('the dashboard unread count leaves out a drive notification once drive access ends', async (t) => {

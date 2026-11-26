@@ -17,9 +17,15 @@
 // `?content=1` asks for it. A document over the size cap is refused with 413
 // TOO_LARGE.
 //
-// Routes that take no body (delete, restore, star and unstar) accept none,
-// one of only JSON whitespace, or well-formed JSON, and answer anything else
-// with 400 before changing anything.
+// Routes that take no body (delete, restore, star and unstar, removing a
+// share) accept none, one of only JSON whitespace, or well-formed JSON, and
+// answer anything else with 400 before changing anything.
+//
+// Sharing (F9; the rules, the lock order and who is told are in
+// lib/document-shares.ts): GET /:id/shares needs edit; POST /:id/shares,
+// PATCH and DELETE /:id/shares/:shareId need edit, and a share gives at most
+// edit (400 ROLE_TOO_HIGH); GET /:id/audience?space_id= needs view and a seat
+// in the chat.
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
@@ -32,6 +38,9 @@ import {
   createDocumentInTx, documentBreadcrumb, DocumentRefusal, favoriteDocumentsQuery, moveDocument, recentDocumentsQuery, restoreDocument,
   softDeleteDocument, updateDocument, viewerDocumentColumns, viewerDocumentInTx,
 } from '../lib/documents.js';
+import {
+  changeShareRole, documentAudience, listDocumentShares, removeShare, roleTooHigh, shareDocument, shareShape,
+} from '../lib/document-shares.js';
 import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 
 export const documentRoutes = new Hono();
@@ -57,6 +66,15 @@ const moveSchema = z.object({
   parent_document_id: idSchema.nullable().optional(),
   position: z.number().finite().optional(),
 });
+/** `full` parses so it can be refused as ROLE_TOO_HIGH rather than as invalid input. */
+const shareRoleSchema = z.enum(['full', 'edit', 'comment', 'view']);
+const shareSchema = z.object({
+  principal_type: z.enum(['user', 'space']),
+  principal_id: idSchema,
+  role: shareRoleSchema,
+  include_subpages: z.boolean().optional(),
+});
+const shareRoleChangeSchema = z.object({ role: shareRoleSchema });
 
 /** One snapshot for GET /:id's role, document, drive and breadcrumb. */
 const READ_SNAPSHOT: PgTransactionConfig = { isolationLevel: 'repeatable read', accessMode: 'read only' };
@@ -216,6 +234,75 @@ documentRoutes.post('/:id/restore', async (c) => {
     return c.json({ restored_ids: restoredIds });
   } catch (error) {
     return failed(c, error, 'restore the document');
+  }
+});
+
+// GET /api/documents/:id/shares (needs edit).
+documentRoutes.get('/:id/shares', async (c) => {
+  try {
+    const user = c.get('user');
+    return c.json({ shares: await listDocumentShares(user.org_id, user.id, c.req.param('id')) });
+  } catch (error) {
+    return failed(c, error, 'list the document’s shares');
+  }
+});
+
+// POST /api/documents/:id/shares { principal_type, principal_id, role, include_subpages? } (needs edit).
+documentRoutes.post('/:id/shares', async (c) => {
+  try {
+    const user = c.get('user');
+    const parsed = shareSchema.safeParse(await jsonBody(c));
+    if (!parsed.success) return invalid(c);
+    const { role } = parsed.data;
+    if (role === 'full') throw roleTooHigh();
+    const shared = await shareDocument({
+      orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), principalType: parsed.data.principal_type,
+      principalId: parsed.data.principal_id, role, includeSubpages: parsed.data.include_subpages ?? true,
+    });
+    return c.json({ share: shareShape(shared.share), shared_subpages: shared.sharedSubpages, skipped_subpages: shared.skippedSubpages }, 201);
+  } catch (error) {
+    return failed(c, error, 'share the document');
+  }
+});
+
+// PATCH /api/documents/:id/shares/:shareId { role } (needs edit).
+documentRoutes.patch('/:id/shares/:shareId', async (c) => {
+  try {
+    const user = c.get('user');
+    const parsed = shareRoleChangeSchema.safeParse(await jsonBody(c));
+    if (!parsed.success) return invalid(c);
+    const { role } = parsed.data;
+    if (role === 'full') throw roleTooHigh();
+    const share = await changeShareRole({
+      orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), shareId: c.req.param('shareId'), role,
+    });
+    return c.json({ share: shareShape(share) });
+  } catch (error) {
+    return failed(c, error, 'change the share');
+  }
+});
+
+// DELETE /api/documents/:id/shares/:shareId (needs edit).
+documentRoutes.delete('/:id/shares/:shareId', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!(await noBodyOrJson(c))) return invalid(c);
+    await removeShare({ orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), shareId: c.req.param('shareId') });
+    return c.json({ success: true });
+  } catch (error) {
+    return failed(c, error, 'remove the share');
+  }
+});
+
+// GET /api/documents/:id/audience?space_id= (needs view and a seat in the chat): for the posting prompt.
+documentRoutes.get('/:id/audience', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = idSchema.safeParse(c.req.query('space_id'));
+    if (!spaceId.success) return invalid(c);
+    return c.json(await documentAudience(user.org_id, user.id, c.req.param('id'), spaceId.data));
+  } catch (error) {
+    return failed(c, error, 'count the chat’s audience');
   }
 });
 

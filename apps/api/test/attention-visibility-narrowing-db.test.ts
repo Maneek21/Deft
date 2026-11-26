@@ -87,6 +87,13 @@ const otherOrgId = randomUUID();
 const otherEmployeeUser = randomUUID();
 const otherEmployeeId = randomUUID();
 const deliveries: string[] = [];
+/**
+ * Documents (F9): one in an open drive (owners, admins and members see it; the guest and the removed member
+ * don't), one in a private drive with no members (nobody sees it), and one in that private drive shared with
+ * the guest (only the guest sees it).
+ */
+const docs = { open: randomUUID(), private: randomUUID(), guestShared: randomUUID() };
+const docDrives = { open: randomUUID(), private: randomUUID() };
 /** `${person}|${type}|${source}|${metadata variant}` → item id; variant 0 has empty metadata. */
 const itemIds = new Map<string, string>();
 let client: pg.Client | undefined;
@@ -273,8 +280,18 @@ before(async () => {
     }
   }
 
+  // Documents (F9): an open drive and a private one, as `docs` describes.
+  await q(`INSERT INTO drives(id,org_id,name,kind,default_role,created_by) VALUES($1,$3,'Open','open','view',$4),($2,$3,'Private','private',NULL,$4)`,
+    [docDrives.open, docDrives.private, orgId, people.owner]);
+  for (const [id, drive] of [[docs.open, docDrives.open], [docs.private, docDrives.private], [docs.guestShared, docDrives.private]]) {
+    await q(`INSERT INTO documents(id,org_id,drive_id,title,content_json,content_text,size_bytes,created_by)
+      VALUES($1,$2,$3,'doc','{"type":"doc","content":[]}'::jsonb,'',0,$4)`, [id, orgId, drive, people.owner]);
+  }
+  await q(`INSERT INTO document_shares(id,org_id,document_id,principal_type,principal_id,role,shared_by) VALUES($1,$2,$3,'user',$4,'view',$5)`,
+    [randomUUID(), orgId, docs.guestShared, people.guest, people.owner]);
+
   // Each person gets items of every source type: every source of the ruled types, and for every
-  // type a set of legacy-notification metadata (none, a room, a message, a mention delivery).
+  // type a set of legacy-notification metadata (none, a room, a message, a mention delivery, a document).
   const allMessages = [...Object.values(messagesByRoom), deletedMessage];
   const legacy = (person: string): Array<Record<string, unknown>> => [
     {},
@@ -284,12 +301,16 @@ before(async () => {
     { legacy_notification_id: randomUUID(), space_id: rooms.pub },
     { legacy_notification_id: randomUUID(), message_id: messagesByRoom[rooms.adminOnly] },
     { legacy_notification_id: randomUUID(), native_mention_delivery_id: deliveries.find((id, at) => at % 5 === Object.values(people).indexOf(person)) },
+    // A document notice follows the document, whatever drive it also names (F9).
+    { legacy_notification_id: randomUUID(), document_id: docs.open, drive_id: docDrives.private },
+    { legacy_notification_id: randomUUID(), document_id: docs.private, drive_id: docDrives.open },
   ];
   const sourcesOf = (type: string): string[] => {
     if (type === 'message') return [...allMessages, randomUUID()];
     if (type === 'space') return [...Object.values(rooms), randomUUID()];
     if (type === 'agent_action') return [...actions, randomUUID()];
     if (type === 'native_mention') return [...deliveries, randomUUID()];
+    if (type === 'document') return [...Object.values(docs), randomUUID()];
     return [randomUUID()];
   };
   const rows: unknown[][] = [];
@@ -320,7 +341,8 @@ after(async () => {
       await q('DELETE FROM agent_actions WHERE agent_employee_id=$1', [otherEmployeeId]);
       await q('DELETE FROM agent_employees WHERE org_id=$1', [otherOrgId]);
       for (const table of ['attention_events', 'attention_items', 'native_mention_deliveries', 'native_reference_states',
-        'agent_action_approvers', 'agent_actions', 'agent_channel_events', 'agent_plans', 'agent_employees', 'messages']) {
+        'agent_action_approvers', 'agent_actions', 'agent_channel_events', 'agent_plans', 'agent_employees', 'messages',
+        'document_shares', 'documents', 'drive_members', 'drives']) {
         await q(`DELETE FROM ${table} WHERE org_id=$1`, [orgId]);
       }
       await q('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id=$1)', [orgId]);
@@ -400,9 +422,21 @@ test('each access rule shows and hides the items it should, under the whole rule
     assert.ok(found, `fixture ${person} ${type} ${source} ${variant}`);
     return found[1];
   };
-  const { owner, member, guest } = people;
+  const { owner, member, guest, removed } = people;
   // [label, person, item id, shown]
   const expectations: Array<[string, string, string, boolean]> = [
+    // Document items (F9): the document access check (lib/document-access.ts).
+    ['member, a document in an open drive', member, item(member, 'document', docs.open), true],
+    ['owner, a document in an open drive', owner, item(owner, 'document', docs.open), true],
+    ['guest, a document in an open drive', guest, item(guest, 'document', docs.open), false],
+    ['removed member, a document in an open drive', removed, item(removed, 'document', docs.open), false],
+    ['owner, a document in a private drive they are not in', owner, item(owner, 'document', docs.private), false],
+    ['guest, a document shared with them', guest, item(guest, 'document', docs.guestShared), true],
+    ['member, a document shared with the guest only', member, item(member, 'document', docs.guestShared), false],
+    // A legacy notice naming a document follows the document, not the drive it also names.
+    ['member, task item, legacy notice of an open-drive document naming a private drive', member, item(member, 'task', null, 7), true],
+    ['guest, task item, legacy notice of an open-drive document', guest, item(guest, 'task', null, 7), false],
+    ['member, task item, legacy notice of a private document naming an open drive', member, item(member, 'task', null, 8), false],
     ['member, message in their private room', member, item(member, 'message', messagesByRoom[rooms.priv]!), true],
     ['member, message in the admin-only room', member, item(member, 'message', messagesByRoom[rooms.adminOnly]!), false],
     ['member, deleted message', member, item(member, 'message', deletedMessage), false],

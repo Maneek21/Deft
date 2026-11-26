@@ -16,6 +16,8 @@ type Received = Array<{ event: string; data: any }>;
 export type SocketHarness = {
   /** The `document:updated` payloads `userId` received, in order. */
   updates(userId: string): any[];
+  /** The payloads of `event` that `userId` received, in order (e.g. `document:shared`). */
+  received(userId: string, event: string): any[];
   close(): Promise<void>;
 };
 
@@ -48,6 +50,7 @@ export async function socketHarness(orgId: string, people: string[]): Promise<So
   }
   return {
     updates: (id: string) => received.get(id)!.filter((entry) => entry.event === 'document:updated').map((entry) => entry.data),
+    received: (id: string, event: string) => received.get(id)!.filter((entry) => entry.event === event).map((entry) => entry.data),
     close: async () => {
       for (const client of clients) client.close();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));

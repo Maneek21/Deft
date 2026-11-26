@@ -262,13 +262,14 @@ export function visibleDocumentCondition(userId: string, orgId: string, min: Doc
 
 /**
  * The same rule for any statement: true when the document `documentId` of
- * `orgId` exists and `userId` can open it with at least `min`. `orgId` and
- * `documentId` may be columns of the statement (an attention item's
- * `org_id` and `source_id`, an exported row's document id), under any alias,
- * the check's own `access_*` names included: they are bound before those
- * exist (documentIdVisibleSql).
+ * `orgId` exists and `userId` can open it with at least `min`. Any of the
+ * three may be columns of the statement (an attention item's `org_id` and
+ * `source_id`, an exported row's document id, a notification's recipient
+ * and `metadata->>'document_id'`), under any alias, the check's own
+ * `access_*` names included: they are bound before those exist
+ * (documentIdVisibleSql).
  */
-export function visibleDocumentIdSql(userId: string, orgId: OrgRef, documentId: SQL, min: DocRole = 'view'): SQL {
+export function visibleDocumentIdSql(userId: string | SQL, orgId: OrgRef, documentId: SQL, min: DocRole = 'view'): SQL {
   return documentIdVisibleSql(userId, orgId, documentId, min);
 }
 

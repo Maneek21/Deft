@@ -164,8 +164,12 @@ async function lockDocumentForEditInTx(tx: Tx, actor: DriveActor, documentId: st
   return document;
 }
 
-/** The document and its sub-pages at every depth (with `liveOnly`, only live ones), sorted by id. */
-async function subtreeIds(tx: Tx, orgId: string, rootId: string, liveOnly: boolean): Promise<string[]> {
+/**
+ * The document and its sub-pages at every depth (with `liveOnly`, only live
+ * ones), sorted by id. Stable while the caller holds the drive's row lock:
+ * every create, move, delete and restore locks it FOR UPDATE.
+ */
+export async function subtreeIds(tx: Tx, orgId: string, rootId: string, liveOnly: boolean): Promise<string[]> {
   const live = liveOnly ? sql`AND subtree_child.is_deleted = false` : sql``;
   const result = await tx.execute(sql`WITH RECURSIVE subtree AS (
       SELECT ${rootId}::text AS id
@@ -341,7 +345,7 @@ async function myDriveInTx(tx: Tx, orgId: string, userId: string): Promise<strin
   }
 }
 
-/** F9's sub-page share rule: the new sub-page starts with every share of its parent, as it is. */
+/** F9's sub-page share rule (lib/document-shares.ts): the new sub-page starts with every share of its parent, as it is. */
 async function copySharesInTx(tx: Tx, orgId: string, parentId: string, documentId: string): Promise<void> {
   const shares = await tx.select().from(documentShares)
     .where(and(eq(documentShares.org_id, orgId), eq(documentShares.document_id, parentId)));

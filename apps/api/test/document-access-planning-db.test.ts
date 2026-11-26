@@ -20,6 +20,7 @@ import { and, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { documents, drives } from '@deft/db/documents';
 import { attentionItems, notifications } from '@deft/db/schema';
+import { visibleAttentionCondition } from '../src/lib/attention.js';
 import { nativeNotificationAccessSql } from '../src/lib/native-mention-visibility.js';
 import { closeDb, db } from '../src/lib/db.js';
 import {
@@ -151,14 +152,36 @@ test('the drive tree and the recent list plan within budget', async (t) => {
   });
 });
 
+test('the composed Inbox rule for document items plans within budget (F9)', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  await withinBudget(t, async (fx) => {
+    const { member } = fx.people;
+    const mine = and(eq(attentionItems.org_id, fx.orgId), eq(attentionItems.user_id, member));
+    // The production predicate (lib/attention.ts visibleAttentionCondition) as routes/attention.ts runs it on the
+    // source types it read: the legacy-notification check (nativeNotificationAccessSql, with its drive and document
+    // branches) and the source dispatch with the document rule. The whole rule, every type at once, carries the
+    // review gate and has its own budget (attention-visibility-narrowing-db.test.ts).
+    return [
+      ['Inbox rule, document items', db.select({ id: attentionItems.id }).from(attentionItems)
+        .where(and(mine, visibleAttentionCondition(member, ['document'])))
+        .orderBy(desc(attentionItems.last_event_at), desc(attentionItems.id)).limit(51).toSQL()],
+      ['Inbox rule, document and notification items', db.select({ id: attentionItems.id }).from(attentionItems)
+        .where(and(mine, visibleAttentionCondition(member, ['document', 'notification'])))
+        .orderBy(desc(attentionItems.last_event_at), desc(attentionItems.id)).limit(51).toSQL()],
+      ['Inbox counts, document items', db.select({ lane: attentionItems.lane, count: sql<number>`count(*)::int` }).from(attentionItems)
+        .where(and(mine, visibleAttentionCondition(member, ['document']))).groupBy(attentionItems.lane).toSQL()],
+    ];
+  });
+});
+
 test('the attention, export and retrieval forms plan within budget', async (t) => {
   if (unavailable) return t.skip(unavailable);
   await withinBudget(t, async (fx) => {
     const { member } = fx.people;
     const words = 'seed document';
     return [
-      // GET /api/notifications: the notification rule, with its drive branch (F4), on every list and count.
-      ['notifications list (drive branch)', db.select({ id: notifications.id }).from(notifications).where(and(
+      // GET /api/notifications: the notification rule, with its drive (F4) and document (F9) branches, on every list and count.
+      ['notifications list (drive and document branches)', db.select({ id: notifications.id }).from(notifications).where(and(
         eq(notifications.user_id, member), eq(notifications.org_id, fx.orgId),
         nativeNotificationAccessSql(member, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
       )).orderBy(desc(notifications.created_at)).limit(50).toSQL()],

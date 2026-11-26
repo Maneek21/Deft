@@ -21,6 +21,8 @@ import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-pu
 import { nativeDeliveryAccessSql, nativeNotificationAccessSql } from './native-mention-visibility.js';
 import { taskHiddenFromGuestSql } from './task-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
+import { visibleDocumentIdSql } from './document-access.js';
+import type { AnyNotificationType } from './notification-types.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
 import {
   currentRoleReviewableActionSql, EVERY_REVIEW_GATE_ACTION, readReviewGateScope, type ReviewGateScope,
@@ -69,7 +71,7 @@ export type AttentionDraft = {
  */
 export const ATTENTION_SOURCE_TYPES = [
   'agent', 'agent_action', 'agent_channel_event', 'app_integration_source', 'app_run', 'calendar',
-  'cross_reference', 'message', 'native_mention', 'note', 'notification', 'space', 'task', 'wiki_page',
+  'cross_reference', 'document', 'message', 'native_mention', 'note', 'notification', 'space', 'task', 'wiki_page',
 ] as const;
 
 export type AttentionSourceType = typeof ATTENTION_SOURCE_TYPES[number];
@@ -96,6 +98,8 @@ const SOURCE_TYPE_ACCESS: Partial<Record<AttentionSourceType, (userId: string, s
   // An agent's request for help on a task (cooperative.ts) names the task in its metadata.
   agent_channel_event: (userId) => sql`NOT ${taskHiddenFromGuestSql(userId, sql`${attentionItems.metadata}->>'task_id'`, sql`${attentionItems.org_id}`)}`,
   native_mention: (userId) => nativeDeliveryAccessSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`),
+  // A document shared with the reader (F9): shown only while they can open it (lib/document-access.ts).
+  document: (userId) => visibleDocumentIdSql(userId, sql`${attentionItems.org_id}`, sql`${attentionItems.source_id}`),
   message: (userId) => sql`EXISTS (
         SELECT 1
         FROM ${messages}
@@ -352,7 +356,8 @@ export function notificationToAttentionDraft(notification: LegacyNotification): 
   let sourceId = notification.id;
   let dedupeKey = explicitDedupe ?? `notification:${notification.id}`;
 
-  switch (notification.type) {
+  // Widened: `document_shared` exists only through upgrade SQL (lib/notification-types.ts).
+  switch (notification.type as AnyNotificationType) {
     case 'mention':
       lane = 'needs_you';
       sourceType = 'message';
@@ -417,6 +422,18 @@ export function notificationToAttentionDraft(notification: LegacyNotification): 
     case 'system':
       lane = metadata.action_required === true ? 'needs_you' : 'updates';
       break;
+    case 'document_shared': {
+      // A document shared with the reader (F9) is a document item, shown only
+      // while they can open it. A drive shared with them (F4, F6: drive_id and
+      // no document) stays a notification item, under the notification rule.
+      const documentId = metadataString(metadata, 'document_id');
+      if (documentId) {
+        sourceType = 'document';
+        sourceId = documentId;
+        dedupeKey = explicitDedupe ?? `document_shared:${documentId}:${notification.user_id}`;
+      }
+      break;
+    }
   }
 
   return {

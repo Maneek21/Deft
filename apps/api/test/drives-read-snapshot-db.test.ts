@@ -152,6 +152,34 @@ test('the drive tree and trash read their role and their lists in one repeatable
   assert.deepEqual(trash.items.map((row: any) => row.id), [trashed]);
 });
 
+test('a document’s share list and its audience read their role and their data in one repeatable-read snapshot (F9)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const drive = await fx.insertDrive({ kind: 'private', name: 'Shares snapshot' });
+  await fx.addDriveMember(drive, { user: member }, 'full');
+  const document = await fx.insertDocument({ driveId: drive, title: 'Shared in a snapshot' });
+  await fx.share(document, { user: member2 }, 'view');
+  await fx.share(document, { space: fx.spaces.team }, 'comment');
+
+  direct.length = 0;
+  const shares = await read(member, `/api/documents/${document}/shares`);
+  assertOneSnapshot('GET /:id/shares');
+  assert.deepEqual(direct, [], 'GET /:id/shares reads nothing outside the snapshot');
+  assert.deepEqual(shares.shares.map((row: any) => [row.principal_id, row.role]).sort(), [[member2, 'view'], [fx.spaces.team, 'comment']].sort());
+
+  direct.length = 0;
+  const audience = await read(member, `/api/documents/${document}/audience?space_id=${fx.spaces.team}`);
+  assertOneSnapshot('GET /:id/audience');
+  assert.deepEqual(direct, [], 'GET /:id/audience reads nothing outside the snapshot');
+  assert.equal(typeof audience.cannot_open, 'number');
+
+  // A refusal comes from the same snapshot.
+  opened.length = 0;
+  const refused = await fx.request(member2, 'GET', `/api/documents/${document}/shares`);
+  assert.equal(refused.status, 403);
+  assertOneSnapshot('GET /:id/shares (refused)');
+});
+
 test('create and PATCH answer from their own write transaction: losing access right after the commit still gets the values written', async (t) => {
   if (!fx) return t.skip(SKIP);
   const { member, member2 } = fx.people;

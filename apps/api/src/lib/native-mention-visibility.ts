@@ -5,7 +5,7 @@ import { publicSpaceVisibleSql } from './space-visibility.js';
 import { readableSpaceSql } from './space-membership.js';
 import { guestTaskScopeSql, memberProjectOrNamedTaskSql, taskAliasColumns, taskHiddenFromGuestSql } from './task-visibility.js';
 import { fullWorkspaceViewSql } from './people-visibility-sql.js';
-import { visibleDriveIdSql } from './document-access.js';
+import { visibleDocumentIdSql, visibleDriveIdSql } from './document-access.js';
 
 // Watchers are subscriptions, not sufficient authority for new mention
 // surfaces on a restricted task.
@@ -80,15 +80,16 @@ export function nativeDeliveryAccessSql(userId: string | SQL, deliveryId: SQL, o
  * notification's link (`/chat?space=…&message=…`, or the old `/spaces/…`).
  * A notification that names a task is hidden from a guest who may not see
  * that task (noticeNamesGuestHiddenTaskSql). A notification that names a
- * drive (`metadata.drive_id`) is shown only while the reader can view that
- * drive (visibleDriveIdSql): a drive shared with them, or an admin's change
- * to a private drive's members. It fails closed for documents: until F9 adds
- * the document branch, a notification naming a document
- * (`metadata.document_id`) and no drive is never shown, and one naming both
- * still needs the drive. These checks stand outside the mention/source CASE,
- * so they hold whichever branch the notification takes, a mention delivery
- * included. A notification that names none of these (reminders without a
- * source, system notices) is unaffected.
+ * document (`metadata.document_id`) is shown only while the reader can open
+ * that document (visibleDocumentIdSql), whether or not it also names a drive:
+ * a document shared with someone outside its drive is theirs to see without
+ * the drive. One that names a drive (`metadata.drive_id`) and no document is
+ * shown only while the reader can view that drive (visibleDriveIdSql): a
+ * drive shared with them, or an admin's change to a private drive's members.
+ * These checks stand outside the mention/source CASE, so they hold whichever
+ * branch the notification takes, a mention delivery included. A notification
+ * that names none of these (reminders without a source, system notices) is
+ * unaffected.
  */
 export function nativeNotificationAccessSql(
   userId: string | SQL, metadata: SQL, orgId: SQL, link: SQL = sql`${notifications.link}`,
@@ -99,6 +100,7 @@ export function nativeNotificationAccessSql(
   const messageId = sql`coalesce(${metadata}->>'message_id',
     substring(${link} from '^/chat\\?(?:[^#]*&)?message=([^&#]+)'))`;
   const driveId = sql`(${metadata}->>'drive_id')`;
+  const documentId = sql`(${metadata}->>'document_id')`;
   return sql`((CASE WHEN ${metadata}->>'native_mention_delivery_id' IS NOT NULL
     THEN ${nativeDeliveryAccessSql(userId, sql`${metadata}->>'native_mention_delivery_id'`, orgId)}
     ELSE (${spaceId} IS NULL OR ${readableSpaceSql(userId, spaceId, orgId)})
@@ -106,8 +108,9 @@ export function nativeNotificationAccessSql(
         SELECT 1 FROM messages nlm WHERE nlm.id = ${messageId} AND nlm.org_id = ${orgId}
           AND nlm.is_deleted = false AND ${readableSpaceSql(userId, sql`nlm.space_id`, orgId)}))
     END)
-    AND (${driveId} IS NULL OR ${visibleDriveIdSql(userId, orgId, driveId)})
-    AND (${metadata}->>'document_id' IS NULL OR ${driveId} IS NOT NULL)
+    AND (CASE WHEN ${documentId} IS NOT NULL THEN ${visibleDocumentIdSql(userId, orgId, documentId)}
+      WHEN ${driveId} IS NOT NULL THEN ${visibleDriveIdSql(userId, orgId, driveId)}
+      ELSE true END)
     AND NOT ${noticeNamesGuestHiddenTaskSql(userId, metadata, orgId, link)})`;
 }
 
