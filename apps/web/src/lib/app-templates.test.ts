@@ -43,7 +43,8 @@ test('every sample record is valid, and links only point at earlier samples of t
       const result = validateModuleRecordData(template.manifest, sample.collection, sample.data);
       assert.equal(result.success, true, `${template.key}: ${JSON.stringify(result)}`);
       for (const [fieldKey, refs] of Object.entries(sample.links ?? {})) {
-        const field = collection!.fields.find((item) => item.key === fieldKey);
+        const field: { key: string; type: string; target_collection?: string } | undefined = collection!.fields
+          .find((item) => item.key === fieldKey);
         assert.equal(field?.type, 'relation', `${template.key}: ${fieldKey}`);
         for (const ref of Array.isArray(refs) ? refs : [refs]) {
           assert.equal(seen.get(ref), field?.type === 'relation' ? field.target_collection : undefined, `${template.key}: ${ref} comes first`);
