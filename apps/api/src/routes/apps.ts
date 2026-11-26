@@ -45,7 +45,13 @@ import { appNativeRoutes } from './app-native.js';
 import { installationUpgradeTrust, UpgradeTrustUpdateSchema } from '../lib/app-upgrade-trust-policy.js';
 
 import { appAttachmentRoutes } from './app-attachments.js';
+import { APP_DEVELOPER_PAIRING_ENABLED } from '../lib/env.js';
 export const appRoutes = new Hono();
+
+async function pairingRoutesGate(c: Context, next: () => Promise<void>) {
+  if (!APP_DEVELOPER_PAIRING_ENABLED) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  await next();
+}
 appRoutes.route('/blob',appAttachmentRoutes);
 appRoutes.route('/native', appNativeRoutes);
 
@@ -151,6 +157,9 @@ function failure(c: Context, error: unknown) {
   if (error instanceof Error && error.message === 'APP_MANAGER_REQUIRED') {
     return c.json({ error: 'Only workspace owners and admins can manage Apps', code: 'APP_ACCESS_DENIED' }, 403);
   }
+  if (isModuleError(error) && error.code === 'MODULE_IDENTITY_RESERVED') {
+    return c.json({ error: error.message, code: error.code }, 409);
+  }
   if (isModuleError(error) && error.code === 'MODULE_ACCESS_DENIED') {
     return c.json({
       error: 'Only active workspace owners and admins can manage Apps',
@@ -181,6 +190,12 @@ appRoutes.post('/inspect', async (c) => {
     return failure(c, error);
   }
 });
+
+// Developer pairing is off unless the operator turns it on (it stays off on
+// hosted). A switched-off feature is not an outage, so its routes answer 404
+// rather than 503, before any other check.
+appRoutes.use('/pairings', pairingRoutesGate);
+appRoutes.use('/pairings/*', pairingRoutesGate);
 
 appRoutes.post('/pairings', async (c) => {
   try {
@@ -317,7 +332,10 @@ appRoutes.post('/:installationId/health', async (c) => {
 
 appRoutes.get('/', async (c) => {
   try {
-    return c.json({ apps: await listAppInstallations(actorFromContext(c)) });
+    return c.json({
+      apps: await listAppInstallations(actorFromContext(c)),
+      developer_pairing: { available: APP_DEVELOPER_PAIRING_ENABLED },
+    });
   } catch (error) {
     return failure(c, error);
   }

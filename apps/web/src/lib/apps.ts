@@ -4,6 +4,7 @@ import { RecordStoreDeclarationsSchema, type RecordStoreDeclaration } from '../.
 import { OwnerConnectionPolicyDeclarationsSchema, type OwnerConnectionPolicyDeclaration } from '../../../../packages/app-kit/src/owner-connection-policy';
 import { canonicalCapabilityJson } from '@deft/shared';
 import { normalizeExperiencePrivateCustody, type ExperiencePrivateCustodyReview } from './app-experience-session';
+import { readableErrorLines, readableErrorText } from './modules';
 
 export const APP_PACKAGE_MAX_BYTES = 1024 * 1024;
 
@@ -1286,6 +1287,10 @@ export function normalizeAppConnectors(value: unknown): AppConnector[] {
 }
 
 export async function appApiError(response: Response, fallback: string): Promise<string> {
-  const body = await response.json().catch(() => ({})) as { error?: unknown };
-  return typeof body.error === 'string' ? body.error : fallback;
+  const raw = await response.json().catch(() => null) as unknown;
+  const body = (raw && typeof raw === 'object' ? raw : {}) as { error?: unknown; code?: unknown };
+  // A switched-off feature (developer pairing on hosted) answers a bare 404;
+  // the caller's own words explain it better than "Not found".
+  if (response.status === 404 && body.code === 'NOT_FOUND') return fallback;
+  return readableErrorLines(body) ?? readableErrorText(body) ?? fallback;
 }

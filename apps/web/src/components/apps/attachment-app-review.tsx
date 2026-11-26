@@ -102,7 +102,7 @@ function Workspace({app}:{app:AppInstallation}){
         {state.action_payloads?.map(payload=><p key={payload.action_key}>Captured action payload: {payload.action_key} · up to {payload.max_payload_bytes.toLocaleString()} bytes. Each action still requires current operator authority and confirmation.</p>)}
       </div>)}
       <p>Declared actions: {review.authority.runtime_actions.map(a=>a.action_key).join(', ')||'None'}. Every effect requires its reviewed operator binding and normal approval.</p>
-      <p>Activation installs or re-enables {review.authority.modules.length} declared workspace modules.</p>
+      <p>Activation installs or turns back on the {review.authority.modules.length === 1 ? 'one app' : `${review.authority.modules.length} apps`} it declares.</p>
       {review.authority.modules.length>0&&<ul>{review.authority.modules.map(m=><li key={m.module_id} className="break-words">{m.module_id} · version {m.version}<code className="block break-all text-xs">{m.manifest_digest}</code></li>)}</ul>}
       <p>Declared App interface: {review.authority.experiences.map(e=>`${e.label} (${e.key})`).join(', ')||'None'}.</p>
       <p>Saved attachments are encrypted and only their current owner can download them while the parent connection remains authorized. Deft does not fetch provider URLs. Expired or purged copies cannot be recovered from Deft; downloaded copies remain outside these controls.</p>

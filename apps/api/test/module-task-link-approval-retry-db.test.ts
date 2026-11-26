@@ -139,7 +139,7 @@ test('reviewed task-link actions preserve retry identity and recover approved cl
     assert.equal(linkReplay.success, true, linkReplay.error);
     await assert.rejects(
       propose('module_record_task_link', secondTaskId, linkKey),
-      /different module task-link mutation/i,
+      /different task link change/i,
     );
 
     const unlinkKey = `review-unlink-${suffix}`;

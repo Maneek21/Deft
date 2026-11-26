@@ -238,7 +238,7 @@ async function requireModuleTaskWriteContext(
     ))
     .limit(1);
   if (!identity) {
-    throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
   }
 
   const installation = await requireModuleInstallationWriteAccessWithExecutor(
@@ -264,7 +264,7 @@ async function requireModuleTaskWriteContext(
   }
   const [lockedRecord] = await recordQuery;
   if (!lockedRecord) {
-    throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
   }
 
   const createdByUserId = await actorWorkspaceUserId(actor, executor);
@@ -376,7 +376,7 @@ export async function listModuleRecordTaskLinks(
   const installation = await getModuleInstallation(actor, { slug });
   const record = await getModuleRecord(actor, recordId);
   if (record.installation_id !== installation.id) {
-    throw new ModuleTaskLinkError('Module record not found', 'MODULE_TASK_LINK_NOT_FOUND');
+    throw new ModuleTaskLinkError('Record not found', 'MODULE_TASK_LINK_NOT_FOUND');
   }
 
   const resourceId = formatModuleRecordResourceId(record.id);
@@ -656,10 +656,10 @@ export async function linkModuleRecordToTask(
     return { inserted, edge, record: context.record, installation: context.installation };
   };
   const { inserted, edge, record, installation } = executor ? await mutate(executor) : await db.transaction(mutate);
-  if (!edge) throw new Error('Module task link was not persisted');
+  if (!edge) throw new Error('The task link was not saved');
 
   const link = recordLinkView(edge, record, installation);
-  if (!link) throw new Error('Module task link collection is missing');
+  if (!link) throw new Error('The record type for this task link is missing');
   return { link, created: inserted.length > 0 };
 }
 

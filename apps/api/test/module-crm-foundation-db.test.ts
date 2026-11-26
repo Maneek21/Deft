@@ -430,7 +430,7 @@ test('CRM routes atomically create relationships and page live inverse records w
       const input = operation === 'module_record_incoming' ? incomingInput : { record_id: ids[1] };
       await assert.rejects(executeModuleOperationForActor(operation, humanModuleActor({ orgId: otherOrg, userId: otherUser, role: 'owner', source: 'mcp', scopes: ['read:modules'] }), input));
       await assert.rejects(executeModuleOperationForActor(operation, humanModuleActor({ orgId, userId, role: 'owner', source: 'mcp', scopes: [] }), input));
-      await assert.rejects(executeToolCall(operation, input, orgId, userId), /Agent access is not enabled/);
+      await assert.rejects(executeToolCall(operation, input, orgId, userId), /Agent access is not turned on/);
     }
     await client.query("UPDATE module_installations SET agent_access='read' WHERE id=$1 AND org_id=$2", [installation.id, orgId]);
     const deftyIncoming = await executeToolCall('module_record_incoming', incomingInput, orgId, userId);

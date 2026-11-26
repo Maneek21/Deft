@@ -1,0 +1,7 @@
+[
+  { "ref": "northwind", "collection": "companies", "data": { "name": "Northwind Example Co", "status": "prospect", "industry": "Retail", "website": "https://example.com" } },
+  { "ref": "contoso", "collection": "companies", "data": { "name": "Contoso Sample Ltd", "status": "customer", "industry": "Logistics" } },
+  { "ref": "alex", "collection": "people", "data": { "name": "Alex Example", "email": "alex@example.com", "job_title": "Head of operations" }, "links": { "company_id": "northwind" } },
+  { "collection": "deals", "data": { "name": "Northwind pilot", "stage": "proposal", "amount": 12000, "closes_on": "2027-01-15" }, "links": { "company_id": "northwind", "person_id": "alex" } },
+  { "collection": "deals", "data": { "name": "Contoso renewal", "stage": "qualified", "amount": 30000 }, "links": { "company_id": "contoso" } }
+]

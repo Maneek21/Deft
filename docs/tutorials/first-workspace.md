@@ -1,6 +1,6 @@
 # Your first workspace
 
-For Deft v0.3.0-preview.15.
+For Deft v0.3.0-preview.155.
 
 ## Start with a fresh workspace
 
@@ -18,7 +18,7 @@ Post this message:
 
 ## 2. Create a project
 
-Use **Create project** beside Projects. Name it **Launch pilot** and enter **PILOT** in **Prefix**. Keep the default workflow for this exercise.
+Use **Create project** beside Projects. Name it **Launch pilot** and enter **LNCH** in **Prefix**. A prefix holds up to four letters.
 
 **Check:** the project appears in the sidebar and its name appears above the task view. If the previous project is still shown, select **Launch pilot** in the sidebar and refresh before adding a task.
 
@@ -34,13 +34,13 @@ Open the project and choose **New task**. Enter:
 | Due date | Tomorrow's date in the date picker |
 | Description | Cover the announcement, demo, and support handoff. |
 
-Save it, then open the task. Check the project, assignee, and description. Confirm the saved due date matches the date you selected. Its task key starts with `PILOT-`; use the actual key when referring to it later.
+Choose **Create task**, then open the task. Check the project, assignee, and description. Confirm the saved due date matches the date you selected. Its task key starts with `LNCH-`; use the actual key when referring to it later.
 
-Move the task to **In progress** in Board. Switch to Table and confirm it has the same status. Both views show the same task.
+Move the task to **In Progress** in Board. Switch to Table and confirm it has the same status. Both views show the same task.
 
 ## 4. Invite a teammate
 
-Open **Settings → Members → Invite**, enter their email and role, and generate an invitation link. Share the link directly; Deft does not email it for you.
+Open **Settings → People** and choose **Invite teammate**. Enter their email and role, and choose **Generate** to create an invitation link. Share the link directly; Deft does not email it for you.
 
 Ask the teammate to open `launch-room` and reply to your message. Invitation links expire after seven days and work once. See [First login](https://deft.ing/docs/first-login/) for recovery and administrator setup.
 

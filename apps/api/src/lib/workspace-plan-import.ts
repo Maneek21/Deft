@@ -24,6 +24,7 @@ import { db } from './db.js';
 import { localFileStore } from './file-store.js';
 import { parseCsv, type ParsedCsv } from './module-csv-import.js';
 import { reserveTaskNumberRange } from './task-numbering.js';
+import { taskPrioritySchema } from './task-priority.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import {
   employeeCanAccessSpace,
@@ -44,7 +45,7 @@ const MAX_WORKBOOK_ENTRIES = 200;
 const MAX_WORKSPACE_PLAN_COLUMNS = 30;
 const MAX_WORKSPACE_PLAN_TEXT = 250_000;
 
-const prioritySchema = z.enum(['p0', 'p1', 'p2', 'p3']);
+const prioritySchema = taskPrioritySchema;
 const workspacePlanTaskSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1).max(240),

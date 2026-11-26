@@ -55,7 +55,9 @@ import {
   ModuleRelationPatchSchema,
   ModuleSavedViewConfigSchema,
   ModuleRecordValidationError,
+  canonicalSupportedModuleManifestJson,
   getModuleOperationInputJsonSchema,
+  isFirstPartyReservedId,
   digestSupportedModuleManifest as digestModuleManifest,
   formatModuleRecordResourceId,
   parseSupportedDeftModuleManifest as parseDeftModuleManifest,
@@ -95,6 +97,7 @@ import {
 import { db } from './db.js';
 import { getIO } from '../socket.js';
 import { getBundledModule, listBundledModules } from './bundled-modules.js';
+import { cleanIssueLabel, limitIssueLines } from '@deft/shared/module-issues';
 import { ModuleError } from './module-errors.js';
 import { assertBaseReadAccess, assertBaseWriteAccess, assertInstallationAccess, isAdmin } from './module-access-policy.js';
 import { planModuleRecordMerge } from './module-merge-plan.js';
@@ -183,7 +186,7 @@ function actorMetadata(actor: ModuleActor): { type: string; id: string } {
 function assertLifecycleAccess(actor: ModuleActor): void {
   assertBaseWriteAccess(actor);
   if (!isAdmin(actor)) {
-    throw new ModuleError('Only workspace owners and admins can manage modules', 'MODULE_ACCESS_DENIED', 403);
+    throw new ModuleError('Only workspace owners and admins can manage apps', 'MODULE_ACCESS_DENIED', 403);
   }
 }
 
@@ -207,7 +210,7 @@ export async function assertCurrentModuleManagerWithExecutor(
   assertLifecycleAccess(actor);
   if (actor.kind !== 'human') {
     throw new ModuleError(
-      'Only workspace owners and admins can manage modules',
+      'Only workspace owners and admins can manage apps',
       'MODULE_ACCESS_DENIED',
       403,
     );
@@ -233,7 +236,7 @@ export async function assertCurrentModuleManagerWithExecutor(
     || (membership.role !== 'owner' && membership.role !== 'admin')
   ) {
     throw new ModuleError(
-      'Only active workspace owners and admins can manage modules',
+      'Only active workspace owners and admins can manage apps',
       'MODULE_ACCESS_DENIED',
       403,
     );
@@ -284,7 +287,7 @@ export async function assertAgentModuleMutationPolicyWithExecutor(
   }
   if (employee.unhealthy) {
     throw new ModuleError(
-      `Agent employee is unhealthy and cannot execute module writes${employee.unhealthy_reason ? `: ${employee.unhealthy_reason}` : ''}`,
+      `Agent employee is unhealthy and cannot change app records${employee.unhealthy_reason ? `: ${employee.unhealthy_reason}` : ''}`,
       'MODULE_ACCESS_DENIED',
       403,
     );
@@ -328,7 +331,7 @@ async function findInstallation(
   if (identifier.slug) identityConditions.push(eq(moduleInstallations.slug, identifier.slug));
   if (identifier.moduleId) identityConditions.push(eq(moduleInstallations.module_id, identifier.moduleId));
   if (identifier.installationId) identityConditions.push(eq(moduleInstallations.id, identifier.installationId));
-  if (identityConditions.length !== 1) throw new Error('Exactly one module identifier is required');
+  if (identityConditions.length !== 1) throw new Error('Exactly one app identifier is required');
 
   if (options?.lock) {
     // Lock the stable installation identity before reading its active version.
@@ -350,7 +353,7 @@ async function findInstallation(
       }).for('update');
     }
     const [installation] = await installationQuery;
-    if (!installation) throw new ModuleError('Module not found', 'MODULE_NOT_FOUND', 404);
+    if (!installation) throw new ModuleError('App not found', 'MODULE_NOT_FOUND', 404);
     assertInstallationAccess(actor, installation, mode, options);
 
     const [version] = await executor
@@ -362,7 +365,7 @@ async function findInstallation(
         eq(moduleVersions.is_active, true),
       ))
       .limit(1);
-    if (!version) throw new ModuleError('Module has no active version', 'MODULE_NOT_FOUND', 404);
+    if (!version) throw new ModuleError('App has no active version', 'MODULE_NOT_FOUND', 404);
     await verifyManifest(version);
     return { installation, version };
   }
@@ -379,7 +382,7 @@ async function findInstallation(
     .limit(1);
 
   const [row] = await query;
-  if (!row) throw new ModuleError('Module not found', 'MODULE_NOT_FOUND', 404);
+  if (!row) throw new ModuleError('App not found', 'MODULE_NOT_FOUND', 404);
   assertInstallationAccess(actor, row.installation, mode, options);
   await verifyManifest(row.version);
   return row;
@@ -646,13 +649,125 @@ function decodeCursor(cursor?: string): number {
     }
     return Number(parsed.offset);
   } catch {
-    throw new ModuleError('Invalid module cursor', 'MODULE_VALIDATION_ERROR', 400);
+    throw new ModuleError('Invalid page cursor', 'MODULE_VALIDATION_ERROR', 400);
   }
+}
+
+const MISFIT_TITLES_NAMED = 5;
+const MISFIT_DETAIL_LIMIT = 20;
+
+type MisfitGroup = { collection: string; field: string; code: string; count: number; titles: string[] };
+type MisfitDetail = {
+  record_id: string;
+  collection_key: string;
+  title: string;
+  problems: Array<{ field: string | null; code: string }>;
+};
+
+function misfitProblem(code: string): string {
+  switch (code) {
+    case 'required': return 'now required, but empty in';
+    case 'unknown_field': return 'removed, but still has a value in';
+    case 'invalid_value': return 'has a value the new version does not allow in';
+    case 'invalid_type': return 'has a value of a different type in';
+    case 'record_too_large': return 'too large in';
+    default: return 'does not fit in';
+  }
+}
+
+/** "Dana" and "Sam"; "Dana", "Sam" and 3 more; or "7 records" once the names run out. */
+function describeMisfitRecords(titles: string[], count: number): string {
+  const quoted = titles.map((title) => `"${title}"`);
+  if (quoted.length === 0) return `${count} ${count === 1 ? 'record' : 'records'}`;
+  const rest = count - quoted.length;
+  if (rest > 0) return `${quoted.join(', ')} and ${rest} more`;
+  if (quoted.length === 1) return quoted[0]!;
+  return `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`;
+}
+
+/**
+ * Collects the records an upgrade would refuse, as it checks them, so the
+ * refusal can name them. Work per record is constant: each group keeps a
+ * count and at most five titles, and at most 20 records are kept in detail.
+ */
+class RecordMisfits {
+  count = 0;
+  private readonly groups = new Map<string, MisfitGroup>();
+  private readonly details: MisfitDetail[] = [];
+  private readonly previous: DeftModuleManifestV1 | null;
+
+  constructor(previousValue: unknown, private readonly next: DeftModuleManifestV1) {
+    let previous: DeftModuleManifestV1 | null = null;
+    try {
+      previous = parseDeftModuleManifest(previousValue);
+    } catch {
+      previous = null;
+    }
+    this.previous = previous;
+  }
+
+  add(record: { id: string; collection_key: string; data: unknown }, error: ModuleRecordValidationError): void {
+    this.count += 1;
+    const nextCollection = this.next.collections.find((item) => item.key === record.collection_key);
+    const previousCollection = this.previous?.collections.find((item) => item.key === record.collection_key);
+    const title = misfitTitle(previousCollection ?? nextCollection, record.data, record.id);
+    const collectionName = cleanIssueLabel(nextCollection?.name ?? previousCollection?.name ?? record.collection_key)
+      ?? record.collection_key;
+    for (const issue of error.issues) {
+      const key = `${record.collection_key}|${issue.field ?? ''}|${issue.code}`;
+      let group = this.groups.get(key);
+      if (!group) {
+        const field = issue.field
+          ? (nextCollection?.fields.find((item) => item.key === issue.field)
+            ?? previousCollection?.fields.find((item) => item.key === issue.field))?.label ?? issue.field
+          : 'Record';
+        group = { collection: collectionName, field: cleanIssueLabel(field) ?? 'Record', code: issue.code, count: 0, titles: [] };
+        this.groups.set(key, group);
+      }
+      group.count += 1;
+      if (group.titles.length < MISFIT_TITLES_NAMED) group.titles.push(title);
+    }
+    if (this.details.length < MISFIT_DETAIL_LIMIT) {
+      this.details.push({
+        record_id: record.id,
+        collection_key: record.collection_key,
+        title,
+        problems: error.issues.map((issue) => ({ field: issue.field, code: issue.code })),
+      });
+    }
+  }
+
+  /** One plain line per record type, field and problem, naming five records in all. */
+  error(): ModuleError {
+    let budget = MISFIT_TITLES_NAMED;
+    const lines = [...this.groups.values()].map((group) => {
+      const shown = group.titles.slice(0, budget);
+      budget -= shown.length;
+      return `${group.collection} → ${group.field}: ${misfitProblem(group.code)} ${describeMisfitRecords(shown, group.count)}`;
+    });
+    const readable = limitIssueLines(lines);
+    return new ModuleError(readable.join('\n'), 'MODULE_VALIDATION_ERROR', 400, {
+      lines: readable,
+      record_count: this.count,
+      records: this.details,
+    });
+  }
+}
+
+function misfitTitle(
+  collection: DeftModuleManifestV1['collections'][number] | undefined,
+  data: unknown,
+  recordId: string,
+): string {
+  const key = collection?.search?.title_field ?? collection?.fields[0]?.key;
+  const value = key && data && typeof data === 'object' ? (data as Record<string, unknown>)[key] : undefined;
+  const text = typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+  return cleanIssueLabel(text, 60) ?? `Record ${recordId.slice(0, 8)}`;
 }
 
 function validationError(error: ModuleRecordValidationError): ModuleError {
   return new ModuleError(
-    'Module record data is invalid',
+    'The record data is invalid',
     'MODULE_VALIDATION_ERROR',
     400,
     { issues: error.issues },
@@ -706,13 +821,13 @@ async function findMutationReplay(
   if (!receipt) return null;
   if (receipt.input_digest !== inputDigest) {
     throw new ModuleError(
-      'Idempotency key was already used for a different module mutation',
+      'Idempotency key was already used for a different app record change',
       'MODULE_IDEMPOTENCY_CONFLICT',
       409,
     );
   }
   if (expectedInstallationId && receipt.installation_id !== expectedInstallationId) {
-    throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
   }
 
   const [record] = await executor
@@ -773,7 +888,7 @@ async function assertMutationIdempotencyAvailable(
     .limit(1);
   if (receipt && receipt.input_digest !== moduleMutationInputDigest(operation, input as Record<string, unknown>)) {
     throw new ModuleError(
-      'Idempotency key was already used for a different module mutation',
+      'Idempotency key was already used for a different app record change',
       'MODULE_IDEMPOTENCY_CONFLICT',
       409,
     );
@@ -971,7 +1086,7 @@ async function prepareRelationReplacements(
     ));
     if (invalid.length > 0) {
       throw new ModuleError(
-        'Relations must reference active records in the declared collection',
+        'Links must point to active records of the declared record type',
         'MODULE_VALIDATION_ERROR',
         400,
         { invalid_record_ids: invalid },
@@ -1076,7 +1191,7 @@ function moduleValueDigest(value: unknown): string {
 function assertExpectedManifest(version: VersionRow, expected: string): void {
   if (version.manifest_digest !== expected) {
     throw new ModuleError(
-      'The module schema changed. Refresh and review the current schema before writing.',
+      'The app changed. Refresh and review its current fields before writing.',
       'MODULE_MANIFEST_STALE',
       409,
       { current_manifest_digest: version.manifest_digest },
@@ -1293,7 +1408,7 @@ async function expirePendingModuleActions(
             approverId: action.approved_by_user_id,
             decision: action.approved_by_user_id ? 'approved' : 'auto_executed',
             result: committed.mutation,
-            reason: 'Recovered an already-committed module mutation during access revocation',
+            reason: 'Recovered an app record change that was already saved when access was turned off',
           });
         }
         continue;
@@ -1572,7 +1687,7 @@ export async function assertModuleAuditReadAccess(
   try {
     recordId = parseModuleRecordResourceId(entityId);
   } catch {
-    throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
   }
   const [record] = await db
     .select({ installation_id: moduleRecords.installation_id })
@@ -1583,7 +1698,7 @@ export async function assertModuleAuditReadAccess(
       eq(moduleRecords.is_deleted, false),
     ))
     .limit(1);
-  if (!record) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  if (!record) throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
   await findInstallation(
     db,
     actor,
@@ -1727,6 +1842,51 @@ export async function getModuleSchema(
 }
 
 /**
+ * Why a module identity cannot be installed from an upload, or null. Bundled
+ * modules own their slug and id, and the com.deft / io.deft id namespaces are
+ * kept for apps made by Deft. A workspace cannot uninstall, so an upload that
+ * took one of these would block the real app there for good.
+ */
+export function moduleIdentityReservation(
+  identity: { id: string; slug: string },
+  options: { allowExactBundledCopy?: boolean } = {},
+): string | null {
+  // A first-party App (such as Contacts CRM) may carry a shipped bundled
+  // manifest unchanged. Only an exact copy passes: same slug, id and content.
+  if (options.allowExactBundledCopy && isExactBundledCopy(identity)) return null;
+  for (const bundled of listBundledModules()) {
+    if (bundled.slug === identity.slug) {
+      return `The slug "${identity.slug}" belongs to ${bundled.name}, an app that ships with Deft. Choose another slug and id.`;
+    }
+    if (bundled.id === identity.id) {
+      return `The id "${identity.id}" belongs to ${bundled.name}, an app that ships with Deft. Choose another id.`;
+    }
+  }
+  if (isFirstPartyReservedId(identity.id)) {
+    return `Ids that start with com.deft. or io.deft. are kept for apps made by Deft. Choose another id, such as com.example.${identity.slug}.`;
+  }
+  return null;
+}
+
+function isExactBundledCopy(identity: { id: string; slug: string }): boolean {
+  const bundled = getBundledModule(identity.slug);
+  if (!bundled || bundled.id !== identity.id) return false;
+  try {
+    return canonicalSupportedModuleManifestJson(identity) === canonicalSupportedModuleManifestJson(bundled);
+  } catch {
+    return false;
+  }
+}
+
+export function assertModuleIdentityNotReserved(
+  identity: { id: string; slug: string },
+  options: { allowExactBundledCopy?: boolean } = {},
+): void {
+  const reason = moduleIdentityReservation(identity, options);
+  if (reason) throw new ModuleError(reason, 'MODULE_IDENTITY_RESERVED', 409);
+}
+
+/**
  * Transaction-composable Module install primitive. The caller owns commit and
  * must run the returned effects only after a successful commit. This is the
  * boundary used by App activation to avoid nested, independently committed
@@ -1741,6 +1901,10 @@ export async function installModuleFromManifestWithExecutor(
   const actor = validatedActor(actorValue);
   assertLifecycleAccess(actor);
   const manifest = parseDeftModuleManifest(manifestValue);
+  // Only the bundled catalog may install a bundled or first-party identity.
+  // An App may carry an exact copy of a shipped bundled manifest; the plain
+  // sideload route checks strictly before it gets here.
+  if (options.source !== 'bundled') assertModuleIdentityNotReserved(manifest, { allowExactBundledCopy: true });
   const digest = await digestModuleManifest(manifest);
   const identity = actorMetadata(actor);
 
@@ -1756,7 +1920,7 @@ export async function installModuleFromManifestWithExecutor(
       ))
       .limit(1);
     if (existing) {
-      throw new ModuleError('Module is already installed', 'MODULE_ALREADY_INSTALLED', 409);
+      throw new ModuleError('An app with this id or slug is already installed', 'MODULE_ALREADY_INSTALLED', 409);
     }
 
     const [installation] = await executor.insert(moduleInstallations).values({
@@ -1832,7 +1996,7 @@ async function assertModuleLifecycleNotOwnedByApp(
   )).limit(1);
   if (binding) {
     throw new ModuleError(
-      'This Module is owned by an App; manage its lifecycle from Settings → Apps',
+      'This app was installed by an App package; manage it from Settings → Apps',
       'MODULE_ACCESS_DENIED',
       403,
     );
@@ -1850,14 +2014,14 @@ function assertStrictlyAdditiveAppModuleUpgrade(
     const nextCollection = next.collections.find((item) => item.key === currentCollection.key);
     if (!nextCollection) {
       throw new ModuleError(
-        `App Module upgrade cannot remove collection ${currentCollection.key}`,
+        `An App update cannot remove the record type ${currentCollection.key}`,
         'MODULE_VALIDATION_ERROR',
         409,
       );
     }
     if (!equal(currentCollection.search, nextCollection.search)) {
       throw new ModuleError(
-        `App Module upgrade cannot change search projection for ${currentCollection.key}`,
+        `An App update cannot change how ${currentCollection.key} is searched`,
         'MODULE_VALIDATION_ERROR',
         409,
       );
@@ -1867,7 +2031,7 @@ function assertStrictlyAdditiveAppModuleUpgrade(
       const nextField = nextCollection.fields.find((item) => item.key === currentField.key);
       if (!nextField || !equal(currentField, nextField)) {
         throw new ModuleError(
-          `App Module upgrade cannot change existing field ${currentCollection.key}.${currentField.key}`,
+          `An App update cannot change the existing field ${currentCollection.key}.${currentField.key}`,
           'MODULE_VALIDATION_ERROR',
           409,
         );
@@ -1876,7 +2040,7 @@ function assertStrictlyAdditiveAppModuleUpgrade(
     for (const added of nextCollection.fields.filter((field) => !currentFieldKeys.has(field.key))) {
       if (added.required || ('default' in added && added.default !== undefined)) {
         throw new ModuleError(
-          `Added App Module field ${nextCollection.key}.${added.key} must be optional without a default`,
+          `The new field ${nextCollection.key}.${added.key} must be optional and have no default in an App update`,
           'MODULE_VALIDATION_ERROR',
           409,
         );
@@ -1888,7 +2052,7 @@ function assertStrictlyAdditiveAppModuleUpgrade(
     for (const field of addedCollection.fields) {
       if (field.required || ('default' in field && field.default !== undefined)) {
         throw new ModuleError(
-          `New App Module collection ${addedCollection.key} must contain only optional fields without defaults`,
+          `The new record type ${addedCollection.key} may only have optional fields without defaults in an App update`,
           'MODULE_VALIDATION_ERROR',
           409,
         );
@@ -1937,7 +2101,7 @@ export async function upgradeAppOwnedModuleAdditivelyWithExecutor(
     ))
     .limit(1)
     .for('update');
-  if (!current) throw new ModuleError('App-owned Module not found', 'MODULE_NOT_FOUND', 404);
+  if (!current) throw new ModuleError('The app this App installed was not found', 'MODULE_NOT_FOUND', 404);
   const [owner] = await executor.select({ app_installation_id: appModuleBindings.app_installation_id })
     .from(appModuleBindings)
     .where(and(
@@ -1946,18 +2110,18 @@ export async function upgradeAppOwnedModuleAdditivelyWithExecutor(
     ))
     .limit(1);
   if (!owner || owner.app_installation_id !== input.app_installation_id) {
-    throw new ModuleError('App Module owner does not match', 'MODULE_ACCESS_DENIED', 403);
+    throw new ModuleError('This app belongs to a different App', 'MODULE_ACCESS_DENIED', 403);
   }
   if (
     current.installation.source !== 'sideloaded'
     || current.installation.module_id !== manifest.id
     || current.installation.slug !== manifest.slug
   ) {
-    throw new ModuleError('App Module identity changed', 'MODULE_IDENTITY_MISMATCH', 409);
+    throw new ModuleError('The app file id or slug changed', 'MODULE_IDENTITY_MISMATCH', 409);
   }
   if (current.version.manifest_digest !== expectedDigest) {
     throw new ModuleError(
-      'The active App Module schema changed before activation',
+      'The app changed before activation',
       'MODULE_MANIFEST_STALE',
       409,
       { current_manifest_digest: current.version.manifest_digest },
@@ -1965,7 +2129,7 @@ export async function upgradeAppOwnedModuleAdditivelyWithExecutor(
   }
   if (compareSemver(current.version.version, manifest.version) >= 0) {
     throw new ModuleError(
-      'The App Module upgrade must use a strictly newer semantic version',
+      'The App update must use a higher version number, such as 1.0.1',
       'MODULE_UPDATE_NOT_AVAILABLE',
       409,
     );
@@ -2075,7 +2239,7 @@ export async function installBundledModule(
   slug: string,
 ): Promise<ModuleInstallationView> {
   const manifest = getBundledModule(slug);
-  if (!manifest) throw new ModuleError('Bundled module not found', 'MODULE_NOT_FOUND', 404);
+  if (!manifest) throw new ModuleError('Bundled app not found', 'MODULE_NOT_FOUND', 404);
   return installModuleFromManifest(actorValue, manifest, { source: 'bundled' });
 }
 
@@ -2092,7 +2256,7 @@ export async function upgradeModuleInstallationToManifest(
   assertLifecycleAccess(actor);
   if (options.source === 'sideloaded' && !options.expected_active_manifest_digest) {
     throw new ModuleError(
-      'The expected active manifest digest is required for sideloaded upgrades',
+      'The current app file digest is required to update an uploaded app',
       'MODULE_MANIFEST_INVALID',
       400,
     );
@@ -2103,7 +2267,7 @@ export async function upgradeModuleInstallationToManifest(
   const manifest = parseDeftModuleManifest(manifestValue);
   if (routeSlug !== manifest.slug) {
     throw new ModuleError(
-      'Route slug must match the immutable manifest slug',
+      'The slug in the address must match the app file slug, which cannot change',
       'MODULE_IDENTITY_MISMATCH',
       409,
     );
@@ -2128,7 +2292,7 @@ export async function upgradeModuleInstallationToManifest(
       || current.installation.slug !== manifest.slug
     ) {
       throw new ModuleError(
-        'The manifest identity or source does not match this installation',
+        'The app file id, slug or source does not match the installed app',
         'MODULE_IDENTITY_MISMATCH',
         409,
       );
@@ -2139,7 +2303,7 @@ export async function upgradeModuleInstallationToManifest(
       && current.version.manifest_digest !== expectedActiveDigest
     ) {
       throw new ModuleError(
-        'The active module schema changed before the update started',
+        'The app changed before the update started. Refresh and try again.',
         'MODULE_MANIFEST_STALE',
         409,
         { current_manifest_digest: current.version.manifest_digest },
@@ -2150,24 +2314,24 @@ export async function upgradeModuleInstallationToManifest(
       if (current.version.manifest_digest !== digest) {
         if (options.source !== 'bundled') {
           throw new ModuleError(
-            'A changed module manifest requires a strictly newer semantic version',
+            'A changed app file needs a higher version number, such as 1.0.1',
             'MODULE_UPDATE_NOT_AVAILABLE',
             409,
           );
         }
         throw new Error(
-          `Module artifact ${manifest.id}@${manifest.version} changed without a version bump`,
+          `The app file ${manifest.id}@${manifest.version} changed without a new version number`,
         );
       }
       throw new ModuleError(
-        'No newer module version is available',
+        'No newer version of this app is available',
         'MODULE_UPDATE_NOT_AVAILABLE',
         409,
       );
     }
     if (compareSemver(current.version.version, manifest.version) >= 0) {
       throw new ModuleError(
-        'The module update must use a strictly newer semantic version',
+        'The update must use a higher version number than the installed app, such as 1.0.1',
         'MODULE_UPDATE_NOT_AVAILABLE',
         409,
       );
@@ -2186,13 +2350,28 @@ export async function upgradeModuleInstallationToManifest(
       data: ModuleRecordData;
       projection: ReturnType<typeof projectModuleRecordSearch>;
     }> = [];
+    // Check every record before refusing, so the refusal can name the
+    // records that do not fit the new version, not just the first field.
+    // Pass 1 checks every record's data against the new version and collects
+    // the ones that do not fit. Pass 2, only when all fit, checks member
+    // fields, so a member problem never hides the list of misfits.
+    const misfits = new RecordMisfits(current.version.manifest, manifest);
+    const parsedRecords: Array<{ row: RecordRow; data: ModuleRecordData }> = [];
     for (const record of records) {
-      const data = parseRecordData(manifest, record.collection_key, record.data);
-      await assertMemberFieldsValid(tx, actor.org_id, manifest, record.collection_key, data);
+      try {
+        parsedRecords.push({ row: record, data: parseModuleRecordData(manifest, record.collection_key, record.data) });
+      } catch (error) {
+        if (!(error instanceof ModuleRecordValidationError)) throw error;
+        misfits.add(record, error);
+      }
+    }
+    if (misfits.count > 0) throw misfits.error();
+    for (const { row, data } of parsedRecords) {
+      await assertMemberFieldsValid(tx, actor.org_id, manifest, row.collection_key, data);
       validatedRecords.push({
-        row: record,
+        row,
         data,
-        projection: projectModuleRecordSearch(manifest, record.collection_key, data),
+        projection: projectModuleRecordSearch(manifest, row.collection_key, data),
       });
     }
 
@@ -2210,11 +2389,11 @@ export async function upgradeModuleInstallationToManifest(
     for (const relation of activeRelations) {
       const source = recordById.get(relation.source_record_id);
       const target = recordById.get(relation.target_record_id);
-      if (!source || !target) throw new Error(`Module relation ${relation.id} references a missing record`);
+      if (!source || !target) throw new Error(`Link ${relation.id} points to a missing record`);
       const field = fieldFor(manifest, source.collection_key, relation.field_key);
       if (field.type !== 'relation' || field.target_collection !== target.collection_key) {
         throw new ModuleError(
-          `Existing relation ${relation.field_key} is incompatible with module version ${manifest.version}`,
+          `Existing links in ${relation.field_key} do not fit version ${manifest.version} of the app`,
           'MODULE_VALIDATION_ERROR',
           409,
           { source_record_id: source.id, target_record_id: target.id },
@@ -2225,7 +2404,7 @@ export async function upgradeModuleInstallationToManifest(
       relationCount.set(key, count);
       if (!field.multiple && count > 1) {
         throw new ModuleError(
-          `Existing relation ${field.key} has multiple targets but the new manifest is singular`,
+          `Some records link ${field.key} to more than one record, but the new app file allows only one`,
           'MODULE_VALIDATION_ERROR',
           409,
           { source_record_id: source.id },
@@ -2286,14 +2465,14 @@ export async function upgradeModuleInstallationToManifest(
       const edges = resourceEdgesBySet.get(set.id) ?? [];
       if (!source || !field || field.type !== 'resource_ref') {
         throw new ModuleError(
-          `Existing resource relation ${set.relation_key} is incompatible with module version ${manifest.version}`,
+          `Existing links in ${set.relation_key} do not fit version ${manifest.version} of the app`,
           'MODULE_VALIDATION_ERROR',
           409,
         );
       }
       if (!field.multiple && edges.length > 1) {
         throw new ModuleError(
-          `Existing resource relation ${field.key} has multiple targets but the new manifest is singular`,
+          `Some records link ${field.key} to more than one record, but the new app file allows only one`,
           'MODULE_VALIDATION_ERROR',
           409,
         );
@@ -2430,7 +2609,7 @@ export async function updateBundledModule(
   slug: string,
 ): Promise<ModuleInstallationView> {
   const manifest = getBundledModule(slug);
-  if (!manifest) throw new ModuleError('Bundled module not found', 'MODULE_NOT_FOUND', 404);
+  if (!manifest) throw new ModuleError('Bundled app not found', 'MODULE_NOT_FOUND', 404);
   return upgradeModuleInstallationToManifest(actorValue, slug, manifest, { source: 'bundled' });
 }
 
@@ -2442,7 +2621,7 @@ export async function updateModuleInstallation(
   const actor = validatedActor(actorValue);
   assertLifecycleAccess(actor);
   if (changes.enabled === undefined && changes.agent_access === undefined) {
-    throw new ModuleError('No module setting was provided', 'MODULE_VALIDATION_ERROR', 400);
+    throw new ModuleError('No app setting was provided', 'MODULE_VALIDATION_ERROR', 400);
   }
   const identity = actorMetadata(actor);
 
@@ -2499,8 +2678,8 @@ export async function updateModuleInstallation(
         actor.org_id,
         installation,
         disabledNow
-          ? 'Module was disabled before this action was reviewed'
-          : 'Module write access was revoked before this action was reviewed',
+          ? 'The app was turned off before this action was reviewed'
+          : 'Write access to this app was turned off before this action was reviewed',
       )
       : [];
     const owners = await owningAppsByModuleInstallation(tx, actor.org_id, [installation.id]);
@@ -2629,7 +2808,7 @@ export async function preflightModuleMutationWithExecutor(
       eq(moduleRecords.is_deleted, false),
     ))
     .limit(1);
-  if (!current) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  if (!current) throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
 
   const installation = await findInstallation(
     executor,
@@ -2641,7 +2820,7 @@ export async function preflightModuleMutationWithExecutor(
   assertExpectedManifest(installation.version, recordInput.expected_manifest_digest);
   if (current.revision !== recordInput.expected_revision) {
     throw new ModuleError(
-      'Module record changed since it was read',
+      'The record changed since it was read',
       'MODULE_REVISION_CONFLICT',
       409,
       { current_revision: current.revision },
@@ -2824,7 +3003,7 @@ async function locateModuleRecordInstallation(
     ))
     .limit(1);
   if (!locator || (expectedInstallationId && locator.installation_id !== expectedInstallationId)) {
-    throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
   }
   return locator.installation_id;
 }
@@ -2881,11 +3060,11 @@ export async function updateModuleRecord(
       ))
       .limit(1)
       .for('update');
-    if (!current) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    if (!current) throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
     assertExpectedManifest(installation.version, input.expected_manifest_digest);
     if (current.revision !== input.expected_revision) {
       throw new ModuleError(
-        'Module record changed since it was read',
+        'The record changed since it was read',
         'MODULE_REVISION_CONFLICT',
         409,
         { current_revision: current.revision },
@@ -2935,7 +3114,7 @@ export async function updateModuleRecord(
       ))
       .returning();
     if (!next) {
-      throw new ModuleError('Module record changed since it was read', 'MODULE_REVISION_CONFLICT', 409);
+      throw new ModuleError('The record changed since it was read', 'MODULE_REVISION_CONFLICT', 409);
     }
 
     await applyPreparedRelationReplacements(
@@ -3052,12 +3231,12 @@ export async function archiveModuleRecord(
       ))
       .limit(1)
       .for('update');
-    if (!current) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
-    if (current.is_deleted) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    if (!current) throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    if (current.is_deleted) throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
     assertExpectedManifest(installation.version, input.expected_manifest_digest);
     if (current.revision !== input.expected_revision) {
       throw new ModuleError(
-        'Module record changed since it was read',
+        'The record changed since it was read',
         'MODULE_REVISION_CONFLICT',
         409,
         { current_revision: current.revision },
@@ -3085,7 +3264,7 @@ export async function archiveModuleRecord(
       ))
       .returning();
     if (!next) {
-      throw new ModuleError('Module record changed since it was read', 'MODULE_REVISION_CONFLICT', 409);
+      throw new ModuleError('The record changed since it was read', 'MODULE_REVISION_CONFLICT', 409);
     }
 
     const record = toRecord(next, installation.installation, installation.version);
@@ -3137,7 +3316,7 @@ export async function getModuleRecord(
       eq(moduleRecords.is_deleted, false),
     ))
     .limit(1);
-  if (!row) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  if (!row) throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
   const installation = await findInstallation(
     db,
     actor,
@@ -3153,7 +3332,7 @@ export async function getModuleRecord(
       eq(moduleVersions.installation_id, installation.installation.id),
     ))
     .limit(1);
-  if (!validatedVersion) throw new Error(`Validated module version ${row.validated_version_id} is missing`);
+  if (!validatedVersion) throw new Error(`Validated app version ${row.validated_version_id} is missing`);
   await verifyManifest(validatedVersion);
   const activeManifest = await verifyManifest(installation.version);
   const [record] = await resolveModuleRecordFields(
@@ -3162,7 +3341,7 @@ export async function getModuleRecord(
     [toRecord(row, installation.installation, validatedVersion)],
     activeManifest,
   );
-  if (!record) throw new Error(`Module record ${row.id} could not be resolved`);
+  if (!record) throw new Error(`Record ${row.id} could not be found`);
   return record;
 }
 
@@ -3188,7 +3367,7 @@ export async function readModuleRecordScalarFields(
   const actor = validatedActor(actorValue);
   const parsedRef = ModuleResourceRefV1Schema.safeParse(refValue);
   if (!parsedRef.success) {
-    throw new ModuleError('Invalid Module resource reference', 'MODULE_VALIDATION_ERROR', 400);
+    throw new ModuleError('Invalid app record reference', 'MODULE_VALIDATION_ERROR', 400);
   }
   if (
     !Array.isArray(fieldKeysValue)
@@ -3196,7 +3375,7 @@ export async function readModuleRecordScalarFields(
     || fieldKeysValue.length > MODULE_LIMITS.fields_per_collection
   ) {
     throw new ModuleError(
-      `Between 1 and ${MODULE_LIMITS.fields_per_collection} Module scalar fields are required`,
+      `Between 1 and ${MODULE_LIMITS.fields_per_collection} app fields are required`,
       'MODULE_VALIDATION_ERROR',
       400,
     );
@@ -3205,13 +3384,13 @@ export async function readModuleRecordScalarFields(
   for (const fieldKeyValue of fieldKeysValue) {
     const parsedFieldKey = ModuleFieldKeySchema.safeParse(fieldKeyValue);
     if (!parsedFieldKey.success) {
-      throw new ModuleError('Invalid Module field key', 'MODULE_VALIDATION_ERROR', 400);
+      throw new ModuleError('Invalid field key', 'MODULE_VALIDATION_ERROR', 400);
     }
     fieldKeys.push(parsedFieldKey.data);
   }
   if (new Set(fieldKeys).size !== fieldKeys.length) {
     throw new ModuleError(
-      'Requested Module scalar fields must be unique',
+      'Requested fields must be unique',
       'MODULE_VALIDATION_ERROR',
       400,
     );
@@ -3231,7 +3410,7 @@ export async function readModuleRecordScalarFields(
       (candidate) => candidate.key === ref.resource_type,
     );
     if (!activeCollection) {
-      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+      throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
     }
 
     const [record] = await tx
@@ -3246,7 +3425,7 @@ export async function readModuleRecordScalarFields(
       ))
       .limit(1);
     if (!record) {
-      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+      throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
     }
 
     const [validatedVersion] = await tx
@@ -3259,7 +3438,7 @@ export async function readModuleRecordScalarFields(
       ))
       .limit(1);
     if (!validatedVersion) {
-      throw new Error(`Validated module version ${record.validated_version_id} is missing`);
+      throw new Error(`Validated app version ${record.validated_version_id} is missing`);
     }
     const validatedManifest = await verifyManifest(validatedVersion);
     const validatedCollection = validatedManifest.collections.find(
@@ -3267,7 +3446,7 @@ export async function readModuleRecordScalarFields(
     );
     if (!validatedCollection) {
       throw new Error(
-        `Validated module version ${validatedVersion.id} is missing collection ${ref.resource_type}`,
+        `Validated app version ${validatedVersion.id} is missing record type ${ref.resource_type}`,
       );
     }
 
@@ -3279,7 +3458,7 @@ export async function readModuleRecordScalarFields(
       );
       if (!activeField || !validatedField) {
         throw new ModuleError(
-          `Unknown Module scalar field: ${fieldKey}`,
+          `Unknown field: ${fieldKey}`,
           'MODULE_VALIDATION_ERROR',
           400,
         );
@@ -3293,14 +3472,14 @@ export async function readModuleRecordScalarFields(
         || validatedField.type === 'member'
       ) {
         throw new ModuleError(
-          `Module field is not scalar-readable: ${fieldKey}`,
+          `Field cannot be read as one value: ${fieldKey}`,
           'MODULE_VALIDATION_ERROR',
           400,
         );
       }
       if (!Object.prototype.hasOwnProperty.call(record.data, fieldKey)) {
         throw new ModuleError(
-          `Module scalar field is absent: ${fieldKey}`,
+          `Field is empty: ${fieldKey}`,
           'MODULE_VALIDATION_ERROR',
           400,
         );
@@ -3310,7 +3489,7 @@ export async function readModuleRecordScalarFields(
       const activeIssue = validateModuleFieldValue(activeField, value);
       if (validatedIssue || activeIssue || value === undefined) {
         throw new ModuleError(
-          `Module scalar field is invalid: ${fieldKey}`,
+          `Field value is invalid: ${fieldKey}`,
           'MODULE_VALIDATION_ERROR',
           400,
         );
@@ -3362,7 +3541,7 @@ export async function resolveModuleRelationEndpointWithExecutor(
   );
   const manifest = await verifyManifest(row.version);
   const collection = manifest.collections.find((item) => item.key === ref.resource_type);
-  if (!collection) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  if (!collection) throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
 
   let recordQuery = executor
     .select()
@@ -3381,7 +3560,7 @@ export async function resolveModuleRelationEndpointWithExecutor(
     }).for('update');
   }
   const [record] = await recordQuery;
-  if (!record) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  if (!record) throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
   return {
     ref,
     installation: toInstallationView(
@@ -3407,7 +3586,7 @@ function collectionFor(
   const collection = manifest.collections.find((candidate) => candidate.key === collectionKey);
   if (!collection) {
     throw new ModuleError(
-      `Unknown module collection: ${collectionKey}`,
+      `Unknown record type: ${collectionKey}`,
       'MODULE_VALIDATION_ERROR',
       400,
     );
@@ -3423,7 +3602,7 @@ function fieldFor(
   const field = collectionFor(manifest, collectionKey).fields.find((candidate) => candidate.key === fieldKey);
   if (!field) {
     throw new ModuleError(
-      `Unknown module field: ${fieldKey}`,
+      `Unknown field: ${fieldKey}`,
       'MODULE_VALIDATION_ERROR',
       400,
     );
@@ -3659,7 +3838,7 @@ function moduleFilterCondition(
     case 'gte': return sql`${left} >= ${right}`;
     case 'lt': return sql`${left} < ${right}`;
     case 'lte': return sql`${left} <= ${right}`;
-    default: throw new ModuleError('Unsupported module query operator', 'MODULE_VALIDATION_ERROR', 400);
+    default: throw new ModuleError('Unsupported filter operator', 'MODULE_VALIDATION_ERROR', 400);
   }
 }
 
@@ -3924,7 +4103,7 @@ export async function createModuleSavedView(
   } catch (error) {
     if (isSavedViewNameConflict(error)) {
       throw new ModuleError(
-        'A saved view with this name already exists in the collection',
+        'A saved view with this name already exists for this record type',
         'MODULE_SAVED_VIEW_CONFLICT',
         409,
       );
@@ -3993,7 +4172,7 @@ export async function updateModuleSavedView(
   } catch (error) {
     if (isSavedViewNameConflict(error)) {
       throw new ModuleError(
-        'A saved view with this name already exists in the collection',
+        'A saved view with this name already exists for this record type',
         'MODULE_SAVED_VIEW_CONFLICT',
         409,
       );
@@ -4049,7 +4228,7 @@ async function moduleRecordForRelation(
     ))
     .limit(1);
   if (!record || (expectedInstallationId && record.installation_id !== expectedInstallationId)) {
-    throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    throw new ModuleError('Record not found', 'MODULE_RECORD_NOT_FOUND', 404);
   }
   return record;
 }
@@ -4073,7 +4252,7 @@ async function resolveModuleRecordFields(
   const recordIds = records.map((record) => record.id);
   const installationId = records[0]!.installation_id;
   if (records.some((record) => record.installation_id !== installationId)) {
-    throw new Error('Resolved module record pages must belong to one installation');
+    throw new Error('Record pages must belong to one app');
   }
 
   const edges = await executor
@@ -4291,7 +4470,7 @@ export async function listIncomingModuleRecords(
   const collection = collectionFor(manifest, input.collection_key);
   const field = collection.fields.find((candidate) => candidate.key === input.field_key);
   if (field?.type !== 'relation' || field.target_collection !== target.collection_key) {
-    throw new ModuleError('This field does not reference the requested collection', 'MODULE_VALIDATION_ERROR', 400);
+    throw new ModuleError('This field does not link to the requested record type', 'MODULE_VALIDATION_ERROR', 400);
   }
   const limit = Math.min(Math.max(input.limit ?? 25, 1), 100);
   const offset = decodeCursor(input.cursor);
@@ -4705,7 +4884,7 @@ async function moduleMergeSnapshot(executor: DbExecutor, actor: ModuleActor, ins
   const records = lock ? await query.for('update') : await query;
   const source = records.find((row) => row.id === input.source_record_id), target = records.find((row) => row.id === input.target_record_id);
   if (!source || !target) throw new ModuleError('Merge records not found', 'MODULE_RECORD_NOT_FOUND', 404);
-  if (source.collection_key !== target.collection_key) throw new ModuleError('Merge records must belong to the same collection', 'MODULE_VALIDATION_ERROR', 400);
+  if (source.collection_key !== target.collection_key) throw new ModuleError('Records to merge must be of the same record type', 'MODULE_VALIDATION_ERROR', 400);
   const collection = collectionFor(manifest, source.collection_key);
   // Cross-provider relations have their own versioned authority; do not silently move or hide them.
   const externalTargets = await executor.select({ id: resourceRelationEdges.id }).from(resourceRelationEdges).where(and(
@@ -4735,7 +4914,7 @@ async function moduleMergeSnapshot(executor: DbExecutor, actor: ModuleActor, ins
     const from = byId.get(edge.source_record_id), to = byId.get(edge.target_record_id);
     const field = from && collectionFor(manifest, from.collection_key).fields.find((item) => item.key === edge.field_key);
     if (!from || !to || field?.type !== 'relation' || field.target_collection !== to.collection_key) {
-      throw new ModuleError('A retained link is incompatible with the current manifest. Resolve it before merging.', 'MODULE_VALIDATION_ERROR', 400);
+      throw new ModuleError('A kept link does not fit the current app file. Resolve it before merging.', 'MODULE_VALIDATION_ERROR', 400);
     }
   }
   const preview = {

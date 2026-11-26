@@ -611,7 +611,7 @@ test(
           ownerId,
           conversationId,
         ),
-        /disabled/i,
+        /turned off/i,
       );
 
       const storedWhileDisabled = await client.query(

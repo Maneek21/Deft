@@ -1,0 +1,7 @@
+[
+  { "ref": "designer", "collection": "roles", "data": { "title": "Product designer", "team": "design", "status": "open", "openings": 1, "description": "Owns the design of one product area, from research to shipped screens." } },
+  { "ref": "engineer", "collection": "roles", "data": { "title": "Backend engineer", "team": "engineering", "status": "open", "openings": 2 } },
+  { "collection": "candidates", "data": { "name": "Dana Example", "email": "dana@example.com", "stage": "interview", "source": "referral", "notes": "Strong portfolio. Second interview next week." }, "links": { "role_id": "designer" } },
+  { "collection": "candidates", "data": { "name": "Sam Sample", "email": "sam@example.com", "stage": "applied", "source": "website" }, "links": { "role_id": "engineer" } },
+  { "collection": "candidates", "data": { "name": "Riley Placeholder", "email": "riley@example.com", "stage": "phone_screen", "source": "job_board" }, "links": { "role_id": "engineer" } }
+]

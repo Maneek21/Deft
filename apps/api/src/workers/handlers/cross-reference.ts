@@ -23,6 +23,7 @@ import { visibleDocumentCondition } from '../../lib/document-access.js';
 import { mappedTargetId } from '../../lib/legacy-notes.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
 import { toPlainText } from '../../lib/plain-text.js';
+import { taskKeyMatch, taskKeysIn } from '../../lib/task-key.js';
 
 interface CrossReferenceJobData {
   // Message-sourced (legacy shape)
@@ -36,8 +37,6 @@ interface CrossReferenceJobData {
   orgId: string;
   userId: string;
 }
-
-const TASK_ID_PATTERN = /([A-Z]+-\d+)/g;
 
 export async function handleCrossReference(job: JobData): Promise<void> {
   const data = job.data as CrossReferenceJobData;
@@ -135,20 +134,13 @@ export async function handleCrossReference(job: JobData): Promise<void> {
     sourceMayCreateComment = message.space_type === 'public';
   }
 
-  const matches = plainContent.match(TASK_ID_PATTERN);
-  if (!matches) return;
-
-  // De-duplicate identifiers in the same source
-  const uniqueRefs = [...new Set(matches)];
+  // Distinct task keys in the source. A prefix may hold digits (R9G-1), so
+  // each key is matched whole, the way task search matches it.
+  const uniqueRefs = taskKeysIn(plainContent);
+  if (uniqueRefs.length === 0) return;
 
   for (const ref of uniqueRefs) {
     try {
-      const dashIdx = ref.lastIndexOf('-');
-      const prefix = ref.slice(0, dashIdx);
-      const number = parseInt(ref.slice(dashIdx + 1), 10);
-
-      if (isNaN(number)) continue;
-
       // Resolve only a live task in this org that the source actor can see.
       const [task] = await db
         .select({ id: tasks.id })
@@ -156,11 +148,10 @@ export async function handleCrossReference(job: JobData): Promise<void> {
         .innerJoin(projects, eq(tasks.project_id, projects.id))
         .where(and(
           eq(projects.org_id, orgId),
-          eq(projects.prefix, prefix),
+          taskKeyMatch(ref, { exact: true }),
           eq(projects.is_deleted, false),
           eq(projects.is_archived, false),
           eq(tasks.org_id, orgId),
-          eq(tasks.number, number),
           eq(tasks.is_deleted, false),
           visibleTaskCondition(userId),
         ))

@@ -36,7 +36,7 @@ export function ModuleIcon({ token, size = 18 }: { token?: string | null; size?:
   return <Icon size={size} strokeWidth={1.6} aria-hidden />;
 }
 
-export function ModuleLoadingState({ label = 'Loading modules…' }: { label?: string }) {
+export function ModuleLoadingState({ label = 'Loading apps…' }: { label?: string }) {
   return (
     <div className="flex min-h-[240px] flex-col items-center justify-center gap-3" role="status">
       <Loader2 size={22} className="animate-spin" style={{ color: 'var(--primary)' }} />
@@ -58,7 +58,7 @@ export function ModuleErrorState({
         <CircleAlert size={20} />
       </span>
       <div>
-        <p className="text-[0.875rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Modules could not be loaded</p>
+        <p className="text-[0.875rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Apps could not be loaded</p>
         <p className="mt-1 max-w-sm text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>{message}</p>
       </div>
       <button
@@ -82,7 +82,7 @@ export function ModuleStatusBadge({ enabled }: { enabled: boolean }) {
         color: enabled ? 'var(--status-green)' : 'var(--outline)',
       }}
     >
-      {enabled ? 'Enabled' : 'Disabled'}
+      {enabled ? 'On' : 'Off'}
     </span>
   );
 }

@@ -227,7 +227,8 @@ async function main() {
       await settle(page, path);
       await page.getByRole('heading', { name: heading }).first().waitFor({ timeout: 10_000 });
       if (path === '/settings/apps') {
-        await page.getByText('No Apps installed', { exact: true }).waitFor({ timeout: 10_000 });
+        await page.getByRole('heading', { name: 'Build your own app', exact: true }).waitFor({ timeout: 10_000 });
+        await page.getByRole('heading', { name: 'Installed', exact: false }).first().waitFor({ timeout: 10_000 });
       }
     }
     record('Navigate core settings surfaces');
@@ -289,16 +290,17 @@ async function main() {
     record('Create, acknowledge, inspect and revoke a personal connection without exposing its token');
 
     await page.setViewportSize({ width: 1440, height: 900 });
+    // Settings → Modules now opens the one Apps page; Contacts installs in one click there.
     await settle(page, '/settings/modules');
-    const availableTab = page.getByRole('button', { name: /Available/i }).first();
-    if (await availableTab.count()) await availableTab.click();
-    const installModule = page.getByRole('button', { name: 'Install module' }).first();
-    if (await installModule.count()) {
-      await installModule.click();
-      await page.getByText(/installed and ready/i).first().waitFor({ timeout: 15_000 });
+    await page.waitForURL((url) => url.pathname === '/settings/apps', { timeout: 10_000 });
+    await page.getByRole('heading', { name: 'Build your own app', exact: true }).waitFor({ timeout: 10_000 });
+    const installContacts = page.getByRole('button', { name: 'Install Contacts', exact: true });
+    if (await installContacts.count()) {
+      await installContacts.click();
+      await page.getByText('Contacts is installed.', { exact: false }).first().waitFor({ timeout: 15_000 });
     }
     await settle(page, '/modules/contacts/contacts');
-    const collectionTabs = page.getByRole('tablist', { name: /contacts collections/i });
+    const collectionTabs = page.getByRole('tablist', { name: /contacts record types/i });
     await collectionTabs.waitFor({ state: 'visible', timeout: 10_000 });
     const collectionAside = page.locator('aside').filter({ hasText: /^Collections$/ });
     if (await collectionAside.count()) {

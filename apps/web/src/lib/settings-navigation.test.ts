@@ -16,7 +16,8 @@ test('administrators get distinct personal, workspace and service connection des
     assert.equal(groupFor('/settings/mcp-access')?.label, 'Your account');
     assert.equal(groupFor('/settings/integrations')?.label, 'Agents & AI');
     assert.equal(groupFor('/settings/api-access')?.advanced, true);
-    assert.equal(groupFor('/settings/modules')?.label, 'Workspace');
+    assert.equal(groupFor('/settings/apps')?.label, 'Workspace');
+    assert.equal(groupFor('/settings/modules'), undefined, 'Settings → Modules is now part of Apps');
     assert.equal(groupFor('/settings/workflows')?.label, 'Work management');
     const hrefs = groups.flatMap((group) => group.items.map((item) => item.href));
     assert.equal(new Set(hrefs).size, hrefs.length);

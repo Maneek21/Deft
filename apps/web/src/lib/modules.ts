@@ -5,6 +5,68 @@ import {
   parseSupportedDeftModuleManifestJson as parseDeftModuleManifestJson,
   type DeftModuleManifest,
 } from '@deft/shared/modules';
+import {
+  cleanIssueText,
+  formatManifestError,
+  limitIssueLines,
+  type ReadableIssueReport,
+} from '@deft/shared/module-issues';
+
+/** A manifest the browser refused, explained in at most three plain lines. */
+export class ModuleManifestError extends Error {
+  readonly lines: string[];
+
+  constructor(report: ReadableIssueReport) {
+    super(report.message);
+    this.name = 'ModuleManifestError';
+    this.lines = report.lines;
+  }
+}
+
+// Server text is shown as plain text; markup characters never reach the page.
+const MARKUP = /[<>`]/g;
+
+function readableManifestReport(error: unknown, source?: string): ReadableIssueReport {
+  let input: unknown;
+  if (typeof source === 'string') {
+    try { input = JSON.parse(source) as unknown; } catch { input = undefined; }
+  }
+  return formatManifestError(error, { input, source, subject: 'App file' });
+}
+
+/**
+ * Readable text, at most three lines joined with a newline, for anything a
+ * manifest parse throws. Pass the JSON text as `source` to name collections
+ * and fields in paths and to find the line of a JSON syntax error.
+ */
+export function formatModuleManifestError(error: unknown, source?: string): string {
+  if (error instanceof ModuleManifestError) return error.message;
+  return readableManifestReport(error, source).message;
+}
+
+/** Server error lines (`details.lines`) as at most three plain lines, or null. */
+export function readableErrorLines(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const details = (body as { details?: unknown }).details;
+  const lines = details && typeof details === 'object' ? (details as { lines?: unknown }).lines : undefined;
+  if (!Array.isArray(lines)) return null;
+  const clean = lines
+    .slice(0, 20)
+    .filter((line): line is string => typeof line === 'string')
+    .map((line) => cleanIssueText(line.replace(MARKUP, '')))
+    .filter((line) => line.length > 0 && !/\[\s*\{|\{\s*"/.test(line));
+  return clean.length > 0 ? limitIssueLines(clean).join('\n') : null;
+}
+
+/** The server's `error` text, unless it is missing or looks like raw JSON. */
+export function readableErrorText(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const error = (body as { error?: unknown }).error;
+  if (typeof error !== 'string') return null;
+  const lines = error.split('\n').map((line) => cleanIssueText(line.replace(MARKUP, ''))).filter(Boolean);
+  if (lines.length === 0 || lines.some((line) => /\[\s*\{|\{\s*"/.test(line))) return null;
+  return limitIssueLines(lines).join('\n');
+}
 
 export type ModuleFieldType =
   | 'text'
@@ -244,7 +306,7 @@ function parseManifestValue(value: unknown): DeftModuleManifest {
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error('Invalid module manifest: expected valid JSON.');
+    throw new Error('Invalid app file: expected valid JSON.');
   }
   return parseDeftModuleManifest(parsed);
 }
@@ -386,9 +448,14 @@ export function normalizeBundledModulesResponse(value: unknown): BundledModule[]
 export async function previewModuleManifestJson(value: string): Promise<ModuleManifestPreview> {
   const byteLength = new TextEncoder().encode(value).byteLength;
   if (byteLength > MODULE_MANIFEST_MAX_BYTES) {
-    throw new Error(`Module manifest must be ${MODULE_MANIFEST_MAX_BYTES} bytes or smaller.`);
+    throw new Error(`The app file must be ${MODULE_MANIFEST_MAX_BYTES} bytes or smaller.`);
   }
-  const manifest = parseDeftModuleManifestJson(value);
+  let manifest: DeftModuleManifest;
+  try {
+    manifest = parseDeftModuleManifestJson(value);
+  } catch (error) {
+    throw new ModuleManifestError(readableManifestReport(error, value));
+  }
   return {
     manifest,
     moduleId: manifest.id,
@@ -411,7 +478,7 @@ export function resolveModuleManifestUpload(
   const requested = requestedTargetId
     ? installed.find((module) => module.id === requestedTargetId)
     : undefined;
-  if (requestedTargetId && !requested) throw new Error('The selected module is no longer installed.');
+  if (requestedTargetId && !requested) throw new Error('The selected app is no longer installed.');
 
   const collisions = installed.filter((module) => (
     module.moduleId === preview.moduleId || module.slug === preview.slug
@@ -422,17 +489,17 @@ export function resolveModuleManifestUpload(
   if (collisions.some((module) => (
     module.moduleId !== preview.moduleId || module.slug !== preview.slug
   ))) {
-    throw new Error('The manifest id or slug conflicts with another installed module.');
+    throw new Error('The app file id or slug is already used by another installed app.');
   }
   if (!target) return { mode: 'install', target: null };
   if (target.moduleId !== preview.moduleId || target.slug !== preview.slug) {
-    throw new Error('The selected manifest does not match this module id and slug.');
+    throw new Error('The selected app file does not match this app id and slug.');
   }
   if (target.source !== 'sideloaded') {
-    throw new Error('Bundled modules can only be updated from the bundled catalog.');
+    throw new Error('Apps that ship with Deft can only be updated from the built-in list.');
   }
   if (!target.manifestDigest) {
-    throw new Error('The installed module is missing its active manifest digest. Refresh and try again.');
+    throw new Error('The installed app is missing its current app file digest. Refresh and try again.');
   }
   return { mode: 'upgrade', target };
 }
@@ -969,10 +1036,15 @@ export function diffModuleRecordUpdate(
 }
 
 export async function moduleApiError(response: Response, fallback: string): Promise<string> {
-  const body = await response.json().catch(() => ({})) as { error?: unknown; code?: unknown };
-  const detail = typeof body.error === 'string' ? body.error : fallback;
+  const raw = await response.json().catch(() => null) as unknown;
+  const body = (raw && typeof raw === 'object' ? raw : {}) as { error?: unknown; code?: unknown };
+  const lines = readableErrorLines(body);
+  if (lines) return lines;
+  const detail = readableErrorText(body) ?? fallback;
   if (response.status === 409 && body.code === 'MODULE_SAVED_VIEW_CONFLICT') return `${detail.replace(/[.!?]$/, '')}. Choose a different name.`;
-  if (response.status === 409) return `${detail} Refresh and try again.`;
+  // A reserved name never clears on refresh: the message says what to change.
+  if (response.status === 409 && body.code === 'MODULE_IDENTITY_RESERVED') return detail;
+  if (response.status === 409) return /\brefresh\b/i.test(detail) ? detail : `${detail} Refresh and try again.`;
   return detail;
 }
 

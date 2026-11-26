@@ -21,6 +21,7 @@ import { enqueueAgentEmployeeMessageJobs, resolveAgentEmployeeMessageTargets } f
 import { enqueueDeftyWake, finishDeftyWake, type DeftyWakeOutcome, normalizeChatMentions, planDeftyWake, resolveMentionedUserIds } from '../lib/defty-wake.js';
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../lib/agent-message-run-details.js';
 import { toPlainText } from '../lib/plain-text.js';
+import { mentionsTaskKey } from '../lib/task-key.js';
 import { withoutDeletedContent } from '../lib/deleted-message.js';
 import { REPLY_NOTIFICATION_TITLE_SUFFIX } from '../lib/reply-notification-text.js';
 import {
@@ -763,9 +764,8 @@ messageRoutes.post('/:spaceId', async (c) => {
 
     // BYOA agent-employee wakes already committed with the message (A07b).
 
-    // Cross-reference detection — check for task identifier patterns like PROJ-42
-    const TASK_ID_PATTERN = /([A-Z]+-\d+)/g;
-    if (TASK_ID_PATTERN.test(normalizedContent)) {
+    // Cross-reference detection — check for task keys like PROJ-42 or R9G-1
+    if (mentionsTaskKey(normalizedContent)) {
       try {
         await enqueue(QUEUE_NAMES.AGENT_JOBS, 'cross-reference', {
           messageId: message!.id,

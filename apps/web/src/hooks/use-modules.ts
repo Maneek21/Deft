@@ -45,7 +45,7 @@ async function fetchModuleJson(path: string): Promise<unknown> {
   const response = await api.get(path);
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as { error?: unknown };
-    throw new Error(typeof body.error === 'string' ? body.error : 'Unable to load module data.');
+    throw new Error(typeof body.error === 'string' ? body.error : 'Unable to load app data.');
   }
   return response.json();
 }
@@ -60,7 +60,7 @@ export function useInstalledModules(enabled = true) {
     try {
       return { modules: normalizeInstalledModulesResponse(swr.data), error: null as Error | null };
     } catch (error) {
-      return { modules: [], error: error instanceof Error ? error : new Error('Invalid module manifest.') };
+      return { modules: [], error: error instanceof Error ? error : new Error('This app’s file could not be read.') };
     }
   }, [swr.data]);
   return { ...swr, modules: normalized.modules, error: swr.error ?? normalized.error };
@@ -91,7 +91,7 @@ export function useModule(slug: string) {
         : {};
       return { module: normalizeModuleInstallation(body.module ?? swr.data), error: null };
     } catch (error) {
-      return { module: null, error: error instanceof Error ? error : new Error('Invalid module manifest.') };
+      return { module: null, error: error instanceof Error ? error : new Error('This app’s file could not be read.') };
     }
   }, [swr.data]);
   return { ...swr, module: normalized.module, error: swr.error ?? normalized.error };
@@ -109,13 +109,13 @@ const MODULE_QUERY_KEY_SEPARATOR = '::module-query::';
 async function fetchModuleQuery(key: string): Promise<unknown> {
   key = sessionSWRPath(key);
   const separator = key.indexOf(MODULE_QUERY_KEY_SEPARATOR);
-  if (separator < 0) throw new Error('Invalid module query cache key.');
+  if (separator < 0) throw new Error('Unable to load app records.');
   const path = key.slice(0, separator);
   const body = JSON.parse(decodeURIComponent(key.slice(separator + MODULE_QUERY_KEY_SEPARATOR.length))) as unknown;
   const response = await api.post(path, body);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { error?: unknown };
-    throw new Error(typeof payload.error === 'string' ? payload.error : 'Unable to query module records.');
+    throw new Error(typeof payload.error === 'string' ? payload.error : 'Unable to search app records.');
   }
   return response.json();
 }

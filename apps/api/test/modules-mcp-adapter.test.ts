@@ -501,7 +501,7 @@ test('MCP queue and direct claims cannot persist after an in-flight employee pol
     await waitForSessionBlockedBy(pid.rows[0].pid as number);
     await directBlocker.query('COMMIT');
     directTransactionOpen = false;
-    assert.match((await direct).content[0]!.text, /disabled/i);
+    assert.match((await direct).content[0]!.text, /disabled|turned off/i);
   } finally {
     if (directTransactionOpen) await directBlocker.query('ROLLBACK').catch(() => undefined);
     await directBlocker.end();
@@ -1269,7 +1269,7 @@ test('a lifecycle disable that expires a direct action cannot be overwritten by 
     await lifecycleDisable;
     const denied = await directWrite;
     assert.equal(denied.isError, true);
-    assert.match(denied.content[0]!.text, /disabled|expired|revoked/i);
+    assert.match(denied.content[0]!.text, /disabled|expired|revoked|turned off/i);
 
     await withClient(async (client) => {
       const actions = await client.query(
@@ -1335,7 +1335,7 @@ test('removing agent write access expires and scrubs pending module approvals pe
       [actionId],
     );
     assert.equal(action.rows[0].approval_status, 'expired');
-    assert.match(action.rows[0].error, /write access was revoked/i);
+    assert.match(action.rows[0].error, /write access to this app was turned off/i);
     assert.equal('data' in action.rows[0].params, false);
     assert.equal('idempotency_key' in action.rows[0].params, false);
     assert.doesNotMatch(JSON.stringify(action.rows[0]), new RegExp(`${privateValue}|${rawKey}`));
@@ -1347,7 +1347,7 @@ test('removing agent write access expires and scrubs pending module approvals pe
     assert.equal(receipt.rows.length, 1);
     assert.equal(receipt.rows[0].decision, 'expired');
     assert.equal(receipt.rows[0].approver_id, ADMIN_ID);
-    assert.match(receipt.rows[0].decision_reason, /write access was revoked/i);
+    assert.match(receipt.rows[0].decision_reason, /write access to this app was turned off/i);
     assert.doesNotMatch(JSON.stringify(receipt.rows[0]), new RegExp(`${privateValue}|${rawKey}`));
     const attention = await client.query(
       `SELECT state, resolution FROM attention_items

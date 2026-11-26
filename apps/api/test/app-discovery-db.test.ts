@@ -53,7 +53,7 @@ test('DB loader discovers an active Protocol 0 App and every authorized no-actio
     artifacts: [artifact],
   });
   const actor = humanModuleActor({ orgId, userId, role: 'owner' });
-  const staged = await stageAppPackage(actor, packageResult.json);
+  const staged = await stageAppPackage(actor, packageResult.json, { firstPartyPackage: true });
   const active = await activateAppInstallation(actor, staged.id, staged.package_digest);
   const [row] = await db.select({
     state: appInstallations.state,

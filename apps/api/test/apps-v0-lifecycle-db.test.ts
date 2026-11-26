@@ -256,7 +256,7 @@ test('App activation is atomic, tenant-bound, zero-rights while staged, and pres
   assert.equal(configuredModule.owning_app_installation_id, staged.id);
   await assert.rejects(
     () => updateModuleInstallation(actor, suffix, { enabled: true }),
-    /owned by an App/,
+    /installed by an App package/,
   );
 
   await assert.rejects(

@@ -242,7 +242,7 @@ export function ModuleSavedViews({
           style={{ background: 'var(--danger-subtle)', border: '1px solid color-mix(in srgb, var(--error) 30%, transparent)' }}
         >
           <p className="text-[0.75rem]" style={{ color: 'var(--on-surface)' }}>
-            Delete <strong>{activeView.name}</strong>? Records and manifest views are unaffected.
+            Delete <strong>{activeView.name}</strong>? Records and the views built into the app are unaffected.
           </p>
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => setMode('closed')} disabled={saving} className="min-h-10 rounded-full px-4 text-[0.75rem] font-medium" style={{ color: 'var(--on-surface-variant)' }}>

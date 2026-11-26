@@ -1,0 +1,92 @@
+{
+  "schema_version": "1",
+  "id": "com.example.content-calendar",
+  "slug": "content-calendar",
+  "version": "1.0.0",
+  "name": "Content calendar",
+  "description": "Plan posts, newsletters and videos from idea to published, grouped by campaign.",
+  "icon": "calendar",
+  "collections": [
+    {
+      "key": "pieces",
+      "name": "Content",
+      "singular_name": "Content piece",
+      "fields": [
+        { "key": "title", "label": "Title", "type": "text", "required": true },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "single_select",
+          "required": true,
+          "default": "idea",
+          "options": [
+            { "value": "idea", "label": "Idea" },
+            { "value": "drafting", "label": "Drafting" },
+            { "value": "review", "label": "In review" },
+            { "value": "scheduled", "label": "Scheduled" },
+            { "value": "published", "label": "Published" }
+          ]
+        },
+        {
+          "key": "channel",
+          "label": "Channel",
+          "type": "single_select",
+          "options": [
+            { "value": "blog", "label": "Blog" },
+            { "value": "newsletter", "label": "Newsletter" },
+            { "value": "social", "label": "Social" },
+            { "value": "video", "label": "Video" },
+            { "value": "other", "label": "Other" }
+          ]
+        },
+        { "key": "publish_on", "label": "Publish on", "type": "date" },
+        { "key": "author", "label": "Author", "type": "member" },
+        { "key": "campaign_id", "label": "Campaign", "type": "relation", "target_collection": "campaigns" },
+        { "key": "link", "label": "Link", "type": "url" },
+        { "key": "tags", "label": "Tags", "type": "tags" },
+        { "key": "brief", "label": "Brief", "type": "long_text" }
+      ],
+      "search": { "title_field": "title", "fields": ["title", "brief"] },
+      "views": [
+        { "key": "board", "name": "By status", "type": "board", "group_by": "status", "fields": ["title", "channel", "publish_on", "author"] },
+        { "key": "calendar", "name": "Calendar", "type": "timeline", "start_field": "publish_on", "fields": ["title", "channel", "status"] },
+        { "key": "all", "name": "All content", "type": "table", "fields": ["title", "status", "channel", "publish_on", "author", "campaign_id"] },
+        { "key": "form", "name": "Add content", "type": "form", "fields": ["title", "status", "channel", "publish_on", "author", "campaign_id", "link", "tags", "brief"] },
+        { "key": "detail", "name": "Content piece", "type": "detail", "fields": ["title", "status", "channel", "publish_on", "author", "campaign_id", "link", "tags", "brief"] }
+      ]
+    },
+    {
+      "key": "campaigns",
+      "name": "Campaigns",
+      "singular_name": "Campaign",
+      "fields": [
+        { "key": "name", "label": "Name", "type": "text", "required": true },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "single_select",
+          "required": true,
+          "default": "planned",
+          "options": [
+            { "value": "planned", "label": "Planned" },
+            { "value": "running", "label": "Running" },
+            { "value": "done", "label": "Done" }
+          ]
+        },
+        { "key": "starts_on", "label": "Starts on", "type": "date" },
+        { "key": "ends_on", "label": "Ends on", "type": "date" },
+        { "key": "owner", "label": "Owner", "type": "member" },
+        { "key": "goal", "label": "Goal", "type": "long_text" }
+      ],
+      "search": { "title_field": "name", "fields": ["name", "goal"] },
+      "views": [
+        { "key": "board", "name": "By status", "type": "board", "group_by": "status", "fields": ["name", "starts_on", "owner"] },
+        { "key": "dates", "name": "Dates", "type": "timeline", "start_field": "starts_on", "end_field": "ends_on", "fields": ["name", "status"] },
+        { "key": "all", "name": "All campaigns", "type": "table", "fields": ["name", "status", "starts_on", "ends_on", "owner"] },
+        { "key": "form", "name": "Add a campaign", "type": "form", "fields": ["name", "status", "starts_on", "ends_on", "owner", "goal"] },
+        { "key": "detail", "name": "Campaign", "type": "detail", "fields": ["name", "status", "starts_on", "ends_on", "owner", "goal"] }
+      ]
+    }
+  ],
+  "navigation": { "default_collection": "pieces", "default_view": "board" }
+}

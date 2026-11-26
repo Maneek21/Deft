@@ -28,6 +28,11 @@ export type ToolDisplay = {
  *   sequentialthinking
  *     → { connection: null, tool: 'Sequential Thinking', full: 'Sequential Thinking' }
  */
+/** People read "app" where tool names say "module" (module_list reads App List). Raw names are unchanged. */
+function appWords(label: string): string {
+  return label.replace(/\bModules\b/g, 'Apps').replace(/\bModule\b/g, 'App');
+}
+
 export function humanizeToolName(raw: string): ToolDisplay {
   if (raw.startsWith('mcp__')) {
     const parts = raw.split('__');
@@ -35,7 +40,7 @@ export function humanizeToolName(raw: string): ToolDisplay {
       const slug = parts[1]!;
       const toolName = parts.slice(2).join('__');
       const connection = titleCase(slug.replace(/[-_]/g, ' '));
-      const tool = titleCase(toolName.replace(/[-_]/g, ' '));
+      const tool = appWords(titleCase(toolName.replace(/[-_]/g, ' ')));
       return { connection, tool, full: `${connection} · ${tool}` };
     }
   }
@@ -44,7 +49,7 @@ export function humanizeToolName(raw: string): ToolDisplay {
   const spaced = raw
     .replace(/([a-z])([A-Z])/g, '$1 $2') // camelCase → spaces
     .replace(/[-_]/g, ' ');
-  const tool = titleCase(spaced);
+  const tool = appWords(titleCase(spaced));
   return { connection: null, tool, full: tool };
 }
 

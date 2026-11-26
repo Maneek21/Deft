@@ -79,7 +79,7 @@ after(async () => { await closeDb(); });
 
 test('CRM base installs records and links, then reviewed connected activation preserves them', async () => {
   const actor = humanModuleActor({ orgId, userId, role: 'owner' });
-  const staged = await stageAppPackage(actor, basePackage);
+  const staged = await stageAppPackage(actor, basePackage, { firstPartyPackage: true });
   assert.equal(staged.manifest.compatibility.app_protocol, '0');
   const active = await activateAppInstallation(actor, staged.id, staged.package_digest);
   const binding = await db.query.appModuleBindings.findFirst({ where: (row, { eq }) => eq(row.app_installation_id, active.id) });
@@ -100,7 +100,7 @@ test('CRM base installs records and links, then reviewed connected activation pr
   const beforeTaskLinks = await listModuleRecordTaskLinks(actor, 'contacts', contact.record.id);
   assert.equal(beforeTaskLinks.length, 1);
   assert.equal(beforeTaskLinks[0]?.task_id, taskId);
-  const upgrade = await stageAppUpgrade(actor, active.id, connectedPackage, active.lifecycle_epoch);
+  const upgrade = await stageAppUpgrade(actor, active.id, connectedPackage, active.lifecycle_epoch, { firstPartyPackage: true });
   assert.equal(upgrade.manifest.id, staged.manifest.id);
   assert.equal(upgrade.manifest.version, '1.9.0');
   assert.equal(upgrade.manifest.compatibility.app_protocol, '1');

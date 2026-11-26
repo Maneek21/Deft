@@ -10,48 +10,240 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-### Images in a note load for everyone who can read the note
+## [0.3.0-preview.155] — 2026-11-26 (prerelease)
 
-- **Fixed.** An image in a note now loads for everyone who can open that note: people it
-  is shared with, members of its space, and, for a note visible to the whole workspace,
-  its owners, admins and members. Before, only the person who uploaded the image could
-  load it; everyone else saw "Image is unavailable".
-- **Nothing else widens.** Only images the note's author uploaded count. A file no note
-  you can read shows still answers as unknown, guests follow the note rule (they see the
-  images of notes shared with them and of notes in their spaces), and a deleted note's
-  images load only for the person who uploaded them.
+Changes since `v0.3.0-preview.154`: #610, #613, #609, #614, #615, #616, #617 and #618, plus
+#612 (154's release branch merged back into master, which adds nothing new). Release scope
+`core` (no Hermes compatibility claim). Cut from master at `2529a7b2`.
+
+### Build your own app in the browser
+
+A workspace owner or admin can now build an app and change it without leaving Deft. It all
+happens in **Settings → Apps**, which lists every app in one place: the ones that come with
+Deft (Contacts installs in one click), the ones built in the workspace, and App Kit packages.
+Settings → Modules now opens this page.
+
+- **Start from a starter app.** Four are offered: Hiring pipeline, Vendor tracker, Light CRM
+  and Content calendar. Name one, choose whether to add a few sample records, and install.
+  No file is needed. The samples come with their links (a candidate linked to its role, a
+  deal to its company). The app is an ordinary uploaded app, yours to edit and update, and
+  it opens on a board. If the name is taken, or belongs to an app that ships with Deft, it installs as "<name> 2"
+  (web address ending in `-2`). If adding samples stops part-way, the app stays installed
+  and the message says how many were added.
+- **A plain-words check before install.** Before an app file installs, the check step
+  describes it: each record type and its fields ("Stage: pick one of Applied, Phone
+  screen…, starts as Applied, required"), how record types link ("Each Candidate links to
+  one Role"), its views ("Pipeline: a board grouped by Stage") and who can see the records.
+  It asks "Let Defty read these records?". The answer defaults to no; yes turns on read
+  access for Defty after install.
+- **Edit, Check and Save.** **Edit** on an app built in the workspace opens its app file.
+  **Check** reads it the way the server will: it must be valid, keep its id and slug, and
+  raise its version. **Save** updates the app, and raises the version by one patch step if
+  you didn't. Every record is kept. A change that would break existing records is refused;
+  when it is their values that no longer fit, the message names them (see "Updates" below).
+  Save applies only if nobody updated the app since you opened it (`If-Match`); if someone
+  did, you're told to load the newest version. An app that ships with Deft shows **View
+  file** instead of **Edit**: its file opens read-only and says why. An app that belongs to
+  an App Kit package has no Edit or View file button; it changes only with a new version
+  of its package.
+- **Download** saves an app's file. It starts with a `$schema` line, so an editor checks the
+  file as you type.
+- **Upload an app** takes any `.json` file, whatever it is called, and works out what it is.
+  An app file installs after the check step, or updates the installed app with the same id
+  and slug, keeping every record. An App Kit package goes to inspect and review, as before.
+  A wrong file, such as a text file or broken JSON, gets a plain message, and nothing is
+  sent.
+- The four starter files are plain app files (`apps/web/src/lib/app-templates/*.json`), ready
+  for the website to offer as downloads.
+
+### Upgrade notes
+
+- **No migration.** Schema head stays `0.3.0-preview.154`, so an upgrade from `.154`
+  changes no schema and the `upgrade` service has nothing to apply. Back up first, as for
+  every upgrade. To roll back, run `.154`'s image digest: there is nothing to undo in the
+  database.
+- **Settings → Apps needs no switch any more.** On `.154` it appeared only in a web build
+  with `NEXT_PUBLIC_FEATURE_APPS`, and app files were managed on Settings → Modules. Now it
+  is always there for owners and admins, with everything above. App Kit packages still
+  appear on it only with the Apps switches on (`NEXT_PUBLIC_FEATURE_APPS` in the web build,
+  `DEFT_APPS_ENABLED` on the server).
+- No setting is added, changed or removed. Author Kit stays `0.1.0-alpha.43`.
+
+### Behaviour changes an operator should know
+
+- **Developer pairing answers 404 when it is off.** With developer pairing off
+  (`DEFT_APP_DEVELOPER_PAIRING_ENABLED` not `true`, as on hosted), `POST /api/apps/pairings`
+  and its revoke route answer 404 `NOT_FOUND` instead of 503. `GET /api/apps` now also
+  returns `developer_pairing: { available }`, and the Apps page shows **Pair Codex** only
+  when it is `true`. With `DEFT_APPS_ENABLED` off, `/api/apps` is not mounted at all, as
+  before.
+- **Reserved app names are refused (409).** An upload can no longer take the slug or id of
+  an app that ships with Deft (such as `contacts` or `com.deft.contacts`), or any id that
+  starts with `com.deft.` or `io.deft.`. Installing such an app file
+  (`POST /api/modules/sideload`) or staging such an App package answers 409
+  `MODULE_IDENTITY_RESERVED`, with a message that says what to change. Before, an upload
+  could block bundled Contacts, or Email, in that workspace for good, because an installed
+  app cannot be uninstalled. Bundled Contacts still installs in one click. Apps installed
+  before this release are not touched.
+- **An App package can't carry an app that ships with Deft, even unchanged.** Staging one is
+  refused with 409 `MODULE_IDENTITY_RESERVED`, and an App update may not add one. So the
+  Contacts CRM App's upload through Settings → Apps is now refused; installs made before
+  155 keep working (see `docs/crm-operator-demo-guide.md`). Email still stages through its
+  own reviewed entry point, which now trusts only a Protocol 7 package with the id
+  `io.deft.email`. No upload route can mark a package first-party.
+- **"Module" is "app" in every word a person reads:** the web app (app and record pages,
+  task links, approval cards, search, Settings → Personal AI connections, the sign-in
+  consent screen), error messages, and the descriptions of the app record tools for MCP
+  clients and Defty. A collection is a "record type", and a manifest is the "app file".
+  **No route, API field, error code, OAuth scope (`read:modules`, `write:modules`) or MCP
+  tool name (`module_list` and the rest) changed.** A client that matched on the old message
+  text should match on `code` instead. The API only gains fields: `developer_pairing`
+  above, and the `details` below.
+- **Upload errors are readable.** A refused app file or App package gets at most three plain
+  lines that name where the problem is, such as
+  `Candidates → fields: at most 64 fields (you have 500)`, instead of the validator's raw
+  JSON. A JSON syntax error names its line and column when they can be found. This covers installing and updating
+  an app, inspecting and staging an App package, and the check the browser runs before
+  upload. The same lines are in `details.lines`.
+- **Updates name the records that block them.** When an update is refused because some
+  records' values would not fit the new version, the message names up to five of them by
+  title, with the field and the problem, such as
+  `Candidates → Email: now required, but empty in "Dana Example" and "Sam Sample"`, or
+  `… → Notes: removed, but still has a value in …`. Up to 20 of the records, each with its
+  problems, are in `details.records`, and the total in `details.record_count`. The code is
+  still `MODULE_VALIDATION_ERROR`. Other refusals are unchanged and name no records: links
+  that no longer fit (for example, a link field made single while some records link to
+  more than one) name the field and give the record's id in `details.source_record_id`, and
+  a member field that points to someone who is not an active member gives
+  `details.invalid_member_ids`.
+- **`"$schema"` is allowed in an app file.** Add
+  `"$schema": "https://deft.ing/schemas/deft.module.v1.schema.json"` and an editor checks
+  the file as you type. The line is dropped on upload, so it never changes the app's digest.
+  The schema file is `docs/schemas/deft.module.v1.schema.json`, for the website to serve at
+  that address. It describes what you write: `required`, `multiple` and `subtitle_fields`
+  are optional, because Deft fills them in. (A first draft marked them required, so editors
+  flagged valid files and all four starter apps failed it.) A file missing something truly required
+  (such as `id`, or a field's `label`) still fails. App Kit, which builds App packages and
+  ships on its own, does not accept the line yet.
+
+### Limits
+
+- **Apps hold data and views only.** An app adds record types, fields, links and views
+  (boards, tables, timelines, forms and record pages). It can't run code of its own, add
+  custom screens or buttons, send email, run on a schedule, or connect to outside services.
+- **Apps are turned off, never deleted.** Turning an app off hides it and keeps its records.
+  Its id and slug stay taken.
+- **A customer-built App package (App Protocol 0, records and views only) can't be
+  upgraded.** Deft refuses another version of it (409), and it can't be uninstalled.
+  Changing it means a new App with a new id. Connected packages keep their separate,
+  reviewed upgrade flow.
+- **Guests can't see apps or their records** (403 `MODULE_ACCESS_DENIED`). Owners, admins
+  and members see and change every record in an app; there are no private records, record
+  types or fields. Only owners and admins install, update and turn off apps.
+- **At most 64 fields per record type.** An app also holds at most 8 record types, each with
+  at most 8 views, in an app file of at most 128 KB.
+
+### Docs
+
+- The six guides the website copies from `docs/` (first workspace, first agent action, first
+  MCP connection, the MCP task example, building your first app, and apps and App packages)
+  say "For Deft v0.3.0-preview.155." and were checked against this release. "Build your
+  first app" starts in the browser (Settings → Apps, a starter app, editing, uploading a
+  file), with the self-hosted command line second. "Apps and App packages" explains that a
+  customer's app is an app file, and that App packages are for Deft's own Email at launch.
+
+### Notices carried forward (unchanged since `.142`)
+
+Kit `0.1.0-alpha.44` removes deprecated Email compatibility. Not before 2026-11-25, and never
+fewer than 14 days after this notice merged. No code changes here and alpha.43 is unchanged.
+Alpha.44 is the "next breaking Kit alpha" the existing `@deprecated` notices name. It removes
+the 26 deprecated compose, address-list and raster names from the root and `/experience` entry
+points, the 9 sandbox names re-exported from the root, the root override of
+`checkDeftAppDeveloperContract`, and the `safe-compose-html`, `mailbox-list` and
+`native-compose-raster` modules under `@deft/app-kit/examples/email`. Importing only the root
+will no longer register the sandbox profile; the `sandbox`, `templates`, `register` and `cli`
+modules and the three `examples/email` subpath exports stay, opt-in. Use `@deft/app-kit/core`
+and the `deft-email` `runtime/domain` modules, or keep pinning alpha.43. Names and plan are
+listed in the Kit README and
+`docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
+
+- App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count at
+  1,277 (it may only be lowered), each exception's `milestone` starts with its burn-down
+  bucket, and `node scripts/check-app-boundary.mjs --summary` prints the counts per
+  milestone. No finding changed.
+
+## [0.3.0-preview.154] — 2026-11-26 (prerelease)
+
+Changes since `v0.3.0-preview.153`: #603, #607 and #608. Release scope `core` (no Hermes
+compatibility claim). Built from the branch `release/v0.3.0-preview.154`; nothing merged
+into master after #608 is in this release.
+
+Upgrade notes:
+
+- **One migration, additive: `0.3.0-preview.154`.** It adds one table, `note_files` (which
+  note shows which uploaded file), with an index; it changes and deletes nothing.
+  Schema head moves from `0.3.0-preview.149` to `0.3.0-preview.154`. The release's
+  `upgrade` service (`pnpm db:upgrade` from a source checkout) applies it; a fresh install
+  (`pnpm db:push-full`) creates it. Stop Deft and back up the database and the uploads
+  volume first, as for every upgrade.
+- **Existing note images are covered.** The migration itself inserts no rows. When the
+  server starts, it records the images in notes saved before this release (see "Note
+  images" below). It runs on every start, does nothing twice, and the hourly clean-up of
+  unattached uploads waits until it has succeeded.
+- **Rolling back.** Upgrades are forward-only. To return to `.153`, stop Deft, restore the
+  pre-upgrade database and uploads backups, and run the previous image digest. `.153`'s
+  `upgrade` service refuses a database that already has `.154` ("newer than this Deft
+  build"). An image removed from a note on `.154` is deleted 24 hours later and is only
+  in a backup made before that.
+- No setting is added, changed or removed. Author Kit stays `0.1.0-alpha.43`.
+
+Note images (#603). On `.153` and earlier, an image in a note loaded only for the person
+who pasted it; everyone else saw "Image is unavailable".
+
+- **Now.** An image in a note loads for everyone who can open that note: people it is
+  shared with, members of its space, and, for a note visible to the whole workspace, its
+  owners, admins and members.
+- **Nobody else.** Only images the note's author uploaded count. A file that no note you
+  can read shows still answers as unknown. Guests follow the note rule: they see the images
+  of notes shared with them and of notes in their spaces. A deleted note's images load
+  only for the person who uploaded them.
+- **Notes saved before this release.** Their images are covered too: the server records
+  them when it starts (an image still waiting to be cleaned up is kept). As on a save, only
+  images the note's author uploaded count. An upload from before Deft checked file types
+  is not included and still loads only for its uploader.
 - **Removed images are deleted.** An image you take out of a note is deleted 24 hours
-  later, once no other note of yours shows it (later still if a scheduled message you
-  have not sent yet carries it). Before, it was kept for ever.
-- **Older notes.** When the server starts, it records the images that notes saved before
-  this release show, so their readers can load them too (and an image still waiting to
-  be cleaned up is kept). Only images the note's author uploaded count; an upload from
-  before Deft checked file types is not included and still loads only for its uploader.
-- **Database.** Upgrade `0.3.0-preview.154` adds one table, `note_files` (which note shows
-  which uploaded file). It only adds; `pnpm db:upgrade` applies it and `pnpm db:push-full`
-  creates it on a fresh install.
+  later, once no other note of yours shows it (later still if a scheduled message you have
+  not sent yet carries it). Before, it was kept for ever.
 - **Workspace export.** A person's export now includes the images of the notes they can
   read, the same files the app lets them load.
 
-### Notice: Kit `0.1.0-alpha.44` removes deprecated Email compatibility
+Tasks (#607). An unknown task priority or status is refused with a clear error instead of
+a server error, wherever a task is created or changed: the app and API, bulk changes, the
+MCP tools and Defty.
 
-Not before 2026-11-25, and never fewer than 14 days after this notice merged.
-No code changes here and alpha.43 is unchanged. Alpha.44 is the "next breaking Kit
-alpha" the existing `@deprecated` notices name. It removes the 26 deprecated
-compose, address-list and raster names from the root and `/experience` entry
-points, the 9 sandbox names re-exported from the root, the root override of
-`checkDeftAppDeveloperContract`, and the `safe-compose-html`, `mailbox-list` and
-`native-compose-raster` modules under `@deft/app-kit/examples/email`. Importing only
-the root will no longer register the sandbox profile; the `sandbox`, `templates`,
-`register` and `cli` modules and the three `examples/email` subpath exports stay,
-opt-in. Use `@deft/app-kit/core` and the `deft-email` `runtime/domain` modules, or
-keep pinning alpha.43. Names and plan are listed in the Kit README and
-`docs/superpowers/plans/2026-11-06-email-host-kit-shrink.md`.
+- **Priority.** Valid values are `p0`, `p1`, `p2` and `p3`. Creating a task with another
+  value (for example `urgent`) through `POST /api/tasks`, `POST /api/projects/:id/tasks` or
+  `POST /api/tasks/project/:projectId` now answers 400 `VALIDATION_ERROR` and creates
+  nothing. Before, it answered 500. Editing a task, bulk edits, the MCP `task_create`,
+  `task_update` and `task_bulk_update` tools (personal and agent employee) and Defty's task
+  tools check it the same way, on the task and on each subtask, and refuse it with each
+  tool's usual error. Before, MCP and Defty task creation quietly used `p2` instead, an
+  agent employee's `task_update` quietly skipped it, and the personal MCP `task_update`
+  failed with a database error. A missing or `null` priority is still `p2`.
+- **Status.** Valid values are `backlog`, `todo`, `in_progress`, `in_review`, `done` and
+  `cancelled`. An unknown status (for example `open`) on those three create routes now
+  answers 400 `VALIDATION_ERROR` instead of 500, and Defty's `update_task_status` refuses it
+  instead of failing with a database error. A missing or `null` status is still `backlog`.
 
-- App-boundary gate: `scripts/app-boundary-ceiling.json` caps the exception count
-  at 1,277 (it may only be lowered), each exception's `milestone` now starts with
-  its burn-down bucket, and `node scripts/check-app-boundary.mjs --summary` prints
-  the counts per milestone. No finding changed.
+Note backlinks (#608). A note or message that names a task by its key now links to that
+task when the project's prefix holds a digit, such as `R9G-1` or `RC8-12`. Before, the key
+was read from its last letters (`R9G-1` as `G-1`), so the task got no backlink, or a task
+in another project whose prefix matched those letters got it instead.
+
+- A key is matched whole, the way task search matches it since `.153`, so a zero-padded
+  key (`R9G-01`) links nothing. A prefix may also start with a digit (`9RC-1`). A key must
+  stand as its own word (`preR9G-1` links nothing), and a note links only the task whose
+  key is written exactly, with its dash. A note still links only tasks its author may see.
 
 ## [0.3.0-preview.153] — 2026-11-26 (prerelease)
 

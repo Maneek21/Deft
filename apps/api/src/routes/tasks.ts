@@ -14,6 +14,7 @@ import { getIO, emitToUser, emitOrgTaskEvent } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
 import { taskAliasColumns, taskRestrictionMetadata, visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
+import { taskKeyMatch } from '../lib/task-key.js';
 import { peopleViewer } from '../lib/people-visibility.js';
 import { withoutHiddenParent, withoutHiddenParents } from '../lib/task-parent-projection.js';
 import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
@@ -34,6 +35,7 @@ import {
   type TaskTableSortField,
 } from '../lib/task-table-query.js';
 import { bulkTaskUpdateSchema, bulkUpdateTasks, BulkTaskUpdateError } from '../lib/task-bulk-update.js';
+import { taskPrioritySchema, taskStatusSchema } from '../lib/task-priority.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
 
 export const taskRoutes = new Hono();
@@ -41,8 +43,8 @@ export const taskRoutes = new Hono();
 const createTaskSchema = z.object({
   title: z.string().min(1),
   description: z.string().nullable().optional(),
-  status: z.string().nullable().optional(),
-  priority: z.string().nullable().optional(),
+  status: taskStatusSchema.nullable().optional(),
+  priority: taskPrioritySchema.nullable().optional(),
   assignee_id: z.string().nullable().optional(),
   due_date: z.string().nullable().optional(),
   sort_order: z.number().nullable().optional(),
@@ -63,7 +65,7 @@ const updateTaskSchema = z.object({
   title: z.string().min(1).optional(),
   description: z.string().optional(),
   status: z.string().optional(),
-  priority: z.enum(['p0', 'p1', 'p2', 'p3']).optional(),
+  priority: taskPrioritySchema.optional(),
   assignee_id: z.string().nullable().optional(),
   due_date: z.string().nullable().optional(),
   start_date: z.string().nullable().optional(),
@@ -432,7 +434,7 @@ taskRoutes.get('/my', async (c) => {
 // matches a task whose key (PREFIX-N or PREFIXN, any case) equals it, or
 // whose title contains it; key matches come first. A project prefix may hold
 // digits (R8O-1), and a title word may end in one (rc8), so both are always
-// tried rather than guessing from the query's shape.
+// tried rather than guessing from the query's shape (lib/task-key.ts).
 taskRoutes.get('/search', async (c) => {
   try {
     const user = c.get('user');
@@ -443,9 +445,7 @@ taskRoutes.get('/search', async (c) => {
     }
 
     const q = query.trim();
-    const key = q.toUpperCase();
-    const keyMatch = sql`(upper(${projects.prefix}) || '-' || ${tasks.number}::text = ${key}
-      OR upper(${projects.prefix}) || ${tasks.number}::text = ${key})`;
+    const keyMatch = taskKeyMatch(q);
 
     const result = await db.select({
       id: tasks.id,

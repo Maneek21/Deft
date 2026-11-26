@@ -169,7 +169,7 @@ test('equipment task-link writes agree across employee and personal MCP boundari
       args(pendingTaskId, `employee-link-${suffix}`), employeeContext('standard'),
     );
     assert.equal(changedInput.isError, true);
-    assert.match(changedInput.content[0]!.text, /idempotency|different module task-link mutation/i);
+    assert.match(changedInput.content[0]!.text, /idempotency|different task link change/i);
 
     await client.query(
       `UPDATE agent_employees SET disabled_tools = ARRAY['module_record_task_link']::text[] WHERE id = $1`,
@@ -251,7 +251,7 @@ test('equipment task-link writes agree across employee and personal MCP boundari
     });
     assert.equal(humanChangedInput.status, 200);
     assert.equal(humanChangedInput.body.isError, true);
-    assert.match(humanChangedInput.body.content[0]?.text ?? '', /idempotency|different module task-link mutation/i);
+    assert.match(humanChangedInput.body.content[0]?.text ?? '', /idempotency|different task link change/i);
     await updateModuleInstallation(owner, slug, { enabled: false });
     const revokedModuleReplay = await personalCall(personalToken, 'module_record_task_link', personalInput);
     assert.notEqual(revokedModuleReplay.body.isError, false, 'a completed replay cannot bypass revoked module access');

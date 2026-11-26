@@ -1,0 +1,92 @@
+{
+  "schema_version": "1",
+  "id": "com.example.vendor-tracker",
+  "slug": "vendor-tracker",
+  "version": "1.0.0",
+  "name": "Vendor tracker",
+  "description": "Keep vendors, their contracts and renewal dates in one place.",
+  "icon": "package",
+  "collections": [
+    {
+      "key": "vendors",
+      "name": "Vendors",
+      "singular_name": "Vendor",
+      "fields": [
+        { "key": "name", "label": "Name", "type": "text", "required": true },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "single_select",
+          "required": true,
+          "default": "evaluating",
+          "options": [
+            { "value": "evaluating", "label": "Evaluating" },
+            { "value": "active", "label": "Active" },
+            { "value": "on_hold", "label": "On hold" },
+            { "value": "ended", "label": "Ended" }
+          ]
+        },
+        {
+          "key": "category",
+          "label": "Category",
+          "type": "single_select",
+          "options": [
+            { "value": "software", "label": "Software" },
+            { "value": "services", "label": "Services" },
+            { "value": "hardware", "label": "Hardware" },
+            { "value": "facilities", "label": "Facilities" },
+            { "value": "other", "label": "Other" }
+          ]
+        },
+        { "key": "owner", "label": "Owner", "type": "member" },
+        { "key": "annual_cost", "label": "Annual cost", "type": "number" },
+        { "key": "renews_on", "label": "Renews on", "type": "date" },
+        { "key": "website", "label": "Website", "type": "url" },
+        { "key": "contact_email", "label": "Contact email", "type": "email" },
+        { "key": "notes", "label": "Notes", "type": "long_text" }
+      ],
+      "search": { "title_field": "name", "subtitle_fields": ["contact_email"], "fields": ["name", "contact_email", "notes"] },
+      "views": [
+        { "key": "board", "name": "By status", "type": "board", "group_by": "status", "fields": ["name", "category", "owner", "renews_on"] },
+        { "key": "all", "name": "All vendors", "type": "table", "fields": ["name", "status", "category", "owner", "annual_cost", "renews_on"] },
+        { "key": "renewals", "name": "Renewals", "type": "timeline", "start_field": "renews_on", "fields": ["name", "status", "annual_cost"] },
+        { "key": "form", "name": "Add a vendor", "type": "form", "fields": ["name", "status", "category", "owner", "annual_cost", "renews_on", "website", "contact_email", "notes"] },
+        { "key": "detail", "name": "Vendor", "type": "detail", "fields": ["name", "status", "category", "owner", "annual_cost", "renews_on", "website", "contact_email", "notes"] }
+      ]
+    },
+    {
+      "key": "contracts",
+      "name": "Contracts",
+      "singular_name": "Contract",
+      "fields": [
+        { "key": "title", "label": "Title", "type": "text", "required": true },
+        { "key": "vendor_id", "label": "Vendor", "type": "relation", "target_collection": "vendors" },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "single_select",
+          "required": true,
+          "default": "draft",
+          "options": [
+            { "value": "draft", "label": "Draft" },
+            { "value": "signed", "label": "Signed" },
+            { "value": "expired", "label": "Expired" }
+          ]
+        },
+        { "key": "starts_on", "label": "Starts on", "type": "date" },
+        { "key": "ends_on", "label": "Ends on", "type": "date" },
+        { "key": "value", "label": "Value", "type": "number" },
+        { "key": "document_url", "label": "Document link", "type": "url" }
+      ],
+      "search": { "title_field": "title", "fields": ["title"] },
+      "views": [
+        { "key": "board", "name": "By status", "type": "board", "group_by": "status", "fields": ["title", "vendor_id", "ends_on"] },
+        { "key": "all", "name": "All contracts", "type": "table", "fields": ["title", "vendor_id", "status", "starts_on", "ends_on", "value"] },
+        { "key": "terms", "name": "Terms", "type": "timeline", "start_field": "starts_on", "end_field": "ends_on", "fields": ["title", "vendor_id"] },
+        { "key": "form", "name": "Add a contract", "type": "form", "fields": ["title", "vendor_id", "status", "starts_on", "ends_on", "value", "document_url"] },
+        { "key": "detail", "name": "Contract", "type": "detail", "fields": ["title", "vendor_id", "status", "starts_on", "ends_on", "value", "document_url"] }
+      ]
+    }
+  ],
+  "navigation": { "default_collection": "vendors", "default_view": "board" }
+}

@@ -297,27 +297,27 @@ export function normalizeAppRunResult(value: unknown): { run: AppRunView; value:
 }
 
 export function normalizeModuleAppRunOutcomes(value: unknown): ModuleAppRunOutcomesResult {
-  const body = object(value, 'Module App Run outcomes response');
+  const body = object(value, 'App action results response');
   if (!Array.isArray(body.outcomes) || body.outcomes.length > 100) {
-    throw new Error('Invalid Module App Run outcomes.');
+    throw new Error('Invalid app action results.');
   }
   return {
     outcomes: body.outcomes.map((entry) => {
-      const row = object(entry, 'Module App Run outcome');
+      const row = object(entry, 'App action result');
       if (typeof row.state !== 'string' || !RUN_STATES.has(row.state as AppRunState)) {
-        throw new Error('Invalid Module App Run outcome state.');
+        throw new Error('Invalid app action result state.');
       }
       if (row.environment !== 'sandbox' && row.environment !== 'unknown') {
-        throw new Error('Invalid Module App Run environment.');
+        throw new Error('Invalid app action environment.');
       }
       if (typeof row.provider_call_attempted !== 'boolean'
         || (row.outcome_success !== null && typeof row.outcome_success !== 'boolean')
         || (row.error_code !== null && typeof row.error_code !== 'string')
         || typeof row.from_merged_record !== 'boolean') {
-        throw new Error('Invalid Module App Run outcome facts.');
+        throw new Error('Invalid app action result facts.');
       }
       return {
-        resourceId: stringValue(row.resource_id, 'Module resource identity'),
+        resourceId: stringValue(row.resource_id, 'App record identity'),
         runId: stringValue(row.run_id, 'App Run identity'),
         operationName: stringValue(row.operation_name, 'App Run operation'),
         state: row.state as AppRunState,

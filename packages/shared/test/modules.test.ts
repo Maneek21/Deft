@@ -182,7 +182,7 @@ describe('deft.module.json v1 manifest', () => {
     const missingTarget = equipmentRegisterManifest();
     const relation = missingTarget.collections[0]!.fields.find((field) => field.type === 'relation');
     if (relation?.type === 'relation') relation.target_collection = 'missing';
-    assert.throws(() => parseDeftModuleManifest(missingTarget), /Relation target collection/);
+    assert.throws(() => parseDeftModuleManifest(missingTarget), /linked record type does not exist/);
 
     const badBoard = equipmentRegisterManifest();
     const board = badBoard.collections[0]!.views?.find((view) => view.type === 'board');
@@ -196,7 +196,7 @@ describe('deft.module.json v1 manifest', () => {
 
     const badNavigation = equipmentRegisterManifest();
     badNavigation.navigation = { default_collection: 'locations', default_view: 'missing' };
-    assert.throws(() => parseDeftModuleManifest(badNavigation), /Default view/);
+    assert.throws(() => parseDeftModuleManifest(badNavigation), /default view/);
   });
 
   test('keeps manifest quick-filter field/operator validation aligned with runtime queries', () => {
@@ -272,7 +272,7 @@ describe('deft.module.json v1 manifest', () => {
         fields,
       })),
     };
-    assert.throws(() => parseDeftModuleManifest(oversized), /Manifest exceeds/);
+    assert.throws(() => parseDeftModuleManifest(oversized), /app file is larger than/);
   });
 
   test('rejects unknown keys, executable-looking icon values, and unsafe display metadata', () => {
@@ -390,7 +390,7 @@ describe('deft.module.json v1 manifest', () => {
     const oversized = JSON.stringify({ padding: '€'.repeat(MODULE_LIMITS.manifest_bytes) });
     assert.throws(
       () => parseDeftModuleManifestJson(oversized),
-      /Manifest exceeds/,
+      /app file is larger than/,
     );
   });
 
