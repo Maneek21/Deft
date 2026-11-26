@@ -23,11 +23,30 @@ function typeMatches(expected: string, value: unknown): boolean {
   return expected === actual || (expected === 'number' && actual === 'integer');
 }
 
-/** Problems found, as "path: reason"; empty when the value fits. */
-export function validateJsonSchema(schema: Schema, value: unknown, path = '$'): string[] {
-  for (const key of Object.keys(schema)) {
-    if (!KNOWN.has(key)) throw new Error(`Unsupported JSON Schema keyword ${key} at ${path}`);
+/** Throws on any keyword in the whole schema that this checker does not understand. */
+function assertKnownKeywords(schema: unknown, path: string): void {
+  if (Array.isArray(schema)) {
+    schema.forEach((item, index) => assertKnownKeywords(item, `${path}[${index}]`));
+    return;
   }
+  if (!schema || typeof schema !== 'object') return;
+  for (const [key, child] of Object.entries(schema)) {
+    if (!KNOWN.has(key)) throw new Error(`Unsupported JSON Schema keyword ${key} at ${path}`);
+    if (key === 'properties' && child && typeof child === 'object') {
+      for (const [name, sub] of Object.entries(child)) assertKnownKeywords(sub, `${path}.properties.${name}`);
+    } else if (['items', 'additionalProperties', 'anyOf', 'oneOf'].includes(key)) {
+      assertKnownKeywords(child, `${path}.${key}`);
+    }
+  }
+}
+
+/** Problems found, as "path: reason"; empty when the value fits. */
+export function validateJsonSchema(schema: Schema, value: unknown): string[] {
+  assertKnownKeywords(schema, '$');
+  return checkValue(schema, value, '$');
+}
+
+function checkValue(schema: Schema, value: unknown, path: string): string[] {
   const problems: string[] = [];
   if (schema.type !== undefined) {
     const types = Array.isArray(schema.type) ? schema.type as string[] : [schema.type as string];
@@ -41,7 +60,8 @@ export function validateJsonSchema(schema: Schema, value: unknown, path = '$'): 
     const length = Array.from(value).length;
     if (typeof schema.minLength === 'number' && length < schema.minLength) problems.push(`${path}: too short`);
     if (typeof schema.maxLength === 'number' && length > schema.maxLength) problems.push(`${path}: too long`);
-    if (typeof schema.pattern === 'string' && !new RegExp(schema.pattern).test(value)) problems.push(`${path}: pattern`);
+    // Unicode mode, as JSON Schema validators such as Ajv use by default.
+    if (typeof schema.pattern === 'string' && !new RegExp(schema.pattern, 'u').test(value)) problems.push(`${path}: pattern`);
   }
   if (typeof value === 'number') {
     if (typeof schema.minimum === 'number' && value < schema.minimum) problems.push(`${path}: below minimum`);
@@ -51,7 +71,7 @@ export function validateJsonSchema(schema: Schema, value: unknown, path = '$'): 
     if (typeof schema.minItems === 'number' && value.length < schema.minItems) problems.push(`${path}: too few items`);
     if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) problems.push(`${path}: too many items`);
     if (schema.items && typeof schema.items === 'object') {
-      value.forEach((item, index) => problems.push(...validateJsonSchema(schema.items as Schema, item, `${path}[${index}]`)));
+      value.forEach((item, index) => problems.push(...checkValue(schema.items as Schema, item, `${path}[${index}]`)));
     }
   }
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -61,21 +81,21 @@ export function validateJsonSchema(schema: Schema, value: unknown, path = '$'): 
       if (!(key in record)) problems.push(`${path}: missing required ${key}`);
     }
     for (const [key, item] of Object.entries(record)) {
-      if (properties[key]) problems.push(...validateJsonSchema(properties[key]!, item, `${path}.${key}`));
+      if (Object.hasOwn(properties, key)) problems.push(...checkValue(properties[key]!, item, `${path}.${key}`));
       else if (schema.additionalProperties === false) problems.push(`${path}: unknown key ${key}`);
       else if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
-        problems.push(...validateJsonSchema(schema.additionalProperties as Schema, item, `${path}.${key}`));
+        problems.push(...checkValue(schema.additionalProperties as Schema, item, `${path}.${key}`));
       }
     }
   }
   if (Array.isArray(schema.anyOf)) {
-    const results = (schema.anyOf as Schema[]).map((option) => validateJsonSchema(option, value, path));
+    const results = (schema.anyOf as Schema[]).map((option) => checkValue(option, value, path));
     if (!results.some((result) => result.length === 0)) {
       problems.push(`${path}: matches no anyOf option (${results.map((result) => result[0]).join(' / ')})`);
     }
   }
   if (Array.isArray(schema.oneOf)) {
-    const matches = (schema.oneOf as Schema[]).filter((option) => validateJsonSchema(option, value, path).length === 0).length;
+    const matches = (schema.oneOf as Schema[]).filter((option) => checkValue(option, value, path).length === 0).length;
     if (matches !== 1) problems.push(`${path}: matches ${matches} oneOf options`);
   }
   return problems;

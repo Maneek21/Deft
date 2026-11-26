@@ -45,7 +45,19 @@ describe('the published app file JSON Schema', () => {
     assert.notDeepEqual(validateJsonSchema(published, { ...value, script: 'x' }), []);
   });
 
-  test('the checker refuses keywords it does not understand', () => {
+  test('the checker refuses keywords it does not understand, even where no data reaches them', () => {
     assert.throws(() => validateJsonSchema({ $ref: '#/x' }, {}), /Unsupported JSON Schema keyword \$ref/);
+    assert.throws(() => validateJsonSchema({ type: 'object', properties: { optional: { $ref: '#/x' } } }, {}), /\$ref/);
+    assert.throws(() => validateJsonSchema({ type: 'array', items: { if: {} } }, []), /if/);
+  });
+
+  test('the checker treats inherited names as unknown keys and matches patterns in Unicode mode', () => {
+    const value = readJson(new URL('hiring-pipeline.json', templates));
+    for (const key of ['constructor', '__proto__', 'toString']) {
+      const withKey = JSON.parse(JSON.stringify(value).replace(/^\{/, `{"${key}":"x",`)) as Record<string, unknown>;
+      assert.ok(validateJsonSchema(published, withKey).some((problem) => problem.includes(`unknown key ${key}`)), key);
+    }
+    const emoji = String.fromCodePoint(0x1f600);
+    assert.deepEqual(validateJsonSchema({ type: 'string', pattern: '^.$' }, emoji), []);
   });
 });
