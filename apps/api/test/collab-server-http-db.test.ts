@@ -1896,7 +1896,7 @@ async function driveWithMember(title: string) {
   return { doc, change, loseAccess };
 }
 
-test('a write reaching commit while an access loss is still being applied is refused BUSY', { skip: !url && SKIP }, async (t) => {
+test('a write reaching commit while a committed access loss is still being applied reads the role again, and is refused FORBIDDEN', { skip: !url && SKIP }, async (t) => {
   const { doc, change, loseAccess } = await driveWithMember('Barrier at commit');
   let finish: (() => Promise<void>) | null = null;
   t.after(async () => { collabTestSeams.beforeWriteCommit = null; await finish?.(); });
@@ -1909,9 +1909,40 @@ test('a write reaching commit while an access loss is still being applied is ref
   };
   await assert.rejects(
     writeDocument({ orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member }, reason: 'import', mutate: (d) => appendParagraph(d, 'Past the barrier') }),
-    (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'BUSY',
+    (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'FORBIDDEN',
   );
   assert.ok(!(await stored(doc)).content_text.includes('Past the barrier'), 'nothing was written');
+});
+
+test('a write under the barrier a rolled-back access change left still succeeds for someone who keeps access', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Rolled back' });
+  // A drive change naming no documents or people covers every document of the workspace.
+  const change = { orgId: fx!.orgId, driveId: fx!.workspaceDriveId };
+  const opened: { result?: Awaited<ReturnType<typeof applyAccessLossInTx>> } = {};
+  await assert.rejects(db.transaction(async (tx) => {
+    opened.result = await applyAccessLossInTx(tx, change);
+    throw new Error('the change rolls back');
+  }), /rolls back/);
+  // Nothing calls finishAccessLoss for a rolled-back change: its barrier stays until the timeout.
+  t.after(() => finishAccessLoss(change, opened.result!));
+  assert.equal(accessChange.accessLossBarrierCovers(fx!.orgId, doc, fx!.people.member), true, 'the barrier covers the document');
+  await writeDocument({ orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member }, reason: 'import', mutate: (d) => appendParagraph(d, 'Under a stale barrier') });
+  assert.ok((await stored(doc)).content_text.includes('Under a stale barrier'));
+});
+
+test('loading an empty document causes no store: its derived id is the same every time', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Empty' });
+  const empty = new Y.Doc();
+  t.after(() => empty.destroy());
+  // Its live state is an empty fragment, its derived copies those a derive gives it.
+  const derived = deriveContent(empty);
+  await fx!.client.query('UPDATE documents SET ydoc_state = $2, content_json = $3, content_text = $4 WHERE id = $1',
+    [doc, Buffer.from(Y.encodeStateAsUpdate(empty)), JSON.stringify(derived.json), derived.text]);
+  const revision = (await stored(doc)).revision;
+  const editor = await open(t, doc, fx!.people.member);
+  editor.destroy();
+  await allUnloaded();
+  assert.equal((await stored(doc)).revision, revision, 'loading and unloading it stored nothing');
 });
 
 test('a write whose access was lost after its check and before its commit is refused FORBIDDEN', { skip: !url && SKIP }, async (t) => {

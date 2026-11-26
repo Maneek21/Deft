@@ -33,7 +33,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import * as Y from 'yjs';
 import { documents } from '@deft/db/documents';
-import { ensureBlockIds, jsonToText, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
+import { DOCUMENT_FRAGMENT, ensureBlockIds, jsonToText, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
 import { db } from '../lib/db.js';
 import { writeBackBlockIds } from './block-ids.js';
 import { COLLAB_LIMITS } from './limits.js';
@@ -176,13 +176,32 @@ export async function writeInitialState(documentId: string, orgId: string, state
 export type DerivedContent = { json: JSONContent; text: string };
 
 /**
+ * The id of the paragraph an empty document reads as. An empty fragment
+ * reads as one empty paragraph (yDocToJson), which has no element in the live
+ * document to carry an id, so ensureBlockIds would give it a new random one
+ * on every derive. It gets this fixed id instead, so an empty document always
+ * derives the same JSON. Nothing is written into the fragment: a block the
+ * server made could race a client's first block and leave two.
+ */
+export const EMPTY_DOCUMENT_BLOCK_ID = '00000000-0000-8000-8000-000000000000';
+
+/** The document's JSON (yDocToJson) and the same with block ids, as a derive gives them. Changes nothing. */
+function jsonWithBlockIds(doc: Y.Doc): { json: JSONContent; withIds: JSONContent } {
+  const json = yDocToJson(doc);
+  if (doc.getXmlFragment(DOCUMENT_FRAGMENT).length > 0) return { json, withIds: ensureBlockIds(json) };
+  const [block] = json.content ?? [];
+  return { json, withIds: { ...json, content: [{ ...block, attrs: { ...block?.attrs, id: EMPTY_DOCUMENT_BLOCK_ID } }] } };
+}
+
+/**
  * The document's JSON with block ids, and its text. Ids it gave blocks are
- * written back into `doc`, the `id` attribute alone (the header). Throws when
- * the live state holds a node or mark outside the schema (yDocToJson).
+ * written back into `doc`, the `id` attribute alone (the header); an empty
+ * document's paragraph has the fixed EMPTY_DOCUMENT_BLOCK_ID and nothing to
+ * write it on. Throws when the live state holds a node or mark outside the
+ * schema (yDocToJson).
  */
 export function deriveContent(doc: Y.Doc): DerivedContent {
-  const json = yDocToJson(doc);
-  const withIds = ensureBlockIds(json);
+  const { json, withIds } = jsonWithBlockIds(doc);
   if (!isDeepStrictEqual(withIds, json)) writeBackBlockIds(doc, json, withIds, SYSTEM_ORIGIN);
   return { json: withIds, text: jsonToText(withIds) };
 }
@@ -194,7 +213,7 @@ export function deriveContent(doc: Y.Doc): DerivedContent {
  */
 export function derivedIsBehind(doc: Y.Doc, storedJson: JSONContent): boolean {
   try {
-    return !isDeepStrictEqual(ensureBlockIds(yDocToJson(doc)), storedJson);
+    return !isDeepStrictEqual(jsonWithBlockIds(doc).withIds, storedJson);
   } catch {
     return true;
   }

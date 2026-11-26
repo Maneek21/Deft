@@ -18,7 +18,7 @@ import test from 'node:test';
 import * as Y from 'yjs';
 import { BLOCK_ID_TYPES, ensureBlockIds, getDocumentSchema, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
 import { setCollabLimitsForTest } from '../src/collab/limits.js';
-import { deriveContent, markSizeWarning } from '../src/collab/persistence.js';
+import { deriveContent, derivedIsBehind, markSizeWarning } from '../src/collab/persistence.js';
 import * as sizeAccount from '../src/collab/size-account.js';
 
 const { chargeFor, SizeAccount } = sizeAccount;
@@ -416,4 +416,19 @@ test('the bound covers a document with structs held back and a block outside the
   doc.destroy();
   ghost.destroy();
   remover.destroy();
+});
+
+// ---------------------------------------------------------------------------
+// F7 consult confirmation
+
+test('an empty document derives the same block id every time, writes nothing, and is never seen as behind', () => {
+  const doc = new Y.Doc();
+  const first = deriveContent(doc);
+  const second = deriveContent(doc);
+  const id = first.json.content?.[0]?.attrs?.id;
+  assert.equal(typeof id, 'string', 'the empty document reads as one paragraph with an id');
+  assert.deepEqual(second.json, first.json, `the second derive gave ${String(second.json.content?.[0]?.attrs?.id)}, the first ${String(id)}`);
+  assert.equal(fragmentOf(doc).length, 0, 'nothing was written into the fragment');
+  assert.equal(derivedIsBehind(doc, first.json), false, 'its stored JSON is never behind');
+  doc.destroy();
 });

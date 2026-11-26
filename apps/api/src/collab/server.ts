@@ -169,8 +169,8 @@ export type CollabActor = { kind: 'user' | 'agent' | 'system'; userId: string; a
 
 export type DocumentWriteReason = 'agent_edit' | 'suggestion' | 'restore' | 'import' | 'template' | 'move_fix';
 /**
- * BUSY: live editing can't take the write now (its memory budget is spent, the server is shutting down, a loaded
- * document didn't become live, or an access change is being applied); try again later. INVALID_CONTENT: the
+ * BUSY: live editing can't take the write now (its memory budget is spent, the server is shutting down, or a loaded
+ * document didn't become live); try again later. INVALID_CONTENT: the
  * document holds content outside the schema, so its text can't be derived.
  */
 export type DocumentWriteRefusalCode = 'FORBIDDEN' | 'REVISION_CHANGED' | 'TOO_LARGE' | 'INVALID_CONTENT' | 'BUSY';
@@ -1786,8 +1786,7 @@ export function getCollabServer(): CollabServer {
  * sockets apply. Throws DocumentWriteRefused: FORBIDDEN, REVISION_CHANGED,
  * TOO_LARGE, INVALID_CONTENT (the document holds content outside the
  * schema), or BUSY (live editing's memory budget is spent, it is shutting
- * down, a loaded document didn't become live, or an access change is being
- * applied; try again later). Runs the
+ * down, or a loaded document didn't become live; try again later). Runs the
  * stored listeners before it returns, after releasing the document's writer
  * lock; called from inside a stored listener while its run is in progress,
  * it returns once the write has applied and its listeners run after that run.
@@ -1836,17 +1835,19 @@ export async function writeDocument(i: {
     },
     // The access fence a socket frame passes (rule C3), right before commit:
     // only the document row is locked, so a drive or share loss can commit
-    // after the role was read. While its barrier is open (between its commit
-    // and finishAccessLoss) the write is refused BUSY; once the generation
-    // has moved, the role is read again in this transaction (which sees the
-    // committed loss) and a lost one is refused FORBIDDEN.
+    // after the role was read. While an access-loss barrier covers the
+    // document and actor (between a loss's commit and finishAccessLoss), or
+    // once the generation has moved, the role is read again in this
+    // transaction, which sees a committed loss: a lost role is refused
+    // FORBIDDEN. A loss not yet committed, or rolled back (its barrier stays
+    // until the timeout), serializes as the write, then the loss, the same
+    // as a socket frame passing the fence, so it refuses nothing.
     beforeCommit: async (tx) => {
       await collabTestSeams.beforeWriteCommit?.(i.documentId);
       if (requiredRole === null) return;
-      for (const userId of new Set([checkedAs, i.actor.userId])) {
-        if (accessLossBarrierCovers(i.orgId, i.documentId, userId)) throw new DocumentWriteRefused('BUSY');
-      }
-      if (currentAccessGeneration() !== generation && !roleAtLeast(await documentRoleFor(checkedAs, i.orgId, i.documentId, tx), requiredRole)) {
+      const covered = [...new Set([checkedAs, i.actor.userId])].some((userId) => accessLossBarrierCovers(i.orgId, i.documentId, userId));
+      if ((covered || currentAccessGeneration() !== generation)
+        && !roleAtLeast(await documentRoleFor(checkedAs, i.orgId, i.documentId, tx), requiredRole)) {
         throw new DocumentWriteRefused('FORBIDDEN');
       }
     },
