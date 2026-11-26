@@ -145,3 +145,34 @@ test('Apps page: one upload button routes every file kind to its existing endpoi
     await browser.close();
   }
 });
+
+test('Apps page: a guest gets a plain no-access state and the page asks for no app lists', { timeout: 180_000 }, async () => {
+  const script = await bundle();
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  const requested: string[] = [];
+  try {
+    const tab = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    tab.setDefaultTimeout(15_000);
+    const me = JSON.parse(JSON.stringify(fixture.answers.auth_me.body));
+    me.user.role = 'guest';
+    await tab.route('**/*', async (route: any) => {
+      const url = new URL(route.request().url()), p = url.pathname;
+      if (url.origin !== ORIGIN) return route.abort();
+      if (p === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: script });
+      if (!p.startsWith('/api/')) return route.fulfill({ contentType: 'text/html', body: '<!doctype html><div id="root"></div><script src="/bundle.js"></script>' });
+      requested.push(p);
+      if (p === '/api/auth/me') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(me) });
+      return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Forbidden', code: 'FORBIDDEN' }) });
+    });
+    await tab.goto(`${ORIGIN}/settings/apps`);
+    const access = `header.${Buffer.from(JSON.stringify({ id: me.user.id, org_id: me.org.id, sid: 's', jti: 'j' })).toString('base64url')}.signature`;
+    await tab.evaluate((token: string) => { localStorage.setItem('deft-access-token', token); localStorage.setItem('deft-refresh-token', token); }, access);
+    await tab.reload();
+    await tab.getByText('Apps aren’t available to guests').waitFor();
+    assert.equal(await tab.getByText(/did not load/).count(), 0);
+    assert.equal(await tab.getByRole('button', { name: 'Upload an app' }).count(), 0);
+    assert.ok(!requested.includes('/api/modules') && !requested.includes('/api/apps'), requested.join(', '));
+  } finally {
+    await browser.close();
+  }
+});

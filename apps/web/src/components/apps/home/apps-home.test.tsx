@@ -74,3 +74,20 @@ test('Settings → Modules redirects to the Apps page', () => {
   loaded.exports.default!();
   assert.deepEqual(redirected, ['/settings/apps']);
 });
+
+test('App Kit parts keep their agent access picker; a part shown alone cannot be turned off or re-uploaded', () => {
+  const part: ModuleInstallation = { ...hiring, id: 'p1', slug: 'inbox', moduleId: 'io.example.inbox', owningAppInstallationId: 'app-1', manifest: { ...manifest, name: 'Inbox' } };
+  const withPackage = renderToStaticMarkup(<AppsHomeLists home={buildAppsHome({ modules: [part], bundled: [], apps: [{ ...pkg, id: 'app-1' } as AppInstallation] })} query="" canManage busyKey={null} handlers={handlers} />);
+  assert.match(withPackage, /aria-label="What Defty and agents can do in Inbox"/);
+  const alone = renderToStaticMarkup(<AppsHomeLists home={buildAppsHome({ modules: [part], bundled: [], apps: [] })} query="" canManage busyKey={null} handlers={handlers} />);
+  assert.match(alone, /Part of an App Kit package/);
+  assert.match(alone, /aria-label="What Defty and agents can do in Inbox"/);
+  assert.doesNotMatch(alone, /Turn off|Upload new version/);
+});
+
+test('while any action runs, every tile control waits', () => {
+  const html = renderToStaticMarkup(<AppsHomeLists home={buildAppsHome({ modules: [hiring], bundled: [contacts], apps: [] })} query="" canManage busyKey="something-else" handlers={handlers} />);
+  assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="Turn off Hiring pipeline"/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="Install Contacts"/);
+  assert.match(html, /<select[^>]*disabled=""/);
+});

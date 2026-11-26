@@ -47,7 +47,7 @@ function TileHeading({ icon, name, status, meta }: { icon: ReactNode; name: stri
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <h3 className="min-w-0 truncate text-[0.875rem] font-semibold" style={{ color: 'var(--on-surface)' }}>{name}</h3>
+          <h3 title={name} className="min-w-0 truncate text-[0.875rem] font-semibold" style={{ color: 'var(--on-surface)' }}>{name}</h3>
           {status}
         </div>
         <p className="mt-1 text-[0.6875rem]" style={{ color: 'var(--on-surface-variant)' }}>{meta}</p>
@@ -72,7 +72,30 @@ function plural(count: number, one: string, many = `${one}s`) {
   return `${count} ${count === 1 ? one : many}`;
 }
 
+export function AgentAccessPicker({ module, label, disabled, onChange }: { module: ModuleInstallation; label: string; disabled: boolean; onChange: (value: AgentAccess) => void }) {
+  const name = module.manifest.name || module.slug;
+  return (
+    <label className="flex min-h-11 items-center gap-2 rounded-lg px-3 text-[0.75rem] focus-within:ring-2 focus-within:ring-[color:var(--primary)] md:min-h-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}>
+      <Bot size={14} className="shrink-0" aria-hidden />
+      <span className="min-w-0 truncate">{label}</span>
+      <select
+        value={module.agentAccess}
+        onChange={(event) => onChange(event.target.value as AgentAccess)}
+        disabled={disabled}
+        className="ml-auto min-w-0 bg-transparent text-right text-[0.75rem] font-medium outline-none disabled:opacity-60"
+        style={{ color: 'var(--on-surface)' }}
+        aria-label={`What Defty and agents can do in ${name}`}
+      >
+        <option value="none">No access</option>
+        <option value="read">Read</option>
+        <option value="write">Read and write</option>
+      </select>
+    </label>
+  );
+}
+
 export function moduleTileMeta(module: ModuleInstallation): string {
+  if (module.owningAppInstallationId) return [`v${module.manifest.version ?? '—'}`, 'Part of an App Kit package'].join(' · ');
   const origin = module.source === 'sideloaded' ? 'Built in this workspace' : module.source === 'bundled' ? 'Comes with Deft' : 'Installed';
   return [`v${module.manifest.version ?? '—'}`, origin, plural(module.manifest.collections.length, 'record type')].join(' · ');
 }
@@ -82,6 +105,7 @@ export function ModuleAppTile({
   bundled,
   canManage,
   busy,
+  locked = false,
   onToggle,
   onAgentAccess,
   onUploadVersion,
@@ -92,6 +116,8 @@ export function ModuleAppTile({
   bundled: BundledModule | null;
   canManage: boolean;
   busy: boolean;
+  /** True while any action on the page runs: every control waits. */
+  locked?: boolean;
   onToggle: () => void;
   onAgentAccess: (value: AgentAccess) => void;
   onUploadVersion: () => void;
@@ -99,6 +125,8 @@ export function ModuleAppTile({
   extraActions?: ReactNode;
 }) {
   const name = module.manifest.name || module.slug;
+  const owned = Boolean(module.owningAppInstallationId);
+  const disabled = busy || locked;
   return (
     <TileShell label={name}>
       <TileHeading
@@ -108,24 +136,7 @@ export function ModuleAppTile({
         meta={moduleTileMeta(module)}
       />
       <Description text={module.manifest.description} />
-      {canManage && (
-        <label className="mt-3 flex min-h-11 items-center gap-2 rounded-lg px-3 text-[0.75rem] md:min-h-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}>
-          <Bot size={14} className="shrink-0" aria-hidden />
-          <span>Defty and agents</span>
-          <select
-            value={module.agentAccess}
-            onChange={(event) => onAgentAccess(event.target.value as AgentAccess)}
-            disabled={busy}
-            className="ml-auto min-w-0 bg-transparent text-right text-[0.75rem] font-medium outline-none disabled:opacity-60"
-            style={{ color: 'var(--on-surface)' }}
-            aria-label={`What Defty and agents can do in ${name}`}
-          >
-            <option value="none">No access</option>
-            <option value="read">Read</option>
-            <option value="write">Read and write</option>
-          </select>
-        </label>
-      )}
+      {canManage && <div className="mt-3"><AgentAccessPicker module={module} label="Defty and agents" disabled={disabled} onChange={onAgentAccess} /></div>}
       <div className="mt-auto flex flex-wrap items-center gap-2 pt-4">
         {module.enabled ? (
           <Link href={`/modules/${encodeURIComponent(module.slug)}`} className={`${buttonBase} flex-1`} style={quiet}>
@@ -134,11 +145,11 @@ export function ModuleAppTile({
         ) : (
           <span className="flex-1 text-[0.6875rem]" style={{ color: 'var(--on-surface-variant)' }}>Off. Its records are kept.</span>
         )}
-        {canManage && (
+        {canManage && !owned && (
           <button
             type="button"
             onClick={onToggle}
-            disabled={busy}
+            disabled={disabled}
             className={buttonBase}
             style={module.enabled ? quiet : primary}
             aria-label={`${module.enabled ? 'Turn off' : 'Turn on'} ${name}`}
@@ -148,15 +159,15 @@ export function ModuleAppTile({
           </button>
         )}
       </div>
-      {canManage && (module.source === 'sideloaded' || bundled?.updateAvailable || extraActions) && (
+      {canManage && !owned && (module.source === 'sideloaded' || bundled?.updateAvailable || extraActions) && (
         <div className="mt-2 flex flex-wrap gap-2 border-t pt-3" style={{ borderColor: 'var(--ghost-border)' }}>
           {module.source === 'sideloaded' && (
-            <button type="button" onClick={onUploadVersion} disabled={busy} className={buttonBase} style={quiet} aria-label={`Upload a new version of ${name}`}>
+            <button type="button" onClick={onUploadVersion} disabled={disabled} className={buttonBase} style={quiet} aria-label={`Upload a new version of ${name}`}>
               <FileUp size={14} aria-hidden /> Upload new version
             </button>
           )}
           {module.source === 'bundled' && bundled?.updateAvailable && (
-            <button type="button" onClick={onBundledUpdate} disabled={busy} className={buttonBase} style={primary}>
+            <button type="button" onClick={onBundledUpdate} disabled={disabled} className={buttonBase} style={primary}>
               <RefreshCw size={14} aria-hidden /> Update to v{bundled.version ?? 'latest'}
             </button>
           )}
@@ -174,7 +185,14 @@ const PACKAGE_STATES: Record<AppInstallation['state'], { tone: Tone; label: stri
   failed: { tone: 'failed', label: 'Setup failed' },
 };
 
-export function PackageAppTile({ app, canManage }: { app: AppInstallation; canManage: boolean }) {
+export function PackageAppTile({ app, canManage, parts = [], locked = false, onAgentAccess }: {
+  app: AppInstallation;
+  canManage: boolean;
+  /** The installed apps this package brought, each with its own agent access. */
+  parts?: ModuleInstallation[];
+  locked?: boolean;
+  onAgentAccess?: (module: ModuleInstallation, value: AgentAccess) => void;
+}) {
   const state = PACKAGE_STATES[app.state];
   const href = `/settings/apps/${encodeURIComponent(app.id)}`;
   const meta = `v${app.version} · App Kit package`;
@@ -182,6 +200,11 @@ export function PackageAppTile({ app, canManage }: { app: AppInstallation; canMa
     <TileShell label={app.name}>
       <TileHeading icon={<AppWindow size={20} aria-hidden />} name={app.name} status={<StatusPill tone={state.tone}>{state.label}</StatusPill>} meta={meta} />
       <Description text={app.manifest.description ?? null} />
+      {canManage && onAgentAccess && parts.length > 0 && (
+        <div className="mt-3 space-y-1.5" role="group" aria-label={`What Defty and agents can do in ${app.name}`}>
+          {parts.map((part) => <AgentAccessPicker key={part.id} module={part} label={part.manifest.name || part.slug} disabled={locked} onChange={(value) => onAgentAccess(part, value)} />)}
+        </div>
+      )}
       <div className="mt-auto flex items-center gap-2 pt-4">
         <Link href={href} className={`${buttonBase} flex-1`} style={app.state === 'staged' && canManage ? primary : quiet}>
           {app.state === 'staged' && canManage ? 'Review and turn on' : canManage ? 'Manage' : 'Details'}
@@ -195,11 +218,13 @@ export function AvailableAppTile({
   module,
   canManage,
   busy,
+  locked = false,
   onInstall,
 }: {
   module: BundledModule;
   canManage: boolean;
   busy: boolean;
+  locked?: boolean;
   onInstall: () => void;
 }) {
   return (
@@ -210,7 +235,7 @@ export function AvailableAppTile({
         <button
           type="button"
           onClick={onInstall}
-          disabled={!canManage || busy}
+          disabled={!canManage || busy || locked}
           className={`${buttonBase} w-full`}
           style={canManage ? primary : quiet}
           aria-label={canManage ? `Install ${module.name}` : `Only owners and admins can install ${module.name}`}

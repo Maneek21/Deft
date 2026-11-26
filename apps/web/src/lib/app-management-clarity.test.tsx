@@ -27,14 +27,14 @@ test('admin card leads with installation state and keeps technical and managemen
   assert.ok(html.indexOf('Open Home') < html.indexOf('App administration'));
   assert.match(html, /Manage connections/u);
   assert.doesNotMatch(html, /Declarative workspace App|Reviewed Runtime App|0 Modules|<details[^>]*\bopen/u);
-  assert.match(html, /<summary[^>]*>App administration<\/summary>.*Stage upgrade.*Disable.*Action setup.*Update review/u);
+  assert.match(html, /<summary[^>]*>App administration<\/summary>.*Stage upgrade.*Turn off.*Action setup.*Update review/u);
   assert.match(html, /<summary[^>]*>Package details<\/summary>/u);
 });
 
 test('admin presentation retains owner gates and staged access review', () => {
   const member = card(false);
   assert.match(member, /Open Home/u);
-  assert.doesNotMatch(member, /Stage upgrade|Disable<\/button>|Action setup|Update review|Manage connections/u);
+  assert.doesNotMatch(member, /Stage upgrade|Turn off<\/button>|Action setup|Update review|Manage connections/u);
   const staged = card(true, 'staged');
   assert.match(staged, /Needs review · approve access before use.*Access review/u);
   assert.doesNotMatch(staged, /Open Home|Action setup|Update review/u);

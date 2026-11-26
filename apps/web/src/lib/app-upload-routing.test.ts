@@ -139,3 +139,22 @@ test('a manifest the browser check refuses reads as at most three where-and-what
   assert.equal(readableManifestError(withLines), 'one\ntwo\nthree');
   assert.equal(readableManifestError(new Error('Plain words.')), 'Plain words.');
 });
+
+test('review fixes: size wording, BOM, app files win over a stray package_format, App Kit parts stay reachable', () => {
+  assert.throws(() => checkAppUploadFile({ name: 'big.json', size: APP_UPLOAD_MAX_BYTES + 1 }), (error: Error) => {
+    assert.doesNotMatch(error.message, /This file is 1 MB\./);
+    assert.match(error.message, /This file is 1\.1 MB\. App files must be 1 MB or smaller/);
+    return true;
+  });
+  assert.equal(classifyAppUpload(`﻿${hiringSource}`, { appPackagesEnabled: true }).kind, 'module');
+  assert.equal(classifyAppUpload(JSON.stringify({ ...hiring, package_format: 'deft.app.package.v1' }), { appPackagesEnabled: false }).kind, 'module');
+  assert.doesNotMatch((() => { try { classifyAppUpload(JSON.stringify({ compatibility: {}, modules: [] }), { appPackagesEnabled: true }); return ''; } catch (error) { return (error as Error).message; } })(), /`/);
+
+  const part = installed({ id: 'part', slug: 'inbox', moduleId: 'io.example.inbox', owningAppInstallationId: 'app-1', manifest: { ...installed().manifest, name: 'Inbox' } });
+  const withPackage = buildAppsHome({ modules: [part], bundled: [], apps: [appPackage()] });
+  assert.deepEqual(withPackage.installed.map((item) => item.kind), ['package']);
+  const first = withPackage.installed[0];
+  assert.deepEqual(first?.kind === 'package' ? first.parts.map((module) => module.slug) : null, ['inbox']);
+  const packagesOff = buildAppsHome({ modules: [part], bundled: [], apps: [] });
+  assert.deepEqual(packagesOff.installed.map((item) => `${item.kind}:${item.name}`), ['module:Inbox']);
+});

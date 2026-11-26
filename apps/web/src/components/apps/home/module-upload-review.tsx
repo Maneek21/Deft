@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { Download, FileCheck2, Loader2, RefreshCw, X } from 'lucide-react';
 import type { ModuleManifestPreview, ModuleManifestUploadDecision } from '@/lib/modules';
 
@@ -26,6 +26,8 @@ export function ModuleUploadReview({
   summary?: ReactNode;
 }) {
   const upgrade = decision.mode === 'upgrade';
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { headingRef.current?.focus(); }, []);
   const fromVersion = upgrade ? decision.target.manifest.version : null;
   return (
     <section
@@ -41,7 +43,7 @@ export function ModuleUploadReview({
           <p className="text-[0.6875rem] font-medium uppercase tracking-wide" style={{ color: 'var(--primary)' }}>
             {upgrade ? 'Check the update' : 'Check before installing'}
           </p>
-          <h2 id="app-upload-review-title" className="mt-0.5 break-words text-[0.9375rem] font-semibold" style={{ color: 'var(--on-surface)' }}>
+          <h2 id="app-upload-review-title" ref={headingRef} tabIndex={-1} className="mt-0.5 outline-none break-words text-[0.9375rem] font-semibold" style={{ color: 'var(--on-surface)' }}>
             {preview.name}{' '}
             <span className="font-normal" style={{ color: 'var(--on-surface-variant)' }}>
               {upgrade && fromVersion ? `v${fromVersion} → v${preview.version}` : `v${preview.version}`}

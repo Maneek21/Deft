@@ -68,6 +68,7 @@ export function BuildYourOwnPanel({
         {canManage ? (
           <div className="flex flex-col gap-2 sm:flex-row md:flex-col md:items-stretch lg:flex-row">
             <button
+              id="apps-upload-button"
               type="button"
               onClick={onUpload}
               disabled={busy}
@@ -171,6 +172,7 @@ export function AppsHomeLists({
                 bundled={item.bundled}
                 canManage={canManage}
                 busy={busyKey === item.module.slug}
+                locked={busyKey !== null}
                 onToggle={() => handlers.onToggleModule(item.module)}
                 onAgentAccess={(value) => handlers.onAgentAccess(item.module, value)}
                 onUploadVersion={() => handlers.onUploadVersion(item.module)}
@@ -178,7 +180,7 @@ export function AppsHomeLists({
                 extraActions={handlers.moduleActions?.(item.module)}
               />
             ) : (
-              <PackageAppTile key={item.key} app={item.app} canManage={canManage} />
+              <PackageAppTile key={item.key} app={item.app} canManage={canManage} parts={item.parts} locked={busyKey !== null} onAgentAccess={handlers.onAgentAccess} />
             ))}
           </div>
         )}
@@ -194,6 +196,7 @@ export function AppsHomeLists({
                 module={module}
                 canManage={canManage}
                 busy={busyKey === module.slug}
+                locked={busyKey !== null}
                 onInstall={() => handlers.onInstallBundled(module)}
               />
             ))}

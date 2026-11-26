@@ -21,8 +21,11 @@ export type ClassifiedAppUpload = { kind: AppUploadKind; source: string };
 /** The largest file the button reads at all: the App package limit (1 MB). */
 export const APP_UPLOAD_MAX_BYTES = Math.max(APP_PACKAGE_MAX_BYTES, MODULE_MANIFEST_MAX_BYTES);
 
+/** Sizes for people: whole numbers when exact, else rounded up to one decimal so a file just over a limit never reads as equal to it. */
 function formatBytes(bytes: number): string {
-  return bytes >= 1024 * 1024 ? `${Math.round(bytes / (1024 * 1024))} MB` : `${Math.round(bytes / 1024)} KB`;
+  const [value, unit] = bytes >= 1024 * 1024 ? [bytes / (1024 * 1024), 'MB'] : [bytes / 1024, 'KB'];
+  const shown = Number.isInteger(value) ? String(value) : (Math.ceil(value * 10) / 10).toFixed(1);
+  return `${shown === '0.0' ? '0.1' : shown} ${unit}`;
 }
 
 /** Checks a chosen file before it is read. Throws readable text. */
@@ -66,7 +69,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function classifyAppUpload(source: string, options: { appPackagesEnabled: boolean }): ClassifiedAppUpload {
   let value: unknown;
   try {
-    value = JSON.parse(source);
+    value = JSON.parse(source.replace(/^\uFEFF/u, ''));
   } catch (error) {
     throw new Error(jsonErrorText(error, source));
   }
@@ -74,7 +77,9 @@ export function classifyAppUpload(source: string, options: { appPackagesEnabled:
     throw new Error('An app file is one JSON object that starts with {. This file holds something else.');
   }
   const byteLength = new TextEncoder().encode(source).byteLength;
-  if (typeof value.package_format === 'string' && value.package_format.startsWith('deft.app.package')) {
+  // A file with record types is an app file, even if it also carries a stray package_format.
+  const looksLikeAppFile = Array.isArray(value.collections) || ((value.schema_version === '1' || value.schema_version === '2') && typeof value.slug === 'string' && !('compatibility' in value));
+  if (!looksLikeAppFile && typeof value.package_format === 'string' && value.package_format.startsWith('deft.app.package')) {
     if (!options.appPackagesEnabled) {
       throw new Error('This is an App Kit package, and App Kit packages are not available on this workspace. Upload an app file instead.');
     }
@@ -83,14 +88,14 @@ export function classifyAppUpload(source: string, options: { appPackagesEnabled:
     }
     return { kind: 'app_package', source };
   }
-  if (Array.isArray(value.collections) || ((value.schema_version === '1' || value.schema_version === '2') && typeof value.slug === 'string' && !('compatibility' in value))) {
+  if (looksLikeAppFile) {
     if (byteLength > MODULE_MANIFEST_MAX_BYTES) {
       throw new Error(`This app file is ${formatBytes(byteLength)}. App files must be ${formatBytes(MODULE_MANIFEST_MAX_BYTES)} or smaller.`);
     }
     return { kind: 'module', source };
   }
   if (isRecord(value.compatibility) && Array.isArray(value.modules)) {
-    throw new Error('This is an App Kit source file (deft.app.json). Run `deft app build` and upload the package it writes to .deft/app.deftapp.json.');
+    throw new Error('This is an App Kit source file (deft.app.json). Run deft app build and upload the package it writes to .deft/app.deftapp.json.');
   }
   throw new Error("Deft can't tell what this file is. Upload an app file: a JSON object with \"id\", \"slug\", \"name\", \"version\" and \"collections\".");
 }
@@ -145,14 +150,15 @@ export const APP_PACKAGE_INSPECT_REQUEST = {
 
 export type AppsHomeItem =
   | { kind: 'module'; key: string; name: string; description: string | null; module: ModuleInstallation; bundled: BundledModule | null }
-  | { kind: 'package'; key: string; name: string; description: string | null; app: AppInstallation };
+  | { kind: 'package'; key: string; name: string; description: string | null; app: AppInstallation; parts: ModuleInstallation[] };
 
 export type AppsHome = { installed: AppsHomeItem[]; available: BundledModule[]; total: number };
 
 /**
  * One list of everything installed, whatever its format, plus the bundled apps
  * not installed yet. Modules inside an App Kit package appear under that
- * package, not on their own.
+ * package (as its parts), not on their own, unless the package itself is not
+ * listed (App Kit packages off), so their agent access stays reachable.
  */
 export function buildAppsHome(input: {
   modules: ModuleInstallation[];
@@ -161,8 +167,9 @@ export function buildAppsHome(input: {
   query?: string;
 }): AppsHome {
   const bundledBySlug = new Map(input.bundled.map((module) => [module.slug, module]));
+  const packageIds = new Set(input.apps.map((app) => app.id));
   const items: AppsHomeItem[] = [
-    ...input.modules.filter((module) => !module.owningAppInstallationId).map((module): AppsHomeItem => ({
+    ...input.modules.filter((module) => !module.owningAppInstallationId || !packageIds.has(module.owningAppInstallationId)).map((module): AppsHomeItem => ({
       kind: 'module',
       key: `module:${module.id}`,
       name: module.manifest.name || module.slug,
@@ -176,6 +183,7 @@ export function buildAppsHome(input: {
       name: app.name,
       description: app.manifest.description ?? null,
       app,
+      parts: input.modules.filter((module) => module.owningAppInstallationId === app.id),
     })),
   ].sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }));
   const installedSlugs = new Set(input.modules.map((module) => module.slug));
