@@ -1,10 +1,12 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
 import { api } from '@/lib/api';
+import { changeMemberRole, driveMembersKey, fetchJson, removeMember, useRefreshDrive, type MemberRole } from '@/lib/drive-actions';
 import { formatRelative } from '@/lib/time';
 
-type Role = 'full' | 'edit' | 'comment' | 'view';
+type Role = MemberRole;
 type Member = {
   id: string; principal_type: 'user' | 'space'; principal_id: string; role: Role; is_link: boolean; name: string | null;
 };
@@ -15,12 +17,6 @@ type MembersResponse = { members: Member[]; admin_changes: AdminChange[]; admin_
 
 const ROLES: Role[] = ['full', 'edit', 'comment', 'view'];
 const ROLE_LABEL: Record<Role, string> = { full: 'Full access', edit: 'Can edit', comment: 'Can comment', view: 'Can view' };
-
-async function fetchMembers(path: string): Promise<MembersResponse> {
-  const res = await api.get(path);
-  if (!res.ok) throw new Error(`Request failed (${res.status})`);
-  return res.json() as Promise<MembersResponse>;
-}
 
 /** Hidden names come back null: show a neutral label, never an id (rule C4). */
 const memberLabel = (m: Member) => m.name ?? (m.principal_type === 'space' ? 'A chat' : 'Someone');
@@ -35,18 +31,24 @@ function describeChange(change: AdminChange): string {
 
 /** Members of a drive, for people with full access (or an admin opening the admin path). */
 export function DriveMembersPanel({ driveId }: { driveId: string }) {
-  const key = `/api/drives/${driveId}/members`;
-  const { data, error, mutate } = useSWR<MembersResponse>(key, fetchMembers);
-  const changeRole = async (member: Member, role: Role) => {
-    await api.patch(`${key}/${member.id}`, { role });
-    await mutate();
+  const { data, error, mutate } = useSWR<MembersResponse>(driveMembersKey(driveId), fetchJson);
+  const refreshDrive = useRefreshDrive(driveId);
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const run = async (write: () => ReturnType<typeof removeMember>) => {
+    if (pending) return;
+    setPending(true);
+    setMessage(null);
+    const outcome = await write();
+    if (!outcome.ok) setMessage(outcome.message);
+    // Success or not, re-read: access may have changed under us (our own included).
+    await Promise.all([mutate(), refreshDrive()]);
+    setPending(false);
   };
-  const remove = async (member: Member) => {
-    await api.delete(`${key}/${member.id}`);
-    await mutate();
-  };
-  if (error) return <p className="text-[0.8125rem]" style={{ color: 'var(--outline)' }}>Could not load the members.</p>;
-  if (!data) return null;
+
+  if (error) return <p role="alert" className="text-[0.8125rem]" style={{ color: 'var(--outline)' }}>Could not load the members.</p>;
+  if (!data) return <p className="text-[0.8125rem]" style={{ color: 'var(--outline)' }}>Loading members...</p>;
   return (
     <section aria-label="Members" className="flex flex-col gap-2">
       <h2 className="text-[0.9375rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Members</h2>
@@ -62,6 +64,7 @@ export function DriveMembersPanel({ driveId }: { driveId: string }) {
           ))}
         </ul>
       )}
+      {message && <p role="alert" className="text-[0.8125rem]" style={{ color: 'var(--error, #b3261e)' }}>{message}</p>}
       <ul className="flex flex-col">
         {data.members.map((member) => (
           <li key={member.id} className="flex items-center gap-2 py-1.5 text-[0.875rem]" style={{ color: 'var(--on-surface)' }}>
@@ -69,16 +72,18 @@ export function DriveMembersPanel({ driveId }: { driveId: string }) {
             <select
               aria-label={`Role for ${memberLabel(member)}`}
               value={member.role}
-              onChange={(e) => { void changeRole(member, e.target.value as Role); }}
-              className="rounded-md px-2 py-1 text-[0.8125rem]"
+              disabled={pending}
+              onChange={(e) => { const role = e.target.value as Role; void run(() => changeMemberRole(api, driveId, member.id, role)); }}
+              className="rounded-md px-2 py-1 text-[0.8125rem] disabled:opacity-50"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--on-surface)' }}
             >
               {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
             </select>
             <button
               type="button"
-              onClick={() => { void remove(member); }}
-              className="text-[0.8125rem] px-2 py-1 rounded-md"
+              disabled={pending}
+              onClick={() => { void run(() => removeMember(api, driveId, member.id)); }}
+              className="text-[0.8125rem] px-2 py-1 rounded-md disabled:opacity-50"
               style={{ color: 'var(--outline)' }}
             >
               Remove

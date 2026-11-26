@@ -1,21 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
 import { ChevronRight, FileText, Folder, FolderOpen, Plus } from 'lucide-react';
 import { api } from '@/lib/api';
+import { DRIVES_KEY, driveTreeKey, ensureMyDrive, fetchJson } from '@/lib/drive-actions';
 import { buildDriveTree, sidebarDrives, type DocumentDto, type DriveListItem, type DriveTreeNode, type FolderDto } from '@/lib/drive-tree';
 import { NewDriveDialog } from './new-drive-dialog';
 
-export const DRIVES_KEY = '/api/drives';
-export const driveTreeKey = (driveId: string) => `/api/drives/${driveId}/tree`;
-
-async function fetchJson<T>(path: string): Promise<T> {
-  const res = await api.get(path);
-  if (!res.ok) throw new Error(`Request failed (${res.status})`);
-  return res.json() as Promise<T>;
-}
+export { DRIVES_KEY, driveTreeKey };
 
 export function useDrives() {
   return useSWR<{ drives: DriveListItem[] }>(DRIVES_KEY, fetchJson, { revalidateOnFocus: true });
@@ -94,7 +88,9 @@ function DriveBranch({ drive, label, pathname, onNav }: { drive: DriveListItem; 
         <div className="pl-3">
           {tree.error ? (
             <p className="px-2 py-1 text-[0.75rem]" style={{ color: 'var(--outline)' }}>Could not load this drive.</p>
-          ) : tree.data && nodes.length === 0 ? (
+          ) : !tree.data ? (
+            <p className="px-2 py-1 text-[0.75rem]" style={{ color: 'var(--outline)' }}>Loading...</p>
+          ) : nodes.length === 0 ? (
             <p className="px-2 py-1 text-[0.75rem]" style={{ color: 'var(--outline)' }}>Nothing here yet.</p>
           ) : (
             <TreeNodes nodes={nodes} depth={0} pathname={pathname} onNav={onNav} />
@@ -107,10 +103,23 @@ function DriveBranch({ drive, label, pathname, onNav }: { drive: DriveListItem; 
 
 /** The sidebar's contextual area on /drive and /d/: My drive, your drives, Browse, and + New drive (not for guests). */
 export function DriveSidebarContent({ role, pathname, onNav }: { role?: string; pathname: string; onNav?: () => void }) {
-  const { data, mutate } = useDrives();
+  const { data, error, mutate } = useDrives();
   const [creating, setCreating] = useState(false);
+  const [mineFailed, setMineFailed] = useState(false);
+  const asked = useRef(false);
   const { mine, others } = sidebarDrives(data?.drives ?? []);
   const isGuest = role === 'guest';
+
+  // Everyone has a My drive: if the list holds none of the caller's own, make it once.
+  useEffect(() => {
+    if (!data || asked.current) return;
+    asked.current = true;
+    void ensureMyDrive(data.drives, api).then((outcome) => {
+      if (!outcome) return;
+      if (outcome.ok) void mutate();
+      else setMineFailed(true);
+    });
+  }, [data, mutate]);
   return (
     <div className="px-3 pt-5 pb-1">
       <div className="flex items-center justify-between px-2 mb-2">
@@ -118,6 +127,9 @@ export function DriveSidebarContent({ role, pathname, onNav }: { role?: string; 
           Drive
         </span>
       </div>
+      {error && !data && <p role="alert" className="px-2 py-1 text-[0.75rem]" style={{ color: 'var(--outline)' }}>Could not load your drives.</p>}
+      {!data && !error && <p className="px-2 py-1 text-[0.75rem]" style={{ color: 'var(--outline)' }}>Loading drives...</p>}
+      {mineFailed && !mine && <p role="alert" className="px-2 py-1 text-[0.75rem]" style={{ color: 'var(--outline)' }}>Could not open My drive.</p>}
       {mine && <DriveBranch drive={mine} label="My drive" pathname={pathname} onNav={onNav} />}
       {others.map((drive) => <DriveBranch key={drive.id} drive={drive} label={drive.name} pathname={pathname} onNav={onNav} />)}
       <Link href="/drive" onClick={onNav} className={rowClass} style={rowStyle(pathname === '/drive')}>

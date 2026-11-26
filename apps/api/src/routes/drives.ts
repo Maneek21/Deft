@@ -93,7 +93,7 @@ import { emitDocumentEvent } from '../lib/document-events.js';
 import { driveTrash, driveTree } from '../lib/documents.js';
 import { driveAccess, lockActorInTx, type DriveAccess } from '../lib/drive-locks.js';
 import {
-  canHoldDocumentAccessLocked, driveListQuery, drivesWithoutManagerQuery, ensureWorkspaceDrive, finishDriveHandover, frozenDrivesQuery,
+  canHoldDocumentAccessLocked, driveListQuery, drivesWithoutManagerQuery, ensurePersonalDrive, ensureWorkspaceDrive, finishDriveHandover, frozenDrivesQuery,
   handOverPersonalDriveInTx, PrincipalCannotHoldAccessError,
 } from '../lib/drives.js';
 import { emitVisibleNotifications } from '../lib/notification-delivery.js';
@@ -437,12 +437,15 @@ driveRoutes.get('/', async (c) => {
     const result = await db.execute(driveListQuery(user.id, user.org_id));
     const rows = result.rows as Array<{
       id: string; name: string; icon: string | null; kind: string; system_key: string | null; default_role: string | null;
-      frozen: boolean; role: DocRole | null; admin_listed: boolean; pinned: boolean;
+      frozen: boolean; role: DocRole | null; admin_listed: boolean; pinned: boolean; is_mine: boolean; is_member: boolean;
     }>;
+    // is_member: a direct grant, or a seat in a chat that holds one (never an admin's implicit access or an open drive's default).
+    // is_mine: the caller's own personal drive.
     return c.json({
       drives: rows.map((row) => ({
         id: row.id, name: row.name, icon: row.icon, kind: row.kind, system_key: row.system_key, role: row.role,
         default_role: row.default_role, frozen: row.frozen, pinned: row.pinned, admin_listed: row.role === null && row.admin_listed,
+        is_member: row.is_member === true, is_mine: row.is_mine === true,
       })),
     });
   } catch {
@@ -494,6 +497,21 @@ driveRoutes.get('/frozen', async (c) => {
   }
 });
 
+// POST /api/drives/mine: the caller's own personal drive, made if it isn't
+// there yet (idempotent). Every person has one, guests included. Registered before /:id.
+driveRoutes.post('/mine', async (c) => {
+  try {
+    const user = c.get('user');
+    const drive = await ensurePersonalDrive(user.org_id, user.id);
+    return c.json({ drive: { ...driveShape(drive, 'full', false), is_mine: true, is_member: true } });
+  } catch (error) {
+    if (error instanceof PrincipalCannotHoldAccessError) {
+      return answer(c, refusal(403, 'Not an active member of this workspace', 'ORG_MEMBERSHIP_INACTIVE'));
+    }
+    return failed(c, 'open your drive');
+  }
+});
+
 // POST /api/drives: any full member creates an open or private drive and gets full access to it.
 driveRoutes.post('/', async (c) => {
   try {
@@ -519,7 +537,7 @@ driveRoutes.post('/', async (c) => {
       });
       return created!;
     });
-    return c.json({ drive: driveShape(drive, 'full', false) }, 201);
+    return c.json({ drive: { ...driveShape(drive, 'full', false), is_member: true, is_mine: false } }, 201);
   } catch (error) {
     if (error instanceof Refused) return answer(c, error.refusal);
     return failed(c, 'create the drive');

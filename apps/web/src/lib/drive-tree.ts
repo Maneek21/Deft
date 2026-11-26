@@ -13,21 +13,23 @@ export type DriveTreeNode = { type: 'folder' | 'document'; id: string; title: st
 export type DriveListItem = {
   id: string; name: string; icon: string | null; kind: 'open' | 'private' | 'personal'; system_key: string | null;
   role: 'full' | 'edit' | 'comment' | 'view' | null; default_role: string | null; frozen: boolean; pinned: boolean; admin_listed: boolean;
+  /** A direct grant, or a seat in a chat that holds one. Never an admin's implicit access or an open drive's default. */
+  is_member: boolean;
+  /** The caller's own personal drive. */
+  is_mine: boolean;
 };
 
-const RANK: Record<string, number> = { view: 1, comment: 2, edit: 3, full: 4 };
-
-/** The drives the sidebar lists: yours, then those you belong to or pinned. Others are found through Browse. */
+/** The drives the sidebar lists: your own, then those you belong to or pinned. Others are found through Browse. */
 export function sidebarDrives(drives: DriveListItem[]): { mine: DriveListItem | null; others: DriveListItem[] } {
   const openable = drives.filter((d) => d.role !== null && !d.frozen);
-  const mine = openable.find((d) => d.kind === 'personal') ?? null;
-  const others = openable.filter((d) => {
-    if (d.kind === 'personal') return false;
-    if (d.kind === 'private' || d.system_key || d.pinned) return true;
-    // An open drive you hold more on than everyone's default is one you were added to.
-    return (RANK[d.role!] ?? 0) > (RANK[d.default_role ?? ''] ?? 0);
-  });
+  const mine = openable.find((d) => d.is_mine) ?? null;
+  const others = openable.filter((d) => !d.is_mine && (d.is_member || d.pinned));
   return { mine, others };
+}
+
+/** The Drive nav item also stays active on document pages (/d/…); /drive/… is covered by the generic check. */
+export function isDriveNavActive(pathname: string, href: string): boolean {
+  return href === '/drive' && pathname.startsWith('/d/');
 }
 
 const byPositionThenTitle = (a: { position: number; title: string; id: string }, b: { position: number; title: string; id: string }) =>

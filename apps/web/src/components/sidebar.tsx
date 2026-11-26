@@ -66,6 +66,7 @@ import { canBrowsePublicSpaces } from '@/lib/public-spaces';
 import { SavedMessages } from './saved-messages';
 import { CreateProjectModal } from './create-project-modal';
 import { DriveSidebarContent } from './drive/drive-sidebar';
+import { isDriveNavActive } from '@/lib/drive-tree';
 import { useInboxCount } from '@/hooks/use-inbox-count';
 import { AppMenu, type AppMenuItem } from './overlay-primitives';
 import { getSocket } from '@/lib/socket';
@@ -1048,7 +1049,7 @@ export function Sidebar({
         {visibleNavItems.map((item) => {
           const active = item.kind === 'app'
             ? isAppNavigationGroupActive(pathname, item, appNavItems)
-            : isPrimaryNavigationItemActive(pathname, item.href);
+            : isPrimaryNavigationItemActive(pathname, item.href) || isDriveNavActive(pathname, item.href);
           return (
             <div key={item.kind === 'app' ? item.installationId : item.href}>
               <Link
@@ -1195,7 +1196,7 @@ export function Sidebar({
       {visibleNavItems.map((item) => {
         const active = item.kind === 'app'
           ? isAppNavigationGroupActive(pathname, item, appNavItems)
-          : isPrimaryNavigationItemActive(pathname, item.href);
+          : isPrimaryNavigationItemActive(pathname, item.href) || isDriveNavActive(pathname, item.href);
         return (
           <Link key={item.kind === 'app' ? item.installationId : item.href} href={item.href} title={item.name}
             className="w-9 h-9 flex items-center justify-center rounded-full"

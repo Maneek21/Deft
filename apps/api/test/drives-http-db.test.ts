@@ -978,3 +978,45 @@ test('malformed JSON is refused with 400 VALIDATION_ERROR, even where every fiel
   const { rows: [row] } = await fx.client.query('SELECT name FROM drives WHERE id = $1', [drive]);
   assert.equal(row.name, 'Malformed', 'nothing changed');
 });
+
+test('F11: is_member is true for a direct grant at the default role and for a chat grant, and false for implicit access', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { admin, member, member2 } = fx.people;
+  const equalDefault = await createDrive(member2, { name: 'Equal default', kind: 'open', default_role: 'edit' });
+  const notAdded = await createDrive(member2, { name: 'Not added', kind: 'open', default_role: 'edit' });
+  await addMember(member2, equalDefault, { user: member }, 'edit');
+  const chatDrive = await createDrive(member2, { name: 'Via chat', kind: 'private' });
+  await addMember(member2, chatDrive, { space: fx.spaces.team }, 'view');
+  const flags = (rows: Array<Record<string, any>>) => Object.fromEntries(rows.map((row) => [row.id, row.is_member]));
+  const mine = flags(await listOf(member));
+  assert.equal(mine[equalDefault], true, 'a grant at the default role still counts');
+  assert.equal(mine[notAdded], false, 'the open drive default is not membership');
+  assert.equal(mine[chatDrive], true, 'a chat member is a member');
+  assert.equal(flags(await listOf(member2))[equalDefault], true);
+  const adminRows = flags(await listOf(admin));
+  assert.equal(adminRows[equalDefault], false, 'implicit full on an open drive is not membership');
+  assert.equal(adminRows[notAdded], false);
+  assert.equal(adminRows[chatDrive], false, 'an admin-listed private drive is not membership');
+});
+
+test('F11: is_mine marks only the caller’s own personal drive, and POST /api/drives/mine is idempotent, guests included', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { guest, member, member2 } = fx.people;
+  const first = await call(member, 'POST', '/api/drives/mine', undefined, 200);
+  const second = await call(member, 'POST', '/api/drives/mine', undefined, 200);
+  assert.equal(first.drive.id, second.drive.id);
+  assert.equal(first.drive.kind, 'personal');
+  assert.equal(first.drive.is_mine, true);
+  const { rows } = await fx.client.query(
+    `SELECT id FROM drives WHERE org_id = $1 AND kind = 'personal' AND owner_user_id = $2 AND NOT is_deleted AND frozen_at IS NULL`, [fx.orgId, member]);
+  assert.equal(rows.length, 1, 'one personal drive');
+  // member's drive, shared with member2, is listed for member2 but is not theirs.
+  await addMember(member, first.drive.id, { user: member2 }, 'view');
+  const seen = (await listOf(member2)).find((row) => row.id === first.drive.id)!;
+  assert.equal(seen.is_mine, false);
+  assert.equal(seen.is_member, true);
+  assert.equal((await listOf(member)).find((row) => row.id === first.drive.id)!.is_mine, true);
+  const guestDrive = await call(guest, 'POST', '/api/drives/mine', undefined, 200);
+  assert.equal(guestDrive.drive.kind, 'personal');
+  assert.equal(guestDrive.drive.is_mine, true);
+});

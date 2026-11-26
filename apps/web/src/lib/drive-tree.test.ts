@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildDriveTree, type DocumentDto, type FolderDto } from './drive-tree';
+import { buildDriveTree, isDriveNavActive, sidebarDrives, type DocumentDto, type DriveListItem, type FolderDto } from './drive-tree';
 
 const folder = (id: string, name: string, position: number, parent: string | null = null): FolderDto => ({
   id, name, position, parent_folder_id: parent,
@@ -28,6 +28,32 @@ test('buildDriveTree nests folders and sub-pages and orders by position, then ti
   const d1 = tree[3]!;
   assert.deepEqual(d1.children.map((n) => n.id), ['d6', 'd5']);
   assert.equal(d1.title, 'Apple');
+});
+
+const item = (over: Partial<DriveListItem>): DriveListItem => ({
+  id: 'd', name: 'D', icon: null, kind: 'private', system_key: null, role: 'full', default_role: null, frozen: false, pinned: false,
+  admin_listed: false, is_member: false, is_mine: false, ...over,
+});
+
+test('sidebarDrives picks My drive by is_mine and lists member or pinned drives, not implicit access', () => {
+  const { mine, others } = sidebarDrives([
+    item({ id: 'sam', name: 'Sam', kind: 'personal', is_member: true }),
+    item({ id: 'me', name: 'My drive', kind: 'personal', is_mine: true, is_member: true }),
+    item({ id: 'eq', name: 'Equal', kind: 'open', role: 'edit', default_role: 'edit', is_member: true }),
+    item({ id: 'adm', name: 'Admin implicit', kind: 'open', role: 'full', default_role: 'edit' }),
+    item({ id: 'pin', name: 'Pinned', kind: 'open', role: 'edit', default_role: 'edit', pinned: true }),
+    item({ id: 'ws', name: 'Workspace', kind: 'open', system_key: 'workspace', role: 'edit', default_role: 'edit' }),
+    item({ id: 'frz', name: 'Frozen', is_member: true, frozen: true }),
+    item({ id: 'lst', name: 'Listed only', role: null, admin_listed: true, is_member: false }),
+  ]);
+  assert.equal(mine?.id, 'me');
+  assert.deepEqual(others.map((d) => d.id), ['sam', 'eq', 'pin']);
+});
+
+test('the Drive nav item is active on document routes too', () => {
+  assert.equal(isDriveNavActive('/d/abc', '/drive'), true);
+  assert.equal(isDriveNavActive('/drive/x', '/drive'), false, 'the generic check already covers /drive/…');
+  assert.equal(isDriveNavActive('/d/abc', '/tasks'), false);
 });
 
 test('buildDriveTree puts an orphan at the root instead of dropping it', () => {

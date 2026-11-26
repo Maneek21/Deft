@@ -349,6 +349,12 @@ export function driveListQuery(userId: string, orgId: string): SQL {
         CASE WHEN ${at('full')} THEN 'full' WHEN ${at('edit')} THEN 'edit' WHEN ${at('comment')} THEN 'comment'
           WHEN ${at('view')} THEN 'view' END AS role,
         ${adminListedDriveCondition(userId, orgId)} AS admin_listed,
+        (${drives.kind} = 'personal' AND ${drives.owner_user_id} = ${userId}) AS is_mine,
+        EXISTS (SELECT 1 FROM drive_members own_grant
+          WHERE own_grant.drive_id = ${drives.id}
+            AND ((own_grant.principal_type = 'user' AND own_grant.principal_id = ${userId})
+              OR (own_grant.principal_type = 'space' AND EXISTS (SELECT 1 FROM space_members own_seat
+                WHERE own_seat.space_id = own_grant.principal_id AND own_seat.user_id = ${userId})))) AS is_member,
         EXISTS (SELECT 1 FROM doc_favorites drive_pin
           WHERE drive_pin.org_id = ${drives.org_id} AND drive_pin.user_id = ${userId}
             AND drive_pin.target_type = 'drive' AND drive_pin.target_id = ${drives.id}) AS pinned
