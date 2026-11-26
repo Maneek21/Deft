@@ -33,7 +33,7 @@ import {
   visibleDriveCondition,
 } from '../src/lib/document-access.js';
 import { breadcrumbChainQuery, driveTreeDocumentsQuery, favoriteDocumentsQuery, recentDocumentsQuery } from '../src/lib/documents.js';
-import { newlyReachedChatQuery } from '../src/lib/document-shares.js';
+import { newlyReachedQuery } from '../src/lib/document-shares.js';
 import { driveListQuery, drivesWithoutManagerQuery } from '../src/lib/drives.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { planningGrowth, type Growth } from './fixtures/planning-growth.js';
@@ -110,8 +110,11 @@ test('the document access check plans within budget', async (t) => {
       ['documentRoleFor (point lookup)', query(documentRoleQuery(member, fx.orgId, document!.id))],
       // Who in a chat can't open a document (the posting prompt).
       ['spaceMembersWhoCannotOpen', query(spaceMembersWhoCannotOpenQuery(fx.orgId, fx.spaces.team, document!.id))],
-      // Whom a share to a chat newly reaches, before it is written (F9 fix round 1).
-      ['newly reached by a chat share', query(newlyReachedChatQuery(fx.orgId, fx.people.owner, fx.spaces.team, document!.id, 'edit'))],
+      // Whom a share newly reaches on each page it writes, before it is written (F9; consult S-F3): a chat's
+      // members over a tree of 50 pages, and a person.
+      ['newly reached by a chat share, per page', query(newlyReachedQuery(fx.orgId, fx.people.owner, 'space', fx.spaces.team,
+        (await db.select({ id: documents.id }).from(documents).where(eq(documents.org_id, fx.orgId)).limit(50)).map((row) => row.id), 'edit'))],
+      ['newly reached by a person share, per page', query(newlyReachedQuery(fx.orgId, fx.people.owner, 'user', member, [document!.id], 'edit'))],
       // Who is sent document:updated for a drive's documents (rule C4): one statement for all of them.
       ['documentViewers (events)', query(documentViewersQuery(fx.orgId,
         (await db.select({ id: documents.id }).from(documents).where(eq(documents.org_id, fx.orgId)).limit(50)).map((row) => row.id)))],

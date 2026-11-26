@@ -42,7 +42,7 @@ import {
   softDeleteDocument, updateDocument, viewerDocumentColumns, viewerDocumentInTx,
 } from '../lib/documents.js';
 import {
-  changeShareRole, documentAudience, listDocumentShares, removeShare, roleTooHigh, shareDocument, shareShape,
+  changeShareRole, documentAudience, listDocumentShares, removeShare, shareDocument, shareShape,
 } from '../lib/document-shares.js';
 import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 
@@ -258,11 +258,10 @@ documentRoutes.post('/:id/shares', async (c) => {
     const user = c.get('user');
     const parsed = shareSchema.safeParse(await jsonBody(c));
     if (!parsed.success) return invalid(c);
-    const { role } = parsed.data;
-    if (role === 'full') throw roleTooHigh();
+    // `full` is refused in the library, after the access check (404, then 403, then ROLE_TOO_HIGH).
     const shared = await shareDocument({
       orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), principalType: parsed.data.principal_type,
-      principalId: parsed.data.principal_id, role, includeSubpages: parsed.data.include_subpages ?? true,
+      principalId: parsed.data.principal_id, role: parsed.data.role, includeSubpages: parsed.data.include_subpages ?? true,
     });
     return c.json({ share: shareShape(shared.share), shared_subpages: shared.sharedSubpages, skipped_subpages: shared.skippedSubpages }, 201);
   } catch (error) {
@@ -277,10 +276,9 @@ documentRoutes.patch('/:id/shares/:shareId', async (c) => {
     const user = c.get('user');
     const parsed = shareRoleChangeSchema.safeParse(await jsonBody(c));
     if (!parsed.success) return invalid(c);
-    const { role } = parsed.data;
-    if (role === 'full') throw roleTooHigh();
+    // `full` is refused in the library, after the access check.
     const changed = await changeShareRole({
-      orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), shareId: c.req.param('shareId'), role,
+      orgId: user.org_id, userId: user.id, documentId: c.req.param('id'), shareId: c.req.param('shareId'), role: parsed.data.role,
       includeSubpages: parsed.data.include_subpages ?? true,
     });
     return c.json({ share: changed.share, lowered_subpages: changed.loweredSubpages, skipped_subpages: changed.skippedSubpages });

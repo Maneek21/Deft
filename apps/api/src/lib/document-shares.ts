@@ -14,8 +14,9 @@
 //   seat in the chat, in one snapshot too.
 // The role is checked first without any lock, and again under the locks
 // below: someone who can't see the document gets 404 and a reader 403 before
-// anything is locked, and before anything is said about the recipient. Then
-// come 400 (SELF_SHARE, PRINCIPAL_CANNOT_HOLD_ACCESS) and 409.
+// anything is locked, and before anything is said about the role asked for or
+// the recipient. Then come 400 (ROLE_TOO_HIGH, SELF_SHARE,
+// PRINCIPAL_CANNOT_HOLD_ACCESS) and 409.
 //
 // Recipients. A share made or raised can't name the sharer (400 SELF_SHARE:
 // a drive member about to be removed could otherwise keep the pages; a chat
@@ -65,22 +66,25 @@
 // and finishAccessLoss after the commit. A new or raised share tells
 // listeners after the commit (emitDocumentAccessChanged).
 //
-// Who is told (spec 5.10, as F4 tells people added to a drive): a new share
-// sends one `document_shared` notification for the page shared (subtype
-// `document_share`, with `document_id`) to the people it newly reaches: the
-// person (human or agent), or each human in the chat other than the sharer,
-// whose role on the page was below the share's role before it was written.
-// Someone who could already open it at that role isn't told. The
-// notification is listed and counted only while its reader can open the
-// document (lib/native-mention-visibility.ts), and its attention item is a
-// `document` item (lib/attention.ts). `document:shared { document_id }`
-// goes, for each page the share wrote, to the people it newly reached (an
-// agent in the chat included) who can view that page now (rule C4: emitToUser,
-// never a room). After the commit each step runs on its own, so one that
-// fails never skips the next.
+// Who is told (spec 5.10, as F4 tells people added to a drive). Before the
+// share is written, one statement works out, for each page it will write
+// (the page and the sub-pages the sharer can edit), the people it newly
+// reaches there: the person, or the chat's active members other than the
+// sharer, whose role on that page is below the share's role (consult S-F3).
+// - One `document_shared` notification, for the page shared (subtype
+//   `document_share`, with `document_id`), goes to those newly reached on it:
+//   the person (human or agent), or the humans of the chat. Someone who could
+//   already open it at that role isn't told. It is listed and counted only
+//   while its reader can open the document (lib/native-mention-visibility.ts),
+//   and its attention item is a `document` item (lib/attention.ts).
+// - `document:shared { document_id }` goes, for each page the share wrote, to
+//   the people newly reached on that page (an agent in the chat included) who
+//   can view it now (rule C4: emitToUser, never a room).
+// After the commit each step runs on its own, so one that fails never skips
+// the next.
 import { and, asc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import type { PgTransactionConfig } from 'drizzle-orm/pg-core';
-import { documentShares, documents, drives, type DocShareRole, type DocumentShareRow } from '@deft/db/documents';
+import { documentShares, documents, drives, type DocRole, type DocShareRole, type DocumentShareRow } from '@deft/db/documents';
 import { spaceMembers, spaces, users } from '@deft/db/schema';
 import { db } from './db.js';
 import {
@@ -198,9 +202,22 @@ async function recipientCanHoldInTx(tx: Tx, actor: DriveActor, principalType: Sh
  * order. The tree is read under the drive's lock, which every create, move,
  * delete and restore takes FOR UPDATE. The page must still be live (404) and
  * in `driveId` (409 CONFLICT after a move).
+ *
+ * The drive was read before the locks (liveDriveOf), so the page may have
+ * moved before its lock was granted. That is checked first, with a fresh read
+ * once the drive is locked, so no page is locked for a drive the share doesn't
+ * hold (consult S-F2: locking a moved tree in id order could deadlock with a
+ * second move, which locks the page and then its sub-pages). The read takes
+ * no row lock of its own. While the drive is held, nothing can move or delete
+ * the page, since both need the drive FOR UPDATE. A FOR SHARE on the page,
+ * raised to FOR UPDATE below, would deadlock two shares of the same page.
  */
 async function lockPageAndSubpagesInTx(tx: Tx, orgId: string, driveId: string, documentId: string, includeSubpages: boolean) {
   await tx.select({ id: drives.id }).from(drives).where(and(eq(drives.id, driveId), eq(drives.org_id, orgId))).for('share');
+  const [current] = await tx.select({ drive_id: documents.drive_id, is_deleted: documents.is_deleted }).from(documents)
+    .where(and(eq(documents.id, documentId), eq(documents.org_id, orgId))).limit(1);
+  if (!current || current.is_deleted) throw notFound();
+  if (current.drive_id !== driveId) throw changedMeanwhile();
   const tree = includeSubpages ? await subtreeIds(tx, orgId, documentId, true) : [documentId];
   const rows = await tx.select({ id: documents.id, drive_id: documents.drive_id, is_deleted: documents.is_deleted, title: documents.title })
     .from(documents)
@@ -231,37 +248,56 @@ async function subpageReachInTx(tx: Tx, actor: DriveActor, ids: string[]): Promi
 }
 
 /**
- * The statement newlyReachedInTx runs for a chat: its active members, apart
- * from the sharer, whose role on the document is below `role` now, and
- * whether each is a human. Exported for its planning test.
+ * The statement newlyReachedInTx runs: for each of `documentIds`, the people
+ * a share to the principal reaches (the person; or the chat's members) who
+ * are active in the workspace, apart from the sharer, and whose role on that
+ * page is below `role` now, with whether each is a human. One statement for
+ * every page, with one access check (pages × people rows). Exported for its
+ * planning test.
  */
-export function newlyReachedChatQuery(orgId: string, actorId: string, spaceId: string, documentId: string, role: DocShareRole): SQL {
-  return sql`SELECT reach_seat.user_id, reach_user.kind = 'human' AS human
-    FROM space_members reach_seat
-    JOIN spaces reach_chat ON reach_chat.id = reach_seat.space_id AND reach_chat.org_id = ${orgId}
-    JOIN org_members reach_member ON reach_member.org_id = ${orgId} AND reach_member.user_id = reach_seat.user_id
+export function newlyReachedQuery(orgId: string, actorId: string, principalType: SharePrincipalType, principalId: string,
+  documentIds: readonly string[], role: DocShareRole): SQL {
+  const people = principalType === 'user'
+    ? sql`SELECT ${principalId}::text AS user_id`
+    : sql`SELECT reach_seat.user_id FROM space_members reach_seat
+        JOIN spaces reach_chat ON reach_chat.id = reach_seat.space_id AND reach_chat.org_id = ${orgId}
+        WHERE reach_seat.space_id = ${principalId}`;
+  return sql`SELECT reach_page.id AS document_id, reach_person.user_id, reach_user.kind = 'human' AS human
+    FROM documents reach_page
+    CROSS JOIN (${people}) reach_person
+    JOIN org_members reach_member ON reach_member.org_id = ${orgId} AND reach_member.user_id = reach_person.user_id
       AND reach_member.is_active = true
-    JOIN users reach_user ON reach_user.id = reach_seat.user_id
-    WHERE reach_seat.space_id = ${spaceId} AND reach_seat.user_id <> ${actorId}
-      AND NOT ${visibleDocumentIdSql(sql.raw('reach_seat.user_id'), orgId, sql`${documentId}`, role)}
-    ORDER BY reach_seat.user_id`;
+    JOIN users reach_user ON reach_user.id = reach_person.user_id
+    WHERE reach_page.org_id = ${orgId} AND reach_page.id = ANY(${sql.param([...documentIds])}::text[])
+      AND reach_person.user_id <> ${actorId}
+      AND NOT ${visibleDocumentIdSql(sql.raw('reach_person.user_id'), orgId, sql.raw('reach_page.id'), role)}
+    ORDER BY reach_page.id, reach_person.user_id`;
 }
 
+/** Whom a share newly reaches on one page: `told` get the notification, `reached` the socket event. */
+type PageReach = { told: string[]; reached: string[] };
+
 /**
- * Before the share is written, under its locks: whom it newly reaches on the
- * page (header). `told` get the notification (the person, or the humans of
- * the chat), `reached` the socket event (an agent in the chat too).
+ * Before the share is written, under its locks: whom it newly reaches on each
+ * of `documentIds` (header; consult S-F3), by page. On each page `reached` is
+ * everyone newly reached there (an agent in the chat too) and `told` the
+ * person named, or the humans of the chat. A page nobody newly reaches has
+ * no entry.
  */
-async function newlyReachedInTx(tx: Tx, actor: DriveActor, documentId: string, principalType: SharePrincipalType, principalId: string,
-  role: DocShareRole): Promise<{ told: string[]; reached: string[] }> {
-  if (principalType === 'user') {
-    const before = await documentRoleFor(principalId, actor.org_id, documentId, tx);
-    return roleAtLeast(before, role) ? { told: [], reached: [] } : { told: [principalId], reached: [principalId] };
-  }
-  const rows = (await tx.execute(newlyReachedChatQuery(actor.org_id, actor.id, principalId, documentId, role))).rows as Array<{
-    user_id: string; human: boolean;
+async function newlyReachedInTx(tx: Tx, actor: DriveActor, documentIds: readonly string[], principalType: SharePrincipalType,
+  principalId: string, role: DocShareRole): Promise<Map<string, PageReach>> {
+  const byPage = new Map<string, PageReach>();
+  if (documentIds.length === 0) return byPage;
+  const rows = (await tx.execute(newlyReachedQuery(actor.org_id, actor.id, principalType, principalId, documentIds, role))).rows as Array<{
+    document_id: string; user_id: string; human: boolean;
   }>;
-  return { told: rows.filter((row) => row.human).map((row) => row.user_id), reached: rows.map((row) => row.user_id) };
+  for (const row of rows) {
+    let page = byPage.get(row.document_id);
+    if (!page) byPage.set(row.document_id, page = { told: [], reached: [] });
+    page.reached.push(row.user_id);
+    if (principalType === 'user' || row.human) page.told.push(row.user_id);
+  }
+  return byPage;
 }
 
 /**
@@ -315,7 +351,9 @@ async function finishLoss(loss: PendingAccessLoss): Promise<void> {
 }
 
 export type ShareDocumentInput = {
-  orgId: string; userId: string; documentId: string; principalType: SharePrincipalType; principalId: string; role: DocShareRole;
+  orgId: string; userId: string; documentId: string; principalType: SharePrincipalType; principalId: string;
+  /** `full` is refused with 400 ROLE_TOO_HIGH, after the access check (consult S-F1). */
+  role: DocRole;
   includeSubpages: boolean;
 };
 
@@ -328,13 +366,15 @@ export type ShareDocumentInput = {
  * edit.
  */
 export async function shareDocument(input: ShareDocumentInput): Promise<{ share: DocumentShareRow; sharedSubpages: number; skippedSubpages: number }> {
-  const { orgId, userId, documentId, principalType, principalId, role } = input;
+  const { orgId, userId, documentId, principalType, principalId } = input;
   const actor = actorOf(orgId, userId);
-  let outcome: { share: DocumentShareRow; title: string; written: string[]; skipped: number; told: string[]; reached: string[] };
+  let outcome: { share: DocumentShareRow; title: string; written: string[]; skipped: number; reach: Map<string, PageReach> };
   try {
     outcome = await db.transaction(async (tx) => {
-      // 404 and 403 before any lock (header).
+      // 404 and 403 before any lock (header), then the 400s.
       await requireEditInTx(tx, actor, documentId);
+      if (input.role === 'full') throw roleTooHigh();
+      const role: DocShareRole = input.role;
       if (principalType === 'user' && principalId === userId) throw selfShare();
       const driveId = await liveDriveOf(tx, orgId, documentId);
       if (!driveId) throw notFound();
@@ -347,9 +387,9 @@ export async function shareDocument(input: ShareDocumentInput): Promise<{ share:
         eq(documentShares.document_id, documentId), eq(documentShares.principal_type, principalType), eq(documentShares.principal_id, principalId),
       )).limit(1);
       if (existing) throw alreadyShared();
-      // Before the write: whom it newly reaches, and the sub-pages the sharer may extend it to.
-      const reach = await newlyReachedInTx(tx, actor, documentId, principalType, principalId, role);
+      // Before the write: the sub-pages the sharer may extend it to, and whom it newly reaches on each page.
       const { editable, skipped } = await subpageReachInTx(tx, actor, subpages);
+      const reach = await newlyReachedInTx(tx, actor, [documentId, ...editable], principalType, principalId, role);
       const [share] = await tx.insert(documentShares).values({
         org_id: orgId, document_id: documentId, principal_type: principalType, principal_id: principalId, role, shared_by: userId,
       }).returning();
@@ -364,7 +404,7 @@ export async function shareDocument(input: ShareDocumentInput): Promise<{ share:
           setWhere: sql`${rankSql(sql`${documentShares.role}`)} < ${DOC_ROLE_RANK[role]}`,
         })
         .returning({ document_id: documentShares.document_id });
-      return { share: share!, title: root.title, written: written.map((row) => row.document_id).sort(), skipped, ...reach };
+      return { share: share!, title: root.title, written: written.map((row) => row.document_id).sort(), skipped, reach };
     });
   } catch (error) {
     // The principal triggers refuse anyone outside the workspace, and the
@@ -375,8 +415,9 @@ export async function shareDocument(input: ShareDocumentInput): Promise<{ share:
   }
   const documentIds = [documentId, ...outcome.written];
   emitDocumentAccessChanged(shareChange(orgId, documentIds, principalType, principalId));
-  await tellShared(actor, { id: documentId, title: outcome.title }, principalType, outcome.told);
-  await sendSharedEvents(actor, documentIds, outcome.reached);
+  // The notification is for the page shared; the event goes for every page written. Each to whom it newly reached there.
+  await tellShared(actor, { id: documentId, title: outcome.title }, principalType, outcome.reach.get(documentId)?.told ?? []);
+  await sendSharedEvents(actor, documentIds.map((id) => ({ documentId: id, userIds: outcome.reach.get(id)?.reached ?? [] })));
   return { share: outcome.share, sharedSubpages: outcome.written.length, skippedSubpages: outcome.skipped };
 }
 
@@ -387,14 +428,18 @@ export async function shareDocument(input: ShareDocumentInput): Promise<{ share:
  * access-loss path once for every page changed. Raising follows the
  * recipient rule (never the actor themselves) and changes the page only. The
  * same role changes nothing. The answer is projected as the share list is.
+ * `full` is refused with 400 ROLE_TOO_HIGH, after the access check (consult
+ * S-F1).
  */
-export async function changeShareRole(input: { orgId: string; userId: string; documentId: string; shareId: string; role: DocShareRole;
+export async function changeShareRole(input: { orgId: string; userId: string; documentId: string; shareId: string; role: DocRole;
   includeSubpages: boolean }): Promise<{ share: ReturnType<typeof shareShape>; loweredSubpages: number; skippedSubpages: number }> {
-  const { orgId, userId, documentId, shareId, role } = input;
+  const { orgId, userId, documentId, shareId } = input;
   const actor = actorOf(orgId, userId);
   const outcome = await db.transaction(async (tx) => {
-    // 404 and 403 before any lock (header).
+    // 404 and 403 before any lock (header), then the 400s.
     await requireEditInTx(tx, actor, documentId);
+    if (input.role === 'full') throw roleTooHigh();
+    const role: DocShareRole = input.role;
     const driveId = await liveDriveOf(tx, orgId, documentId);
     if (!driveId) throw notFound();
     // The principal is read first, to lock it in its slot; a share's principal
@@ -541,18 +586,18 @@ async function tellShared(actor: DriveActor, document: { id: string; title: stri
 
 /**
  * After commit: `document:shared { document_id }` for each page the share
- * wrote, to the people it newly reached (newlyReachedInTx) who can view that
- * page now (rule C4). Never throws.
+ * wrote, to the people it newly reached on that page (newlyReachedInTx) who
+ * can view it now (rule C4). Never throws.
  */
-async function sendSharedEvents(actor: DriveActor, documentIds: string[], reachedIds: string[]): Promise<void> {
+async function sendSharedEvents(actor: DriveActor, pages: Array<{ documentId: string; userIds: string[] }>): Promise<void> {
   try {
-    const reached = new Set(reachedIds);
-    reached.delete(actor.id);
-    if (reached.size === 0) return;
-    const viewers = await documentViewers(actor.org_id, documentIds);
+    const reachedOn = new Map(pages.map((page) => [page.documentId, new Set(page.userIds.filter((id) => id !== actor.id))]));
+    const reachedPages = [...reachedOn].filter(([, people]) => people.size > 0).map(([id]) => id);
+    if (reachedPages.length === 0) return;
+    const viewers = await documentViewers(actor.org_id, reachedPages);
     sendDocumentEvent({
       orgId: actor.org_id,
-      documents: viewers.map((viewer) => ({ ...viewer, userIds: viewer.userIds.filter((id) => reached.has(id)) })),
+      documents: viewers.map((viewer) => ({ ...viewer, userIds: viewer.userIds.filter((id) => reachedOn.get(viewer.documentId)?.has(id)) })),
     }, 'document:shared');
   } catch {
     console.error('[document-shares] document:shared could not be sent');

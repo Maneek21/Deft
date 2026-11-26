@@ -880,3 +880,103 @@ test('a share naming the sharer is refused with 400 SELF_SHARE, and so is raisin
   await call(member2, 'DELETE', `/api/documents/${document}/shares/${row}`, undefined, 200);
   assert.deepEqual((await shareRows(document)).map(([type]) => type), ['space']);
 });
+
+// ── Consult fixes (F9 consult round 2) ─────────────────────────────────────
+
+test('a full role is refused after the access check: a stranger gets 404, a viewer 403, an editor 400 ROLE_TOO_HIGH (S-F1)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { admin, member, member2 } = fx.people;
+  const { drive, document } = await documentOf(member, 'Full refused in order');
+  await fx.addDriveMember(drive, { user: member2 }, 'view');
+  const person = await fx.addPerson();
+  await fx.share(document, { user: person }, 'view');
+  const row = await shareIdOf(document, person);
+  const asFull = { principal_type: 'user', principal_id: await fx.addPerson(), role: 'full' };
+  const path = `/api/documents/${document}/shares`;
+  assert.equal((await call(admin, 'POST', path, asFull, 404)).code, 'NOT_FOUND', 'a stranger, POST');
+  assert.equal((await call(admin, 'POST', `/api/documents/${randomUUID()}/shares`, asFull, 404)).code, 'NOT_FOUND', 'no such document');
+  assert.equal((await call(member2, 'POST', path, asFull, 403)).code, 'FORBIDDEN_ROLE', 'a viewer, POST');
+  assert.equal((await call(member, 'POST', path, asFull, 400)).code, 'ROLE_TOO_HIGH', 'an editor, POST');
+  assert.equal((await call(admin, 'PATCH', `${path}/${row}`, { role: 'full' }, 404)).code, 'NOT_FOUND', 'a stranger, PATCH');
+  assert.equal((await call(member2, 'PATCH', `${path}/${row}`, { role: 'full' }, 403)).code, 'FORBIDDEN_ROLE', 'a viewer, PATCH');
+  assert.equal((await call(member, 'PATCH', `${path}/${row}`, { role: 'full' }, 400)).code, 'ROLE_TOO_HIGH', 'an editor, PATCH');
+  assert.deepEqual(await shareRows(document), [['user', person, 'view']]);
+});
+
+test('a document moved before its drive is locked is refused with 409 before its pages are locked; shares of one page run side by side (S-F2)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const { drive, document } = await documentOf(member, 'Moved under a share');
+  const child = await fx.insertDocument({ driveId: drive, parentDocumentId: document, title: 'Child' });
+  const target = await fx.insertDrive({ kind: 'private', name: 'Moved to' });
+  await fx.addDriveMember(target, { user: member }, 'full');
+  const mover = await lockHolder();
+  const childHolder = await lockHolder();
+  let pending: Promise<Response> | null = null;
+  try {
+    // A move, as moveDocument makes it: both drives FOR UPDATE, then the page and its sub-page.
+    await mover.query('BEGIN');
+    await mover.query('SELECT id FROM drives WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE', [[drive, target]]);
+    await mover.query('UPDATE documents SET drive_id = $2 WHERE id = ANY($1::text[])', [[document, child], target]);
+    // A second writer queues for the sub-page (as a second move would) and holds it once the move commits.
+    await childHolder.query('BEGIN');
+    const childLocked = childHolder.query('SELECT id FROM documents WHERE id = $1 FOR UPDATE', [child]);
+    pending = fx.request(member, 'POST', `/api/documents/${document}/shares`, { principal_type: 'user', principal_id: member2, role: 'view' });
+    await waitForLockWaiters(2, 'the sub-page writer and the share both wait on the move');
+    await mover.query('COMMIT');
+    await childLocked;
+    const answer = await Promise.race([
+      pending.then(async (res) => ({ status: res.status, code: (await json(res.clone())).code })),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000)),
+    ]);
+    assert.deepEqual(answer, { status: 409, code: 'CONFLICT' }, 'refused at once, without waiting on the sub-page');
+  } finally {
+    await mover.query('ROLLBACK').catch(() => undefined);
+    await childHolder.query('ROLLBACK').catch(() => undefined);
+    await mover.end();
+    await childHolder.end();
+    if (pending) await pending.catch(() => undefined);
+  }
+  assert.deepEqual(await shareRows(document), []);
+  // Two sharers share one page at once and both land: neither upgrades a lock the other shares. (Two
+  // sharers: one person's shares queue on their own room-access lock.)
+  await fx.addDriveMember(target, { user: member2 }, 'edit');
+  const [first, second] = [await fx.addPerson(), await fx.addPerson()];
+  const both = await Promise.all([[member, first], [member2, second]].map(([actor, person]) => fx!.request(actor!, 'POST',
+    `/api/documents/${document}/shares`, { principal_type: 'user', principal_id: person, role: 'view' })));
+  assert.deepEqual(both.map((res) => res.status), [201, 201]);
+  assert.equal(await roleOf(first, child), 'view');
+  assert.equal(await roleOf(second, child), 'view');
+});
+
+test('document:shared goes per page to the people newly reached on that page (S-F3)', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { agentUser, guest, member, member2 } = fx.people;
+  const { drive, document } = await documentOf(member, 'Reached page by page');
+  const child = await fx.insertDocument({ driveId: drive, parentDocumentId: document, title: 'Child' });
+  // The share is `comment`. The guest can already edit the page but not the sub-page; member2 can already
+  // edit the sub-page but not the page; the agent comments on both as a drive member.
+  await fx.share(document, { user: guest }, 'edit');
+  await fx.share(child, { user: member2 }, 'edit');
+  await fx.addDriveMember(drive, { user: agentUser }, 'comment');
+  const person = await fx.addPerson();
+  await fx.share(child, { user: person }, 'edit');
+  const sockets = await socketHarness(fx.orgId, [member, member2, guest, agentUser, person]);
+  const shared = (userId: string) => sockets.received(userId, 'document:shared').map((event) => event.document_id).sort();
+  try {
+    await share(member, document, { space: fx.spaces.team }, 'comment');
+    await waitFor(() => shared(guest).length > 0 && shared(member2).length > 0, 'document:shared for the chat');
+    // A person newly reached on the page only.
+    await share(member, document, { user: person }, 'comment');
+    await waitFor(() => shared(person).length > 0, 'document:shared for the person');
+    await new Promise((r) => setTimeout(r, 150));
+    assert.deepEqual(shared(guest), [child], 'the guest newly reaches the sub-page only');
+    assert.deepEqual(shared(member2), [document], 'member2 newly reaches the page only');
+    assert.deepEqual(shared(agentUser), [], 'a drive member who could already comment gets none');
+    assert.deepEqual(shared(person), [document], 'nor the person, on the sub-page they could already edit');
+  } finally {
+    await sockets.close();
+  }
+  // The notification is for the page shared, to the people newly reached on it.
+  assert.deepEqual(await toldAbout(document), [member2, person].sort());
+});
