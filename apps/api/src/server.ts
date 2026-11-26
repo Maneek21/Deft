@@ -6,6 +6,7 @@ import { serve } from '@hono/node-server';
 import type { Server } from 'node:http';
 import { app } from './index.js';
 import { getIO, setupSocket } from './socket.js';
+import { getCollabServer } from './collab/server.js';
 import { assertPausedStartSettingValid, logPausedStart, serverStartupPlan } from './lib/paused-start.js';
 import { captureProcessError, flushErrorTelemetryBeforeExit, isErrorTelemetryEnabled } from './lib/telemetry/error-reporter.js';
 
@@ -108,6 +109,9 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
 });
 
 setupSocket(server as unknown as Server);
+// Live editing at /collab (collab/server.ts). Its upgrade listener runs next
+// to engine.io's and ends upgrades for any other path.
+getCollabServer().attach(server as unknown as Server);
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
@@ -118,6 +122,9 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   console.log(`[shutdown] ${logSignal(signal)} received; draining HTTP and job workers`);
 
   const httpServer = server as unknown as Server;
+  // Live editing refuses new connections and closes open ones at once, then
+  // stores every pending change; the database closes only after that.
+  const collabStopped = getCollabServer().destroy();
   const socketClosed = getIO()?.close() ?? Promise.resolve();
   const httpClosed = new Promise<void>((resolve) => {
     httpServer.close(() => resolve());
@@ -134,6 +141,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     const { stopWorkers } = await import('./workers/index.js');
     const results = await Promise.allSettled([
       stopWorkers({ timeoutMs: 10_000 }),
+      collabStopped,
       socketClosed,
       httpClosed,
     ]);

@@ -13,7 +13,9 @@
 // who can view the drive; the breadcrumb shows hidden ancestors as "Shared
 // with you"; a delete answers with only the ids the caller could view.
 // Content comes through live editing (F7); `content_json` is included only
-// when live editing is off or `?content=1` asks for it.
+// when live editing is off (DEFT_DOCUMENTS_LIVE=off, liveEditingEnabled) or
+// `?content=1` asks for it. A document over the size cap is refused with 413
+// TOO_LARGE.
 //
 // Routes that take no body (delete, restore, star and unstar) accept none,
 // one of only JSON whitespace, or well-formed JSON, and answer anything else
@@ -23,6 +25,7 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import type { PgTransactionConfig } from 'drizzle-orm/pg-core';
 import { docFavorites, documents, drives } from '@deft/db/documents';
+import { liveEditingEnabled } from '../collab/limits.js';
 import { db } from '../lib/db.js';
 import { documentRoleFor, driveRoleFor } from '../lib/document-access.js';
 import {
@@ -59,11 +62,6 @@ const moveSchema = z.object({
 const READ_SNAPSHOT: PgTransactionConfig = { isolationLevel: 'repeatable read', accessMode: 'read only' };
 
 const NOT_FOUND = { error: 'Document not found', code: 'NOT_FOUND' } as const;
-
-/** Whether live editing serves document content (F7). */
-function liveEditing(): boolean {
-  return true;
-}
 
 function invalid(c: Context) {
   return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
@@ -123,7 +121,7 @@ documentRoutes.get('/:id', async (c) => {
   try {
     const user = c.get('user');
     const documentId = c.req.param('id');
-    const live = liveEditing();
+    const live = liveEditingEnabled();
     const withContent = !live || c.req.query('content') === '1';
     const body = await db.transaction(async (tx) => {
       const role = await documentRoleFor(user.id, user.org_id, documentId, tx);

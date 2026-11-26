@@ -32,7 +32,10 @@
 //
 // Content (rule C2): this file writes content only when it creates a
 // document (initialContent), and leaves ydoc_state for the first live load.
-// Every later content write goes through writeDocument (F7).
+// Every later content write goes through writeDocument
+// (lib/document-writer.ts) or live editing (collab/server.ts). Those lock
+// only the document row, never a drive: one may wait for a move or a delete
+// here, or make one wait, but never in a cycle.
 //
 // Lock order (lib/drive-locks.ts, and routes/drives.ts's header): the
 // actor's room-access lock, then their org_members row FOR SHARE
@@ -68,7 +71,8 @@
 import { and, asc, desc, eq, gte, inArray, isNull, ne, notExists, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { docFavorites, docFolders, documentShares, documents, type DocFolderRow, type DocRole, type DocumentRow } from '@deft/db/documents';
-import { EMPTY_DOCUMENT, ensureBlockIds, getDocumentSchema, jsonToText } from '@deft/doc-schema';
+import { EMPTY_DOCUMENT, ensureBlockIds, getDocumentSchema, jsonToText, jsonToYDoc } from '@deft/doc-schema';
+import { encodedStateBytes, withinSizeCap } from '../collab/limits.js';
 import { db } from './db.js';
 import { documentRoleFor, roleAtLeast, visibleDocumentCondition, visibleDocumentIdSql, visibleDriveIdSql, type Executor } from './document-access.js';
 import { accessLossInTx, finishAccessLoss, type PendingAccessLoss } from './document-access-change.js';
@@ -86,7 +90,7 @@ export const TRASH_DAYS = 30;
 
 /** A refusal for the caller: the routes answer `{ error: message, code }` with `status`. */
 export class DocumentRefusal extends Error {
-  constructor(readonly status: 400 | 403 | 404 | 409, readonly code: string, message: string) { super(message); }
+  constructor(readonly status: 400 | 403 | 404 | 409 | 413, readonly code: string, message: string) { super(message); }
 }
 
 const notFound = (what: 'Document' | 'Drive' | 'Folder' = 'Document') => new DocumentRefusal(404, 'NOT_FOUND', `${what} not found`);
@@ -230,9 +234,11 @@ export type CreateDocumentInput = { orgId: string; userId: string; driveId?: str
 
 /**
  * A new document's stored content (rule C2: the one content write here):
- * `json`, or an empty document, with block ids, its text and its size.
+ * `json`, or an empty document, with block ids, its text and its size: the
+ * byte length of its encoded Yjs state, as every store measures it (F7).
  * ydoc_state stays null until the first live load (F7). Content outside the
- * document schema is refused.
+ * document schema is refused, and so is content larger than the live size
+ * cap (413 TOO_LARGE), measured by the same helper writeDocument uses.
  */
 function initialContent(json: JSONContent | undefined) {
   const source = json ?? EMPTY_DOCUMENT;
@@ -243,10 +249,14 @@ function initialContent(json: JSONContent | undefined) {
     throw invalid('The document content isn’t valid');
   }
   const contentJson = ensureBlockIds(source);
+  const ydoc = jsonToYDoc(contentJson);
+  const sizeBytes = encodedStateBytes(ydoc);
+  ydoc.destroy();
+  if (!withinSizeCap(0, sizeBytes)) throw new DocumentRefusal(413, 'TOO_LARGE', 'The document is too large');
   return {
     content_json: contentJson,
     content_text: jsonToText(contentJson),
-    size_bytes: Buffer.byteLength(JSON.stringify(contentJson)),
+    size_bytes: sizeBytes,
     ydoc_state: null,
   };
 }
