@@ -25,7 +25,10 @@
 // page or its folder is deleted goes to the drive root. A delete stamps the
 // tree it trashes with one deleted_at, and a restore brings back the pages
 // under the document that carry its stamp, so a sub-page deleted on its own
-// earlier stays in the trash.
+// earlier stays in the trash. The stamp is made in SQL, to the microsecond,
+// and is always later than every stamp already in the tree (deleteStampSql),
+// so two deletes never share one; restore and the trash compare stamps in
+// SQL only.
 //
 // Content (rule C2): this file writes content only when it creates a
 // document (initialContent), and leaves ydoc_state for the first live load.
@@ -193,6 +196,23 @@ async function nextFolderPosition(reader: Reader, orgId: string, driveId: string
   return Number(row?.last ?? 0) + 1;
 }
 
+/**
+ * A delete's one stamp, to the microsecond, in UTC like every timestamp
+ * here: the database clock, or, when a page of the tree (`treeIds`, trashed
+ * pages included) already carries a stamp that late, one microsecond after
+ * the latest. So a sub-page deleted on its own keeps a stamp of its own,
+ * however close the two deletes, and restoring its parent leaves it in the
+ * trash. Deletes in one drive run one after another under its FOR UPDATE.
+ * Made once per statement (a MATERIALIZED CTE): clock_timestamp() changes
+ * from row to row.
+ */
+function deleteStampSql(orgId: string, treeIds: string[]): SQL {
+  return sql`greatest(clock_timestamp() AT TIME ZONE 'UTC',
+    (SELECT max(stamp_doc.deleted_at) FROM documents stamp_doc
+      WHERE stamp_doc.org_id = ${orgId} AND stamp_doc.id = ANY(${sql.param(treeIds)}::text[]) AND stamp_doc.is_deleted = true)
+    + interval '1 microsecond')`;
+}
+
 /** finishAccessLoss after a commit, on its own. */
 async function finishLoss(loss: PendingAccessLoss): Promise<void> {
   try {
@@ -327,23 +347,33 @@ async function copySharesInTx(tx: Tx, orgId: string, parentId: string, documentI
 
 export type DocumentPatch = { title?: string; icon?: string | null; isTemplate?: boolean };
 
-/** Changes a document's title, icon or template flag (edit on the document). Never its content (rule C2). */
-export async function updateDocument(input: { orgId: string; userId: string; documentId: string; patch: DocumentPatch }): Promise<DocumentRow> {
+/**
+ * Changes a document's title, icon or template flag (edit on the document).
+ * Never its content (rule C2). `view` is the caller's answer
+ * (viewerDocumentColumns), read inside the same transaction, so what they
+ * get back is what they wrote, whatever happens after the commit.
+ */
+export async function updateDocument(input: { orgId: string; userId: string; documentId: string; patch: DocumentPatch }): Promise<{
+  document: DocumentRow; view: ViewerDocument;
+}> {
   const { orgId, userId, patch } = input;
   const outcome = await db.transaction(async (tx) => {
-    const document = await lockDocumentForEditInTx(tx, actorOf(orgId, userId), input.documentId);
+    let document = await lockDocumentForEditInTx(tx, actorOf(orgId, userId), input.documentId);
     const set: Partial<typeof documents.$inferInsert> = {};
     if (patch.title !== undefined) set.title = patch.title;
     if (patch.icon !== undefined) set.icon = patch.icon;
     if (patch.isTemplate !== undefined) set.is_template = patch.isTemplate;
-    if (Object.keys(set).length === 0) return { document, changed: false };
-    const now = new Date();
-    const [updated] = await tx.update(documents).set({ ...set, last_edited_by: userId, last_edited_at: now, updated_at: now })
-      .where(eq(documents.id, document.id)).returning();
-    return { document: updated!, changed: true };
+    const changed = Object.keys(set).length > 0;
+    if (changed) {
+      const now = new Date();
+      const [updated] = await tx.update(documents).set({ ...set, last_edited_by: userId, last_edited_at: now, updated_at: now })
+        .where(eq(documents.id, document.id)).returning();
+      document = updated!;
+    }
+    return { document, view: await viewerDocumentInTx(tx, userId, orgId, document.id), changed };
   });
   if (outcome.changed) await emitDocumentUpdated(orgId, [outcome.document.id]);
-  return outcome.document;
+  return { document: outcome.document, view: outcome.view };
 }
 
 /**
@@ -411,11 +441,14 @@ export async function softDeleteDocument(input: { orgId: string; userId: string;
     const ids = await subtreeIds(tx, orgId, document.id, true);
     const visible = await tx.select({ id: documents.id }).from(documents)
       .where(and(inArray(documents.id, ids), visibleDocumentCondition(userId, orgId)));
-    const now = new Date();
-    const deleted = await tx.update(documents).set({ is_deleted: true, deleted_at: now, deleted_by: userId, updated_at: now })
-      .where(and(eq(documents.org_id, orgId), inArray(documents.id, ids), eq(documents.is_deleted, false)))
-      .returning({ id: documents.id });
-    const deletedIds = deleted.map((row) => row.id).sort();
+    const deleted = await tx.execute(sql`WITH delete_stamp AS MATERIALIZED (
+        SELECT ${deleteStampSql(orgId, await subtreeIds(tx, orgId, document.id, false))} AS at
+      )
+      UPDATE documents SET is_deleted = true, deleted_by = ${userId},
+        deleted_at = (SELECT at FROM delete_stamp), updated_at = (SELECT at FROM delete_stamp)
+      WHERE documents.org_id = ${orgId} AND documents.id = ANY(${sql.param(ids)}::text[]) AND documents.is_deleted = false
+      RETURNING documents.id`);
+    const deletedIds = (deleted.rows as Array<{ id: string }>).map((row) => row.id).sort();
     const loss = await accessLossInTx(tx, { orgId, driveId: document.drive_id, documentIds: deletedIds });
     const visibleIds = visible.map((row) => row.id).filter((id) => deletedIds.includes(id)).sort();
     return { driveId: document.drive_id, deletedIds, visibleIds, loss };
@@ -663,6 +696,20 @@ export async function documentForViewer(reader: Reader, userId: string, orgId: s
   const [document] = await reader.select(viewerDocumentColumns(userId, orgId)).from(documents)
     .where(and(eq(documents.id, documentId), visibleDocumentCondition(userId, orgId))).limit(1);
   return document ?? null;
+}
+
+/** A document as a route returns it (viewerDocumentColumns). */
+export type ViewerDocument = NonNullable<Awaited<ReturnType<typeof documentForViewer>>>;
+
+/**
+ * The answer to a write, read in the write's own transaction: the caller
+ * holds edit on the document there, so it is always theirs to see; if not,
+ * the write rolls back as a 404.
+ */
+export async function viewerDocumentInTx(tx: Tx, userId: string, orgId: string, documentId: string): Promise<ViewerDocument> {
+  const view = await documentForViewer(tx, userId, orgId, documentId);
+  if (!view) throw notFound();
+  return view;
 }
 
 /**

@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import test, { after, before } from 'node:test';
+import test, { after, before, mock } from 'node:test';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import { closeDb, db } from '../src/lib/db.js';
@@ -618,8 +618,9 @@ test('creating a document in My drive does not deadlock with a concurrent ensure
     let waiting = 0;
     while (waiting === 0 && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 20));
+      // The create's backend: the one the holder blocks.
       const { rows: [row] } = await fx.client.query(`SELECT count(*)::int AS n FROM pg_stat_activity
-        WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> $1`, [pid]);
+        WHERE datname = current_database() AND $1::int = ANY(pg_blocking_pids(pid))`, [pid]);
       waiting = row.n;
     }
     assert.ok(waiting > 0, 'the create waits for the other ensure');
@@ -778,4 +779,46 @@ test('createDocumentInTx creates in the caller’s transaction and hands back th
   }), /roll back/);
   const { rows: left } = await fx.client.query('SELECT id FROM documents WHERE org_id = $1 AND title = $2', [fx.orgId, title]);
   assert.deepEqual(left, []);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 2
+
+test('two deletes in the same millisecond never share a stamp: a sub-page deleted first keeps its own trash row', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const drive = await privateDrive(member);
+  const parent = await fx.insertDocument({ driveId: drive, title: 'Parent' });
+  const child = await fx.insertDocument({ driveId: drive, parentDocumentId: parent, title: 'Child' });
+  // The API's JavaScript clock is frozen an hour ahead, so both deletes fall in the same millisecond, and
+  // the child carries exactly the stamp that frozen clock gives: the parent's stamp must step past it.
+  const frozen = new Date(Math.floor(Date.now() / 1000) * 1000 + 60 * 60 * 1000);
+  mock.timers.enable({ apis: ['Date'], now: frozen });
+  try {
+    await call(member, 'DELETE', `/api/documents/${child}`, undefined, 200);
+    await fx.client.query('UPDATE documents SET deleted_at = $2::timestamp WHERE id = $1', [child, frozen.toISOString().replace('Z', '')]);
+    assert.deepEqual((await call(member, 'DELETE', `/api/documents/${parent}`, undefined, 200)).deleted_ids, [parent]);
+    const { rows: [order] } = await fx.client.query(`SELECT later_doc.deleted_at > earlier_doc.deleted_at AS later
+      FROM documents later_doc, documents earlier_doc WHERE later_doc.id = $1 AND earlier_doc.id = $2`, [parent, child]);
+    assert.equal(order.later, true, 'the parent’s stamp is later than the child’s');
+    const trash = ((await call(member, 'GET', `/api/drives/${drive}/trash`, undefined, 200)).items as Array<{ id: string }>).map((item) => item.id);
+    assert.deepEqual(trash.sort(), sorted([parent, child]), 'the child keeps its own trash row');
+    assert.deepEqual((await call(member, 'POST', `/api/documents/${parent}/restore`, undefined, 200)).restored_ids, [parent]);
+    assert.equal((await rows([child])).get(child).is_deleted, true, 'restoring the parent leaves the child in the trash');
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('a body of only a no-break space is not empty: a bodyless route refuses it before changing anything', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member } = fx.people;
+  const drive = await privateDrive(member);
+  const doc = await fx.insertDocument({ driveId: drive, title: 'Not deleted' });
+  const res = await fx.requestRaw(member, 'DELETE', `/api/documents/${doc}`, ' ');
+  assert.equal(res.status, 400);
+  assert.equal((await json(res)).code, 'VALIDATION_ERROR');
+  assert.equal((await rows([doc])).get(doc).is_deleted, false, 'not deleted');
+  // JSON's own whitespace is still an empty body.
+  assert.equal((await fx.requestRaw(member, 'DELETE', `/api/documents/${doc}`, ' \t\r\n')).status, 200);
 });

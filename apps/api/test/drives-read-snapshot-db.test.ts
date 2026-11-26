@@ -6,6 +6,11 @@
  * drive's tree and trash (F5), which must also read nothing outside it: the
  * wrapper records each query started on the pool itself (`direct`).
  *
+ * Document create and PATCH (F5) answer with what their own write
+ * transaction read: `emitDocumentUpdated`, the first step after their
+ * commit, is wrapped so a test can run something at that seam (`afterCommit`),
+ * such as taking the caller's access away.
+ *
  * A race between the authorization and a data read can't be placed inside
  * one request from here, so this is the unit-level check: the database
  * client is wrapped to record the options each transaction is opened with,
@@ -40,7 +45,22 @@ const recordingDb = new Proxy(realDb, {
 });
 mock.module(new URL('../src/lib/db.ts', import.meta.url).href, { namedExports: { ...actualDb, db: recordingDb } });
 
+let afterCommit: (() => Promise<void>) | null = null;
+const actualEvents = await import('../src/lib/document-access-events.js');
+mock.module(new URL('../src/lib/document-access-events.ts', import.meta.url).href, {
+  namedExports: {
+    ...actualEvents,
+    emitDocumentUpdated: async (orgId: string, documentIds: readonly string[]) => {
+      const step = afterCommit;
+      afterCommit = null;
+      if (step) await step();
+      return actualEvents.emitDocumentUpdated(orgId, documentIds);
+    },
+  },
+});
+
 const { driveRoutes } = await import('../src/routes/drives.js');
+const { documentRoutes } = await import('../src/routes/documents.js');
 const { setupDrivesFixture } = await import('./fixtures/drives-fixture.js');
 const { safeTestDatabaseUrl } = await import('./fixtures/safe-test-database.js');
 
@@ -51,7 +71,9 @@ let fx: Awaited<ReturnType<typeof setupDrivesFixture>> | undefined;
 
 before(async () => {
   if (!url) return;
-  fx = await setupDrivesFixture('drives-read-snapshot', { routes: [{ path: '/api/drives', app: driveRoutes }] });
+  fx = await setupDrivesFixture('drives-read-snapshot', {
+    routes: [{ path: '/api/drives', app: driveRoutes }, { path: '/api/documents', app: documentRoutes }],
+  });
 });
 
 after(async () => {
@@ -128,4 +150,41 @@ test('the drive tree and trash read their role and their lists in one repeatable
   assertOneSnapshot('GET /:id/trash');
   assert.deepEqual(direct, [], 'GET /:id/trash reads nothing outside the snapshot');
   assert.deepEqual(trash.items.map((row: any) => row.id), [trashed]);
+});
+
+test('create and PATCH answer from their own write transaction: losing access right after the commit still gets the values written', async (t) => {
+  if (!fx) return t.skip(SKIP);
+  const { member, member2 } = fx.people;
+  const drive = await fx.insertDrive({ kind: 'private', name: 'Answer drive' });
+  await fx.addDriveMember(drive, { user: member }, 'full');
+  const document = await fx.insertDocument({ driveId: drive, title: 'Before' });
+  await fx.share(document, { user: member2 }, 'edit');
+
+  // Right after the PATCH commits, member2's share is removed.
+  afterCommit = async () => {
+    await fx!.client.query('DELETE FROM document_shares WHERE document_id = $1 AND principal_id = $2', [document, member2]);
+  };
+  const patched = await fx.request(member2, 'PATCH', `/api/documents/${document}`, { title: 'Written' });
+  const patchedBody = await patched.json();
+  assert.equal(afterCommit, null, 'the step after the commit ran');
+  assert.equal(patched.status, 200, JSON.stringify(patchedBody));
+  assert.equal(patchedBody.document.id, document);
+  assert.equal(patchedBody.document.title, 'Written');
+  const { rows: shares } = await fx.client.query('SELECT 1 FROM document_shares WHERE document_id = $1 AND principal_id = $2', [document, member2]);
+  assert.equal(shares.length, 0, 'member2 lost access after the commit');
+
+  // Right after a create commits, the creator's drive grant is removed: one document, answered 201.
+  const creator = await fx.addPerson();
+  await fx.addDriveMember(drive, { user: creator }, 'edit');
+  afterCommit = async () => {
+    await fx!.client.query('DELETE FROM drive_members WHERE drive_id = $1 AND principal_id = $2', [drive, creator]);
+  };
+  const created = await fx.request(creator, 'POST', '/api/documents', { drive_id: drive, title: 'Created' });
+  const createdBody = await created.json();
+  assert.equal(afterCommit, null, 'the step after the commit ran');
+  assert.equal(created.status, 201, JSON.stringify(createdBody));
+  assert.equal(createdBody.document.title, 'Created');
+  assert.equal(createdBody.document.drive_id, drive);
+  const { rows: made } = await fx.client.query(`SELECT id FROM documents WHERE drive_id = $1 AND title = 'Created'`, [drive]);
+  assert.deepEqual(made.map((row) => row.id), [createdBody.document.id], 'one document, nothing for a client to retry');
 });

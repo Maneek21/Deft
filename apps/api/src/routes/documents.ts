@@ -5,17 +5,19 @@
 // workspace or another, is a 404.
 //
 // GET /:id answers in one read-only snapshot (the role, the document, its
-// drive and its breadcrumb). What a caller is shown follows rule C4: every
-// document answer uses lib/documents.ts's viewerDocumentColumns, so a folder
-// or parent page the caller can't see is null; the drive's name and kind
-// show only to someone who can view the drive; the breadcrumb shows hidden
-// ancestors as "Shared with you"; a delete answers with only the ids the
-// caller could view. Content comes through live editing (F7); `content_json`
-// is included only when live editing is off or `?content=1` asks for it.
+// drive and its breadcrumb). Create and PATCH answer with the document as
+// read in their own write transaction, never by a query after the commit.
+// What a caller is shown follows rule C4: every document answer uses
+// lib/documents.ts's viewerDocumentColumns, so a folder or parent page the
+// caller can't see is null; the drive's name and kind show only to someone
+// who can view the drive; the breadcrumb shows hidden ancestors as "Shared
+// with you"; a delete answers with only the ids the caller could view.
+// Content comes through live editing (F7); `content_json` is included only
+// when live editing is off or `?content=1` asks for it.
 //
-// Routes that take no body (delete, restore, star and unstar) accept none, a
-// blank one or well-formed JSON, and answer a malformed body with 400 before
-// changing anything.
+// Routes that take no body (delete, restore, star and unstar) accept none,
+// one of only JSON whitespace, or well-formed JSON, and answer anything else
+// with 400 before changing anything.
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
@@ -24,8 +26,8 @@ import { docFavorites, documents, drives } from '@deft/db/documents';
 import { db } from '../lib/db.js';
 import { documentRoleFor, driveRoleFor } from '../lib/document-access.js';
 import {
-  createDocument, documentBreadcrumb, documentForViewer, DocumentRefusal, favoriteDocumentsQuery, moveDocument, recentDocumentsQuery,
-  restoreDocument, softDeleteDocument, updateDocument, viewerDocumentColumns,
+  createDocumentInTx, documentBreadcrumb, DocumentRefusal, favoriteDocumentsQuery, moveDocument, recentDocumentsQuery, restoreDocument,
+  softDeleteDocument, updateDocument, viewerDocumentColumns, viewerDocumentInTx,
 } from '../lib/documents.js';
 import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 
@@ -74,17 +76,6 @@ function failed(c: Context, error: unknown, what: string) {
   return c.json({ error: `Failed to ${what}`, code: 'INTERNAL_ERROR' }, 500);
 }
 
-/**
- * After a change commits: the document as the caller is shown it
- * (viewerDocumentColumns). A 404 if they can no longer view it.
- */
-async function answerDocument(c: Context, documentId: string, status: 200 | 201 = 200) {
-  const user = c.get('user');
-  const document = await documentForViewer(db, user.id, user.org_id, documentId);
-  if (!document) return c.json(NOT_FOUND, 404);
-  return c.json({ document }, status);
-}
-
 // POST /api/documents { drive_id?, folder_id?, parent_document_id?, title?, json? }:
 // needs edit on the drive; no drive and no parent page means My drive.
 documentRoutes.post('/', async (c) => {
@@ -93,11 +84,16 @@ documentRoutes.post('/', async (c) => {
     const parsed = createSchema.safeParse(await jsonBody(c));
     if (!parsed.success) return invalid(c);
     const body = parsed.data;
-    const document = await createDocument({
-      orgId: user.org_id, userId: user.id, driveId: body.drive_id, folderId: body.folder_id, parentDocumentId: body.parent_document_id,
-      title: body.title, json: body.json,
+    // The answer is read in the create's own transaction; events follow the commit.
+    const { view, finish } = await db.transaction(async (tx) => {
+      const { document, finish: afterCommit } = await createDocumentInTx(tx, {
+        orgId: user.org_id, userId: user.id, driveId: body.drive_id, folderId: body.folder_id, parentDocumentId: body.parent_document_id,
+        title: body.title, json: body.json,
+      });
+      return { view: await viewerDocumentInTx(tx, user.id, user.org_id, document.id), finish: afterCommit };
     });
-    return await answerDocument(c, document.id, 201);
+    await finish();
+    return c.json({ document: view }, 201);
   } catch (error) {
     return failed(c, error, 'create the document');
   }
@@ -173,11 +169,11 @@ documentRoutes.patch('/:id', async (c) => {
     const user = c.get('user');
     const parsed = updateSchema.safeParse(await jsonBody(c));
     if (!parsed.success) return invalid(c);
-    const document = await updateDocument({
+    const { view } = await updateDocument({
       orgId: user.org_id, userId: user.id, documentId: c.req.param('id'),
       patch: { title: parsed.data.title, icon: parsed.data.icon, isTemplate: parsed.data.is_template },
     });
-    return await answerDocument(c, document.id);
+    return c.json({ document: view });
   } catch (error) {
     return failed(c, error, 'update the document');
   }
