@@ -54,10 +54,15 @@ const hooks: AccessLossHook[] = [];
 let generation = 0;
 
 /**
- * A barrier left open in case the transaction rolls back (finish never comes)
- * closes itself after this long; until then it costs only extra role reads.
+ * Only finishAccessLoss closes a barrier. One whose finish never comes (the
+ * transaction rolled back, or the caller failed after it) is retired after
+ * this long, as a safety net: the generation is bumped first, so every live
+ * connection reads its role again once, and then the barrier goes. Callers
+ * may await other work between the commit and finishAccessLoss
+ * (routes/spaces.ts, routes/members.ts), so this is far longer than that.
+ * Until then an open barrier costs only extra role reads.
  */
-export const ACCESS_LOSS_BARRIER_TIMEOUT_MS = 30_000;
+export const ACCESS_LOSS_BARRIER_TIMEOUT_MS = 10 * 60_000;
 
 /**
  * The access-loss barrier (F7, rule C3). The database commits a change before
@@ -78,7 +83,10 @@ function openBarrier(change: DocumentAccessChange): Barrier {
     orgId: change.orgId,
     documentIds: change.documentIds ? new Set(change.documentIds) : null,
     userIds: change.userIds ? new Set(change.userIds) : null,
-    timer: setTimeout(() => { barriers.delete(barrier); }, ACCESS_LOSS_BARRIER_TIMEOUT_MS),
+    timer: setTimeout(() => {
+      generation += 1;
+      barriers.delete(barrier);
+    }, ACCESS_LOSS_BARRIER_TIMEOUT_MS),
   };
   barrier.timer.unref();
   barriers.add(barrier);

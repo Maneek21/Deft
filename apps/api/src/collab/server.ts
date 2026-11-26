@@ -34,20 +34,28 @@
 //
 // Every frame Hocuspocus is about to apply (beforeHandleMessage):
 // - the expiry, again;
+// - a SyncStep2 or Update from a connection that can write first takes the
+//   document's writer lock, so it waits while a non-socket write is in
+//   flight and holds the lock until Hocuspocus has applied it
+//   (afterHandleMessage): it is measured against, and lands on, the state
+//   after the write. Hocuspocus handles one connection's frames strictly in
+//   order, awaiting this hook before the next;
 // - the access fence (rule C3): each connection keeps the access generation
 //   its role was read at. When currentAccessGeneration() has moved, or while
 //   an access-loss barrier covers the document and person (between a commit
 //   and its finishAccessLoss, lib/document-access-change.ts), the role is read
 //   again from the database first: lost closes with 4403, changed with 4409
 //   (the client reconnects with its new read-only flag);
-// - the size cap on SyncStep2 and Update messages: below fastAcceptBelowBytes
-//   (the estimate, the writes in progress and the update) they pass;
-//   otherwise the update is applied to a scratch copy holding the live state,
-//   the writes in progress and the server's own normalization (block ids, the
+// - the size cap on those updates: they pass at once while the estimate plus
+//   the update grown by the worst block-id growth (ID_GROWTH) stays below
+//   fastAcceptBelowBytes; otherwise the update is applied to a scratch copy
+//   of the live state with the server's own normalization (block ids, the
 //   size warning), and passes only if the result is within docMaxBytes or no
 //   larger than before, so a document over the cap can still shrink (4413).
 //   The estimate stays conservative until the frame has been applied, then
-//   is set from the real encoded size.
+//   is set from the real encoded size;
+// - last, the expiry once more, after all of that work: a frame that passes
+//   it counts as received before the expiry. From the fence on nothing awaits.
 // A refused frame closes the socket, detaches the connection and marks it
 // read-only, so Hocuspocus applies nothing from it, and nothing more from its
 // queue, and logs nothing. Frames over MAX_FRAME_BYTES are refused by the
@@ -63,37 +71,41 @@
 // and at least every 10 s while changes keep coming: every store writes the
 // live state and bumps the revision; derived copies (content_json,
 // content_text, search_vector) are written at most once a minute, and when
-// the minute ends with a change still underived, on unload and at shutdown.
-// A document loaded with derived copies behind its live state is derived
-// straight away. A failed store keeps the document loaded and is retried
-// after 5 s, 30 s and then every 2 minutes. A document unloads unloadAfterMs
-// after its last connection leaves, and only after a store holding
-// everything, derived copies included, has succeeded.
+// the minute ends with a change still underived (a derive timer is kept
+// armed for that moment, and follows it when a write moves it), on unload
+// and at shutdown. A document loaded with derived copies behind its live
+// state is derived straight away. A failed store keeps the document loaded
+// and is retried after 5 s, 30 s and then every 2 minutes. A document
+// unloads unloadAfterMs after its last connection leaves, once its live
+// state is durably stored; derived copies that couldn't be made (content
+// outside the schema) are logged and tried again by the next load.
 //
 // Writes that don't come from a socket go through writeDocument (rule C2),
 // defined here because it is the only way in: the machinery behind it isn't
-// exported. A loaded document is written through its live copy: its pending
-// live changes are stored first; the change is made on a scratch copy,
-// normalized and measured against the size cap; its size is reserved, so
-// socket updates arriving meanwhile are measured with it; then one
-// transaction holding the document row FOR UPDATE runs the checks and stores
-// the result, and only after that commits does the live copy take the change,
-// so everyone connected sees it and a refused or failed write changes
-// nothing. A document nobody has open is written from its row in the same
-// way, under the load lock a load waits for (so a load never reads the row
-// from before a write), with its provisional memory reserved against the
-// budget (BUSY when it would pass it). Writes, loads and stores of one
-// document never overlap. writeDocument locks only the document row (never a
-// drive), so it can't wait in a cycle with a move or a delete, which lock the
-// drive and then the document.
+// exported. A write takes the document's writer lock first, so socket
+// updates wait until it has applied. A loaded document is written through
+// its live copy: its pending live changes are stored first; then one
+// transaction holding the document row FOR UPDATE runs the checks, and only
+// then is the change made (mutate) on a scratch copy, normalized, measured
+// against the size cap and stored; only after that commits does the live
+// copy take the change, so everyone connected sees it and a refused or
+// failed write changes nothing. A document nobody has open is written from
+// its row the same way, under the load lock a load waits for (so a load
+// never reads the row from before a write), with its provisional memory
+// reserved against the budget (BUSY when it would pass it). Writes, loads
+// and stores of one document never overlap. writeDocument locks only the
+// document row (never a drive), so it can't wait in a cycle with a move or a
+// delete, which lock the drive and then the document.
 //
 // Shutdown (destroy): admissions stop (upgrades ended, connecting refused,
-// writes refused with BUSY); incoming frames are dropped while the frames
-// already taken and the writes in progress finish; pending stores are
-// flushed; every changed document is stored durably, retried until the
-// caller's deadline; then connections close and documents are dropped. A
-// document that still couldn't be stored is logged with its id and makes
-// destroy() reject, so the process exits non-zero.
+// writes refused with BUSY) and incoming frames are dropped. Then passes run
+// until one finds nothing loading and nothing changed: loads in flight finish
+// and apply the frames buffered behind them, frames already taken and writes
+// in progress finish, pending stores are flushed and every changed document
+// is stored durably, retried until the caller's deadline. Then connections
+// close and documents are dropped. A document that still couldn't be stored
+// is logged with its id and makes destroy() reject, so the process exits
+// non-zero.
 //
 // Logs are fixed text (document ids only through logId).
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
@@ -194,8 +206,6 @@ type SocketEntry = {
   reconcile: boolean;
 };
 
-type PendingWrite = { delta: Uint8Array };
-
 type DocSlot = {
   documentId: string;
   name: string;
@@ -210,8 +220,6 @@ type DocSlot = {
   estimateBytes: number;
   /** Conservative estimate of the live state's encoded size (never below it once a frame has been applied). */
   approxBytes: number;
-  /** Writes measured and waiting for their commit; socket updates are measured with them. */
-  pendingWrites: Set<PendingWrite>;
   revision: number;
   changeCounter: number;
   stateDirty: boolean;
@@ -230,32 +238,61 @@ type DocSlot = {
   listenerChain: Promise<void>;
 };
 
-/** How a store went: `failed`, the database write failed; `underived`, the state was stored but required derived copies couldn't be made. */
+/**
+ * How a store went: `failed`, the database write failed (the live state isn't
+ * durable); `underived`, the live state was stored but derived copies that
+ * were due couldn't be made (content outside the schema). An underived store
+ * is durable: it doesn't block an unload or shutdown, and the next load
+ * derives again.
+ */
 type StoreOutcome = 'ok' | 'failed' | 'underived';
-/** `auto`: derived copies when due; `flush`: derived copies if behind, failure tolerated; `final`: derived copies required. */
+/** `auto`: derived copies when due; `flush` and `final`: derived copies now if they're behind. */
 type StoreMode = 'auto' | 'flush' | 'final';
+
+/**
+ * How much a client update can grow once the server writes block ids back,
+ * per byte of the update. Measured 26 Nov 2026 (yjs 13.6.33, F1's
+ * ensureBlockIds + applyJsonToYDoc), growth of the encoded state divided by
+ * the update's length, for updates of n = 50, 500 and 3000 tiny blocks:
+ * empty paragraphs 2.69–2.75 (the worst), horizontal rules 2.13–2.16, bullet
+ * lists of one empty item 1.73–1.77, empty headings 1.46–1.51,
+ * one-character paragraphs 1.28–1.35; one transaction or one per block alike.
+ * Rounded up.
+ */
+const ID_GROWTH = 3;
 
 /** Thrown from beforeUnloadDocument to keep a document loaded. No message, so Hocuspocus logs nothing. */
 const KEEP_LOADED = Object.freeze({ keep: true });
 /** Thrown from onLoadDocument when the document can't be loaded. No message, so Hocuspocus logs nothing. */
 const LOAD_REFUSED = Object.freeze({ reason: 'busy' });
 
-/** A per-key async lock: callers with the same key run one at a time, in order. */
+/** A per-key async lock: holders of the same key go one at a time, in order. */
 class KeyedLock {
   private tails = new Map<string, Promise<void>>();
 
-  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  /** Waits for the key, then holds it until the returned release is called (once). */
+  async acquire(key: string): Promise<() => void> {
     const previous = this.tails.get(key) ?? Promise.resolve();
     let release!: () => void;
     const mine = new Promise<void>((resolve) => { release = resolve; });
     const tail = previous.then(() => mine);
     this.tails.set(key, tail);
     await previous;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      release();
+      if (this.tails.get(key) === tail) this.tails.delete(key);
+    };
+  }
+
+  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const release = await this.acquire(key);
     try {
       return await fn();
     } finally {
       release();
-      if (this.tails.get(key) === tail) this.tails.delete(key);
     }
   }
 }
@@ -290,13 +327,20 @@ function frameReader(frame: Uint8Array) {
   };
 }
 
+/**
+ * Decodes as lib0's readVarString does (lib0/string.js utf8TextDecoder):
+ * fatal on bad UTF-8 and keeping a leading byte order mark, so the address
+ * checked here is exactly the one Hocuspocus will read.
+ */
+const addressDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
 /** The document address a Hocuspocus frame starts with, or null when it has none (or an implausible one). */
 export function frameAddressOf(frame: Uint8Array): string | null {
   try {
     const reader = frameReader(frame);
     const length = reader.readVarUint();
     if (length === 0 || length > 256) return null;
-    return new TextDecoder('utf-8', { fatal: true }).decode(reader.bytes(length));
+    return addressDecoder.decode(reader.bytes(length));
   } catch {
     return null;
   }
@@ -349,8 +393,11 @@ function createCollabServer(): CollabServer {
   const peers = new WeakMap<Peer, SocketEntry>();
   const bySid = new Map<string, Set<SocketEntry>>();
   const docs = new Map<string, DocSlot>();
+  /** Per document: a write in flight, or a socket update being measured and applied. */
   const writerLocks = new KeyedLock();
   const loadLocks = new KeyedLock();
+  /** The writer lock an update frame holds, by its connection, until afterHandleMessage. */
+  const frameLocks = new WeakMap<Connection, () => void>();
   const activeWrites = new Set<Promise<unknown>>();
   const attached: Array<{ server: HttpServer; listener: (req: IncomingMessage, socket: Duplex, head: Buffer) => void }> = [];
   let nextSocketKey = 0;
@@ -377,7 +424,7 @@ function createCollabServer(): CollabServer {
   function newSlot(documentId: string): DocSlot {
     return {
       documentId, name: `doc:${documentId}`, orgId: null, loaded: false, loading: null, unloading: false,
-      connections: 0, writers: 0, estimateBytes: provisionalEstimate(), approxBytes: 0, pendingWrites: new Set(), revision: 0,
+      connections: 0, writers: 0, estimateBytes: provisionalEstimate(), approxBytes: 0, revision: 0,
       changeCounter: 0, stateDirty: false, derivedDirty: false, deriveFailedAt: null, lastDerivedAt: 0, lastDerivedJson: null,
       editors: new Map(), lastEdit: null, emptySince: null, unloadTimer: null, retryAttempt: 0, retryTimer: null, deriveTimer: null,
       listenerChain: Promise.resolve(),
@@ -553,12 +600,6 @@ function createCollabServer(): CollabServer {
     return true;
   }
 
-  const pendingWriteBytes = (slot: DocSlot) => {
-    let total = 0;
-    for (const pending of slot.pendingWrites) total += pending.delta.byteLength;
-    return total;
-  };
-
   /** The encoded size `scratch` will have once the server has normalized it (block ids, the size warning). */
   function normalizedBytes(scratch: Y.Doc): number {
     try {
@@ -570,16 +611,20 @@ function createCollabServer(): CollabServer {
     return encodedStateBytes(scratch);
   }
 
-  /** The size cap for a SyncStep2 or Update frame from a connection that can write: false when refused (4413). */
+  /**
+   * The size cap for a SyncStep2 or Update frame from a connection that can
+   * write: false when refused (4413). The caller holds the document's writer
+   * lock, so the live state is the whole truth: no write is half done.
+   */
   function checkSize(entry: SocketEntry, connection: Connection, document: Y.Doc, update: Uint8Array): boolean {
     const slot = entry.slot;
     if (!slot) return dropFrame(entry, connection, 'unauthenticated');
-    if (slot.approxBytes + pendingWriteBytes(slot) + update.byteLength < fastAcceptBelowBytes()) return true;
-    /** The live state with the writes in progress, as a scratch copy. */
+    // Fast only while even the worst block-id growth would stay below the threshold.
+    if (slot.approxBytes + update.byteLength * (1 + ID_GROWTH) < fastAcceptBelowBytes()) return true;
+    /** The live state, as a scratch copy. */
     const current = () => {
       const scratch = new Y.Doc();
       Y.applyUpdate(scratch, Y.encodeStateAsUpdate(document));
-      for (const pending of slot.pendingWrites) Y.applyUpdate(scratch, pending.delta);
       return scratch;
     };
     let after: number;
@@ -662,15 +707,23 @@ function createCollabServer(): CollabServer {
     slot.retryTimer.unref();
   }
 
-  /** A change still underived when the minute since the last derived store ends is derived then. */
+  /**
+   * Keeps a derive timer armed for `lastDerivedAt + window` while derived
+   * copies are behind: (re)armed after every store, a writer's included, so a
+   * window that moved later is followed. The timer re-arms itself while work
+   * is pending.
+   */
   function scheduleDerive(slot: DocSlot): void {
-    if (slot.deriveTimer || destroying || !slot.loaded || !slot.derivedDirty || slot.deriveFailedAt === slot.changeCounter) return;
+    if (slot.deriveTimer) clearTimeout(slot.deriveTimer);
+    slot.deriveTimer = null;
+    if (destroying || !slot.loaded || !slot.derivedDirty || slot.deriveFailedAt === slot.changeCounter) return;
     slot.deriveTimer = setTimeout(() => {
       slot.deriveTimer = null;
       void (async () => {
         const document = hocuspocus.documents.get(slot.name);
         if (!document || !slot.loaded) return;
         await storeExclusive(slot, document, 'auto');
+        scheduleDerive(slot);
       })();
     }, Math.max(0, slot.lastDerivedAt + collabTestSeams.derivedEveryMs - Date.now()));
     slot.deriveTimer.unref();
@@ -683,9 +736,13 @@ function createCollabServer(): CollabServer {
    */
   async function storeLocked(slot: DocSlot, document: Y.Doc, mode: StoreMode): Promise<StoreOutcome> {
     const windowPassed = Date.now() - slot.lastDerivedAt >= collabTestSeams.derivedEveryMs;
-    const deriveDue = slot.derivedDirty
-      && (mode === 'final' || (slot.deriveFailedAt !== slot.changeCounter && (mode === 'flush' || windowPassed)));
-    if (!slot.stateDirty && !deriveDue) return 'ok';
+    // A derive that failed for this content isn't tried again until it changes.
+    const deriveDue = slot.derivedDirty && slot.deriveFailedAt !== slot.changeCounter && (mode !== 'auto' || windowPassed);
+    if (!slot.stateDirty && !deriveDue) {
+      if (mode !== 'final' || !slot.derivedDirty) return 'ok';
+      testState.underivedFinals += 1;
+      return 'underived';
+    }
     const counter = slot.changeCounter;
     let derived: ReturnType<typeof deriveContent> | null = null;
     if (deriveDue) {
@@ -730,7 +787,7 @@ function createCollabServer(): CollabServer {
         });
       }
       scheduleDerive(slot);
-      if (mode === 'final' && deriveDue && !derived) {
+      if (mode === 'final' && slot.derivedDirty && !derived) {
         testState.underivedFinals += 1;
         return 'underived';
       }
@@ -842,16 +899,34 @@ function createCollabServer(): CollabServer {
         connection.readOnly = true;
         return;
       }
-      if (expired(entry)) return void dropFrame(entry, connection, 'unauthenticated');
-      if (!(await fence(entry, connection))) return;
-      // Just before Hocuspocus applies it (nothing but microtasks from here).
-      if (expired(entry)) return void dropFrame(entry, connection, 'unauthenticated');
-      if (connection.readOnly) return;
-      const update = syncUpdateOf(payload.update);
-      if (update) checkSize(entry, connection, payload.document, update);
+      try {
+        if (expired(entry)) return void dropFrame(entry, connection, 'unauthenticated');
+        // An update waits while a write to the document is in flight (the
+        // writer lock, taken before the writer stores pending changes), and
+        // holds the lock until Hocuspocus has applied it (afterHandleMessage),
+        // so it is measured against, and lands on, the state after the write.
+        // Hocuspocus handles one connection's frames strictly in order
+        // (Connection.processMessages awaits this hook before the next).
+        const update = connection.readOnly ? null : syncUpdateOf(payload.update);
+        if (update) frameLocks.set(connection, await writerLocks.acquire(entry.documentId!));
+        if (!(await fence(entry, connection))) return;
+        // From here to Hocuspocus applying the frame, nothing awaits.
+        if (update && !connection.readOnly) {
+          if (!checkSize(entry, connection, payload.document, update)) return;
+          collabTestSeams.afterSizeCheck?.();
+        }
+        // Last: a frame that passes this counts as received before the expiry.
+        if (expired(entry)) return void dropFrame(entry, connection, 'unauthenticated');
+      } catch {
+        // Never leave the frame applicable after a failure here (afterHandleMessage releases the lock).
+        dropFrame(entry, connection, 'unauthenticated');
+      }
     },
 
     async afterHandleMessage(payload) {
+      // Runs after every frame beforeHandleMessage let through or dropped.
+      frameLocks.get(payload.connection)?.();
+      frameLocks.delete(payload.connection);
       const entry = entryOf(payload.context);
       if (!entry?.reconcile) return;
       entry.reconcile = false;
@@ -931,9 +1006,12 @@ function createCollabServer(): CollabServer {
       if (!slot) return;
       if (destroying || !emptyLongEnough(slot)) throw KEEP_LOADED;
       const outcome = await storeExclusive(slot, payload.document, 'final');
-      if (outcome !== 'ok' || slot.stateDirty || slot.derivedDirty || !emptyLongEnough(slot) || payload.document.getConnectionsCount() > 0) {
+      // Durable is enough: derived copies that couldn't be made are retried by
+      // the next load (it finds them behind), so they don't hold the slot.
+      if (outcome === 'failed' || slot.stateDirty || !emptyLongEnough(slot) || payload.document.getConnectionsCount() > 0) {
         throw KEEP_LOADED;
       }
+      if (outcome === 'underived') console.error('[collab] unloaded a document whose text could not be updated; the next load tries again');
       slot.unloading = true;
       // Hocuspocus can still keep it (a store scheduled meanwhile); then it stays loaded.
       setImmediate(() => {
@@ -1071,10 +1149,18 @@ function createCollabServer(): CollabServer {
   // ---------------------------------------------------------------------
   // Non-socket writes (only through writeDocument)
 
-  function storedEventOf(i: WriteInput, previousJson: JSONContent, json: JSONContent, sizeBytes: number): DocumentStoredEvent {
+  /**
+   * A write's listener event (the onDocumentStored contract): everyone
+   * accumulated since the previous run, taken together with the derived
+   * state, plus the writer.
+   */
+  function storedEventOf(i: WriteInput, accumulated: Map<string, number>, previousJson: JSONContent, json: JSONContent,
+    sizeBytes: number): DocumentStoredEvent {
+    const editors = new Map(accumulated);
+    if (i.actor.kind === 'user') editors.set(i.actor.userId, (editors.get(i.actor.userId) ?? 0) + 1);
     return {
       orgId: i.orgId, documentId: i.documentId,
-      editorIds: i.actor.kind === 'user' ? [i.actor.userId] : [],
+      editorIds: byCount(editors),
       agentUserIds: i.actor.kind === 'agent' ? [i.actor.userId] : [],
       actionIds: i.actor.actionId ? [i.actor.actionId] : [],
       previousJson, json, sizeBytes, at: new Date(),
@@ -1083,19 +1169,37 @@ function createCollabServer(): CollabServer {
 
   const editorOf = (actor: CollabActor) => (actor.kind === 'system' ? null : actor.userId);
 
-  /** Locks the row, runs the checks and stores `state` (with `derived`) in `tx`. */
-  async function commitInTx(tx: Tx, i: WriteInput, state: Uint8Array, derived: ReturnType<typeof deriveContent>) {
+  /**
+   * In `tx`: locks the row and runs the checks first; only then makes the
+   * change on `working` (mutate), normalizes and measures it, and stores it.
+   * `before` is the size the cap compares with. Returns what to apply live.
+   */
+  async function changeInTx(tx: Tx, i: WriteInput, working: Y.Doc | ((row: DocumentStateRow) => Y.Doc), before: (doc: Y.Doc) => number) {
     const row = await lockDocumentState(tx, i.documentId, i.orgId);
     if (!row || row.isDeleted) throw new DocumentWriteRefused('FORBIDDEN');
     await i.check(tx, row);
+    const doc = typeof working === 'function' ? working(row) : working;
+    const beforeBytes = before(doc);
+    const vector = Y.encodeStateVector(doc);
+    i.mutate(doc);
+    const derived = deriveContent(doc);
+    markSizeWarning(doc, encodedStateBytes(doc));
+    const state = Y.encodeStateAsUpdate(doc);
+    if (!withinSizeCap(beforeBytes, state.byteLength)) throw new DocumentWriteRefused('TOO_LARGE');
     const revision = await writeStore(tx, {
       documentId: i.documentId, orgId: i.orgId, state, derived, editedBy: editorOf(i.actor), editedAt: new Date(),
     });
     if (revision === null) throw new DocumentWriteRefused('FORBIDDEN');
-    return { row, revision };
+    return { row, derived, state, revision, delta: Y.encodeStateAsUpdate(doc, vector) };
   }
 
-  /** A loaded document: store its live changes, measure the change on a scratch copy, reserve it, commit, then apply it live. */
+  /**
+   * A loaded document. The caller holds the document's writer lock, so socket
+   * updates wait (beforeHandleMessage) until this has applied: the live state
+   * holds still from the flush to the apply. Stores pending live changes,
+   * then checks, changes a scratch copy, stores it, and applies it live
+   * after the commit.
+   */
   async function liveWrite(slot: DocSlot, document: HocuspocusDocument, i: WriteInput): Promise<WriteResult> {
     slot.writers += 1;
     cancelUnload(slot);
@@ -1103,47 +1207,32 @@ function createCollabServer(): CollabServer {
       const result = await document.saveMutex.runExclusive(async () => {
         if ((await storeLocked(slot, document, 'flush')) === 'failed') throw new Error('the live changes could not be stored');
         const previousJson = slot.lastDerivedJson;
-        // From the snapshot to the reservation nothing awaits, so every socket
-        // update admitted after the snapshot is measured with this write.
         const counter = slot.changeCounter;
         const scratch = new Y.Doc();
-        let pending: PendingWrite;
-        let state: Uint8Array;
-        let derived: ReturnType<typeof deriveContent>;
         try {
-          const before = Y.encodeStateAsUpdate(document);
-          Y.applyUpdate(scratch, before);
-          const vector = Y.encodeStateVector(scratch);
-          i.mutate(scratch);
-          derived = deriveContent(scratch);
-          markSizeWarning(scratch, encodedStateBytes(scratch));
-          state = Y.encodeStateAsUpdate(scratch);
-          if (!withinSizeCap(before.byteLength, state.byteLength)) throw new DocumentWriteRefused('TOO_LARGE');
-          pending = { delta: Y.encodeStateAsUpdate(scratch, vector) };
+          const written = await db.transaction((tx) => changeInTx(tx, i, () => {
+            Y.applyUpdate(scratch, Y.encodeStateAsUpdate(document));
+            return scratch;
+          }, encodedStateBytes));
+          document.transact(() => Y.applyUpdate(document, written.delta), WRITER_ORIGIN);
+          slot.approxBytes = encodedStateBytes(document);
+          slot.revision = written.revision;
+          slot.lastDerivedJson = written.derived.json;
+          slot.lastDerivedAt = Date.now();
+          if (slot.changeCounter === counter) {
+            slot.stateDirty = false;
+            slot.derivedDirty = false;
+            slot.estimateBytes = written.state.byteLength * HEAP_FACTOR;
+          }
+          return { written, accumulated: takeEditors(slot), previousJson: previousJson ?? written.row.json };
         } finally {
           scratch.destroy();
         }
-        slot.pendingWrites.add(pending);
-        let committed: Awaited<ReturnType<typeof commitInTx>>;
-        try {
-          committed = await db.transaction((tx) => commitInTx(tx, i, state, derived));
-          document.transact(() => Y.applyUpdate(document, pending.delta), WRITER_ORIGIN);
-        } finally {
-          slot.pendingWrites.delete(pending);
-        }
-        slot.approxBytes = encodedStateBytes(document);
-        slot.revision = committed.revision;
-        slot.lastDerivedJson = derived.json;
-        slot.lastDerivedAt = Date.now();
-        if (slot.changeCounter === counter) {
-          slot.stateDirty = false;
-          slot.derivedDirty = false;
-          slot.estimateBytes = state.byteLength * HEAP_FACTOR;
-        }
-        return { committed, derived, state, previousJson: previousJson ?? committed.row.json };
       });
-      await queueListeners(slot, storedEventOf(i, result.previousJson, result.derived.json, result.state.byteLength));
-      return { revision: result.committed.revision, sizeBytes: result.state.byteLength };
+      const { written } = result;
+      scheduleDerive(slot);
+      await queueListeners(slot, storedEventOf(i, result.accumulated, result.previousJson, written.derived.json, written.state.byteLength));
+      return { revision: written.revision, sizeBytes: written.state.byteLength };
     } finally {
       slot.writers -= 1;
       settleSlot(slot);
@@ -1152,31 +1241,18 @@ function createCollabServer(): CollabServer {
 
   /** A document nobody has open: from its row, in one transaction, under the load lock. */
   async function rowWrite(i: WriteInput): Promise<WriteResult> {
-    const written = await db.transaction(async (tx) => {
-      const row = await lockDocumentState(tx, i.documentId, i.orgId);
-      if (!row || row.isDeleted) throw new DocumentWriteRefused('FORBIDDEN');
-      await i.check(tx, row);
-      const working = new Y.Doc();
-      try {
+    const working = new Y.Doc();
+    try {
+      // Measured normalized, as the result will be.
+      const written = await db.transaction((tx) => changeInTx(tx, i, (row) => {
         applyRowToDoc(working, row);
-        // Measured normalized, as the result will be.
-        const before = normalizedBytes(working);
-        i.mutate(working);
-        const derived = deriveContent(working);
-        markSizeWarning(working, encodedStateBytes(working));
-        const state = Y.encodeStateAsUpdate(working);
-        if (!withinSizeCap(before, state.byteLength)) throw new DocumentWriteRefused('TOO_LARGE');
-        const revision = await writeStore(tx, {
-          documentId: i.documentId, orgId: i.orgId, state, derived, editedBy: editorOf(i.actor), editedAt: new Date(),
-        });
-        if (revision === null) throw new DocumentWriteRefused('FORBIDDEN');
-        return { row, derived, state, revision };
-      } finally {
-        working.destroy();
-      }
-    });
-    await runStoredListeners(storedEventOf(i, written.row.json, written.derived.json, written.state.byteLength));
-    return { revision: written.revision, sizeBytes: written.state.byteLength };
+        return working;
+      }, normalizedBytes));
+      await runStoredListeners(storedEventOf(i, new Map(), written.row.json, written.derived.json, written.state.byteLength));
+      return { revision: written.revision, sizeBytes: written.state.byteLength };
+    } finally {
+      working.destroy();
+    }
   }
 
   async function write(i: WriteInput): Promise<WriteResult> {
@@ -1244,23 +1320,51 @@ function createCollabServer(): CollabServer {
     }
   }
 
-  async function shutDown(retryUntil: number): Promise<void> {
-    destroying = true;
-    // Frames already handed to Hocuspocus, and writes already running, finish.
-    draining = true;
-    const handling: Array<Promise<unknown>> = [];
-    for (const document of hocuspocus.documents.values()) {
-      for (const connection of document.getConnections()) handling.push(connection.waitForPendingMessages());
+  /** A load still running, or a connection authenticated and not yet connected (its buffered frames not yet handed over). */
+  const loadsInFlight = () => [...docs.values()].some((slot) => slot.loading !== null)
+    || [...sockets.values()].some((entry) => entry.ctx !== null && !entry.connected && !entry.closed);
+
+  /** Waits until no load is in flight (their buffered frames handed to their connections), or `until`. */
+  async function settleLoads(until: number): Promise<void> {
+    while (loadsInFlight() && Date.now() < until) {
+      const loading = [...docs.values()].flatMap((slot) => (slot.loading ? [slot.loading] : []));
+      await Promise.race([...loading, sleep(25)]);
     }
-    await Promise.allSettled(handling);
-    await Promise.allSettled([...activeWrites]);
-    hocuspocus.flushPendingStores();
-    const unstored: string[] = [];
-    await Promise.all([...docs.values()].map(async (slot) => {
-      const document = hocuspocus.documents.get(slot.name);
-      if (slot.loaded && document && !(await storeDurably(slot, document, retryUntil))) unstored.push(slot.documentId);
-      await slot.listenerChain;
-    }));
+  }
+
+  async function shutDown(retryUntil: number): Promise<void> {
+    // No new connections, frames or writes from here.
+    destroying = true;
+    draining = true;
+    const unstored = new Set<string>();
+    // Passes until one finds nothing loading and nothing changed: a load in
+    // flight finishes and applies the frames buffered behind it, frames already
+    // taken and writes already running finish, and every changed document is
+    // stored, retried until the deadline.
+    for (;;) {
+      await settleLoads(retryUntil);
+      const handling: Array<Promise<unknown>> = [];
+      for (const document of hocuspocus.documents.values()) {
+        for (const connection of document.getConnections()) handling.push(connection.waitForPendingMessages());
+      }
+      await Promise.allSettled(handling);
+      await Promise.allSettled([...activeWrites]);
+      hocuspocus.flushPendingStores();
+      await Promise.all([...docs.values()].map(async (slot) => {
+        const document = hocuspocus.documents.get(slot.name);
+        if (slot.loaded && document && !unstored.has(slot.documentId) && !(await storeDurably(slot, document, retryUntil))) {
+          unstored.add(slot.documentId);
+        }
+        await slot.listenerChain;
+      }));
+      const changed = [...docs.values()].filter((slot) => slot.loaded && slot.stateDirty && !unstored.has(slot.documentId));
+      if (!loadsInFlight() && changed.length === 0) break;
+      if (Date.now() >= retryUntil) {
+        for (const slot of changed) unstored.add(slot.documentId);
+        break;
+      }
+    }
+    // Nothing awaits from the last check to here, so nothing more is applied.
     for (const entry of [...sockets.values()]) closeEntry(entry, null);
     for (const slot of docs.values()) clearSlotTimers(slot);
     for (const { server: httpServer, listener } of attached) httpServer.off('upgrade', listener);
@@ -1270,7 +1374,7 @@ function createCollabServer(): CollabServer {
     hocuspocus.documents.clear();
     docs.clear();
     if (instance === server) instance = null;
-    if (unstored.length > 0) {
+    if (unstored.size > 0) {
       for (const documentId of unstored) console.error('[collab] shutdown could not store a document; its latest changes are lost', logId(documentId));
       throw new Error('Live editing shut down with documents it could not store');
     }
@@ -1318,16 +1422,27 @@ function createCollabServer(): CollabServer {
       return document ? encodedStateBytes(document) : null;
     },
     reservedBytes: memoryEstimate,
-    unloadIdle: async () => {
-      for (const slot of [...docs.values()]) {
-        if (!slot.loaded || slot.connections > 0 || slot.writers > 0) continue;
-        slot.emptySince = Date.now() - COLLAB_LIMITS.unloadAfterMs;
-        if (slot.unloadTimer) clearTimeout(slot.unloadTimer);
-        slot.unloadTimer = null;
-        const document = hocuspocus.documents.get(slot.name);
-        if (!document) continue;
-        if (hocuspocus.debouncer.isDebounced(`onStoreDocument-${slot.name}`)) await hocuspocus.debouncer.executeNow(`onStoreDocument-${slot.name}`);
-        await hocuspocus.unloadDocument(document);
+    unloadIdle: async (timeoutMs) => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const idle = [...docs.values()].filter((slot) => slot.connections === 0 && slot.writers === 0);
+        if (idle.length === docs.size && idle.every((slot) => !slot.loaded && !slot.loading)) return;
+        for (const slot of idle) {
+          if (slot.loading) await slot.loading;
+          const document = hocuspocus.documents.get(slot.name);
+          if (!slot.loaded || !document) continue;
+          slot.emptySince = Date.now() - COLLAB_LIMITS.unloadAfterMs;
+          if (slot.unloadTimer) clearTimeout(slot.unloadTimer);
+          slot.unloadTimer = null;
+          // Hocuspocus won't unload while a store is pending, running or holding the save mutex.
+          const storeKey = `onStoreDocument-${slot.name}`;
+          if (hocuspocus.debouncer.isDebounced(storeKey)) await hocuspocus.debouncer.executeNow(storeKey);
+          await document.saveMutex.waitForUnlock();
+          if (hocuspocus.debouncer.isCurrentlyExecuting(storeKey)) continue;
+          await hocuspocus.unloadDocument(document);
+        }
+        if (Date.now() > deadline) throw new Error(`documents would not unload: ${describeSlots(docs)}`);
+        await sleep(25);
       }
     },
   };
@@ -1390,12 +1505,27 @@ export async function writeDocument(i: {
 
 /**
  * Test seams: `afterAuthenticate` runs after a connection's role is read and
- * before it is registered; `derivedEveryMs` is the derived-copy window (60 s).
+ * before it is registered; `derivedEveryMs` is the derived-copy window (60 s);
+ * `afterSizeCheck` runs (synchronously) after an update frame's size work,
+ * just before the last expiry check.
  */
-export const collabTestSeams: { afterAuthenticate: ((documentId: string) => Promise<void>) | null; derivedEveryMs: number } = {
+export const collabTestSeams: {
+  afterAuthenticate: ((documentId: string) => Promise<void>) | null;
+  derivedEveryMs: number;
+  afterSizeCheck: (() => void) | null;
+} = {
   afterAuthenticate: null,
   derivedEveryMs: 60_000,
+  afterSizeCheck: null,
 };
+
+/** How each document held stands (no ids). */
+function describeSlots(docs: Map<string, DocSlot>): string {
+  return JSON.stringify([...docs.values()].map((slot) => ({
+    loaded: slot.loaded, loading: Boolean(slot.loading), unloading: slot.unloading, connections: slot.connections, writers: slot.writers,
+    stateDirty: slot.stateDirty, derivedDirty: slot.derivedDirty, retryAttempt: slot.retryAttempt, emptySince: slot.emptySince !== null,
+  })));
+}
 
 const testState = { peakDocuments: 0, peakReservedBytes: 0, storeFailures: 0, underivedFinals: 0 };
 let testHandles: {
@@ -1403,7 +1533,7 @@ let testHandles: {
   approxBytes(documentId: string): number | null;
   encodedBytes(documentId: string): number | null;
   reservedBytes(): number;
-  unloadIdle(): Promise<void>;
+  unloadIdle(timeoutMs: number): Promise<void>;
 } | null = null;
 
 /** What the current server holds, for tests. */
@@ -1423,12 +1553,13 @@ export function collabStateForTest() {
     approxBytes: (documentId: string) => handles?.approxBytes(documentId) ?? null,
     encodedBytes: (documentId: string) => handles?.encodedBytes(documentId) ?? null,
     /** How each document still held stands (no ids), for a failing assertion's message. */
-    describe: () => JSON.stringify([...docs.values()].map((slot) => ({
-      loaded: slot.loaded, loading: Boolean(slot.loading), unloading: slot.unloading, connections: slot.connections, writers: slot.writers,
-      stateDirty: slot.stateDirty, derivedDirty: slot.derivedDirty, retryAttempt: slot.retryAttempt, emptySince: slot.emptySince !== null,
-    }))),
-    /** Unloads every document nobody holds now, without waiting for its timer. */
-    unloadIdle: () => handles?.unloadIdle() ?? Promise.resolve(),
+    describe: () => describeSlots(docs),
+    /**
+     * Unloads every document nobody holds, without waiting for its timer:
+     * awaits pending and running stores and the save mutex, then unloads,
+     * again until nothing is loaded; fails with each document's state after `timeoutMs`.
+     */
+    unloadIdle: (timeoutMs = 10_000) => handles?.unloadIdle(timeoutMs) ?? Promise.resolve(),
     resetPeak: () => {
       testState.peakDocuments = docs.size;
       testState.peakReservedBytes = handles?.reservedBytes() ?? 0;

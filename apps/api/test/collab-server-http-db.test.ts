@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import test, { after, before } from 'node:test';
+import test, { after, before, mock } from 'node:test';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import * as Y from 'yjs';
@@ -23,7 +23,8 @@ import { setCollabLimitsForTest } from '../src/collab/limits.js';
 import { onDocumentStored, type DocumentStoredEvent } from '../src/collab/persistence.js';
 import { collabStateForTest, collabTestSeams, getCollabServer } from '../src/collab/server.js';
 import { closeDb, db } from '../src/lib/db.js';
-import { applyAccessLossInTx, finishAccessLoss } from '../src/lib/document-access-change.js';
+import * as accessChange from '../src/lib/document-access-change.js';
+import { applyAccessLossInTx, currentAccessGeneration, finishAccessLoss } from '../src/lib/document-access-change.js';
 import { DocumentWriteRefused, writeDocument } from '../src/lib/document-writer.js';
 import { _setPausedStartForTest } from '../src/lib/paused-start.js';
 import { revokeMemberWebSessions } from '../src/lib/web-sessions.js';
@@ -126,7 +127,8 @@ async function refusedCode(t: { after(fn: () => void): void }, documentId: strin
  */
 async function allUnloaded(): Promise<void> {
   await pollUntil(() => collabStateForTest().heldDocuments === 0, 'no connection or write holds a document', 10_000);
-  await collabStateForTest().unloadIdle();
+  // Waits out running stores and the save mutex, unloads, and repeats; throws with each document's state if one won't go.
+  await collabStateForTest().unloadIdle(10_000);
   const state = collabStateForTest();
   assert.equal(state.reservedDocuments, 0, `documents still held: ${state.describe()}`);
 }
@@ -754,11 +756,15 @@ test('a socket edit arriving during a writer\'s transaction is measured with the
     mutate: (d) => appendParagraph(d, `Writer ${bigText(40_000)}`),
   });
   await pollUntil(row.waiterBlocked, 'the writer waits for the row');
-  // Alone it would fit (40 KB < 64 KB); with the write in progress it would not.
+  // Alone it would fit (40 KB < 64 KB); after the write it would not. It
+  // waits for the write (round 2), then is measured against its result.
   editor.typeText(`Socket ${bigText(40_000)}`);
-  assert.equal((await editor.waitClosed()).code, 4413);
+  const typedAt = Date.now();
+  await pollUntil(() => Date.now() - typedAt > 300, 'the edit reaches the server');
+  assert.equal(editor.closes.length, 0, 'held while the write is in flight');
   await row.release();
   await writing;
+  assert.equal((await editor.waitClosed()).code, 4413);
   const after = await stored(doc);
   assert.ok(after.size_bytes <= 65_536, `the merged result stays under the cap (${after.size_bytes})`);
   assert.ok(after.content_text.includes('Writer '));
@@ -926,7 +932,8 @@ test('a reload with derived copies behind the live state derives them', { skip: 
   await pollUntil(async () => (await stored(doc)).content_text.includes('Only in the live state'), 'derived after the reload', 10_000);
 });
 
-test('a document whose final derivation fails stays loaded', { skip: !url && SKIP }, async (t) => {
+test('a document whose final derivation fails unloads once its state is stored, and the next load derives again', { skip: !url && SKIP }, async (t) => {
+  // Round 2's ruling: a durable ydoc_state is enough to unload; the reload retries the derive.
   const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Underivable' });
   const odd = new Y.Doc();
   appendParagraph(odd, 'Before the odd block');
@@ -934,20 +941,25 @@ test('a document whose final derivation fails stays loaded', { skip: !url && SKI
   await fx!.client.query('UPDATE documents SET ydoc_state = $2 WHERE id = $1', [doc, Buffer.from(Y.encodeStateAsUpdate(odd))]);
   odd.destroy();
   const lines = captureConsole(t);
+  const deriveFailures = () => lines.filter((line) => line.includes('[collab] a live document holds content outside the schema')).length;
   const editor = await open(t, doc, fx!.people.member);
   editor.typeText('After the odd block');
   await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'the edit reached the server');
   const finals = collabStateForTest().underivedFinals;
   editor.destroy();
   await pollUntil(() => collabStateForTest().underivedFinals > finals, 'a final store could not derive', 10_000);
-  assert.ok(collabStateForTest().loadedDocumentIds.includes(doc), 'kept loaded: its text could not be stored');
+  await pollUntil(() => !collabStateForTest().loadedDocumentIds.includes(doc), 'it unloads anyway: its state is durable', 10_000);
   const state = new Y.Doc();
   Y.applyUpdate(state, new Uint8Array((await stored(doc)).ydoc_state!));
   assert.ok(state.getXmlFragment('default').toString().includes('After the odd block'), 'its live state was stored');
   state.destroy();
+  assert.ok(lines.some((line) => line.includes('[collab] unloaded a document whose text could not be updated')));
   assert.ok(lines.every((line) => !line.includes('After the odd block')), 'nothing a person wrote is logged');
-  // Removing the odd block lets it derive and unload.
+  // The next load finds its derived copies behind and tries again.
+  const failuresBefore = deriveFailures();
   const fixer = await open(t, doc, fx!.people.member);
+  await pollUntil(() => deriveFailures() > failuresBefore, 'the reload tried to derive again', 10_000);
+  // Removing the odd block lets it derive.
   const fragment = fixer.ydoc.getXmlFragment('default');
   const index = fragment.toArray().findIndex((node) => node instanceof Y.XmlElement && node.nodeName === 'notInTheSchema');
   fixer.ydoc.transact(() => fragment.delete(index, 1));
@@ -985,6 +997,202 @@ test('a frame for another or a malformed document address is refused before Hocu
   malformed.send(collabFrames.update(`${marker} is not a document address`, nothing));
   assert.equal((await malformed.closed()).code, 4404, 'a malformed address is refused');
   assert.ok(lines.every((line) => !line.includes(marker)), `the refused address reached the logs: ${lines.filter((l) => l.includes(marker)).join(' | ')}`);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 2
+
+test('a socket edit arriving while a shrinking write rolls back is held, then measured against the real state', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Shrink and roll back', json: paragraphs(bigText(58_000)) });
+  const editor = await open(t, doc, fx!.people.member);
+  // The write will fail at its store (a database failure), after it shrank its copy.
+  const drop = await failWrites(doc);
+  t.after(drop);
+  const row = await holdRow(doc);
+  t.after(row.release);
+  const writing = writeDocument({
+    orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member2 }, reason: 'import',
+    mutate: (d) => ((d.getXmlFragment('default').get(0) as Y.XmlElement).get(0) as Y.XmlText).delete(0, 30_000),
+  });
+  writing.catch(() => undefined);
+  await pollUntil(row.waiterBlocked, 'the write waits for the row');
+  // 58 KB + 20 KB passes the cap; with the write's 30 KB deletion it would not.
+  editor.typeText(`Socket ${bigText(20_000)}`);
+  const typedAt = Date.now();
+  await pollUntil(() => Date.now() - typedAt > 300, 'the edit reaches the server');
+  await row.release();
+  await assert.rejects(writing);
+  assert.equal((await editor.waitClosed()).code, 4413, 'measured against the state the rolled-back write left');
+  await drop();
+  const reader = await open(t, doc, fx!.people.member2);
+  assert.ok(!reader.text().includes('Socket '), 'the edit was never applied');
+});
+
+test('a socket edit that lands in a derived store appears in that event\'s editorIds', { skip: !url && SKIP }, async (t) => {
+  collabTestSeams.derivedEveryMs = 1_500;
+  t.after(() => { collabTestSeams.derivedEveryMs = 60_000; });
+  const { people } = fx!;
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Who wrote it' });
+  const events: DocumentStoredEvent[] = [];
+  t.after(onDocumentStored(async (e) => { if (e.documentId === doc) events.push(e); }));
+  const editor = await open(t, doc, people.member);
+  editor.typeText('Before the write');
+  await pollUntil(() => !editor.provider.hasUnsyncedChanges, 'acknowledged');
+  // The write's flush (storing that edit) waits on the row, so the next edit arrives mid-write.
+  const row = await holdRow(doc);
+  t.after(row.release);
+  const writing = writeDocument({
+    orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: people.member2 }, reason: 'import',
+    mutate: (d) => appendParagraph(d, 'From the writer'),
+  });
+  await pollUntil(row.waiterBlocked, 'the write waits for the row');
+  editor.typeText('During the write');
+  const typedAt = Date.now();
+  await pollUntil(() => Date.now() - typedAt > 300, 'the edit reaches the server');
+  await row.release();
+  await writing;
+  await pollUntil(() => events.some((e) => jsonToText(e.json).includes('During the write')), 'a derived store holds it', 10_000);
+  const first = events.find((e) => jsonToText(e.json).includes('During the write'))!;
+  assert.ok(first.editorIds.includes(people.member), `its editor is in the event (${JSON.stringify(first.editorIds)})`);
+});
+
+test('a refused write never runs mutate', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Checks first' });
+  await open(t, doc, fx!.people.member);
+  let calls = 0;
+  const mutate = () => { calls += 1; };
+  await assert.rejects(
+    writeDocument({ orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member }, reason: 'import', expectedRevision: 999, mutate }),
+    (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'REVISION_CHANGED',
+  );
+  await assert.rejects(
+    writeDocument({ orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.outsider }, reason: 'import', mutate }),
+    (e: unknown) => e instanceof DocumentWriteRefused && e.code === 'FORBIDDEN',
+  );
+  assert.equal(calls, 0, 'mutate ran for a refused write');
+});
+
+test('an update below the fast threshold whose block ids would carry it over the cap is measured, and refused', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Tiny blocks' });
+  const editor = await open(t, doc, fx!.people.member);
+  const draft = new Y.Doc();
+  Y.applyUpdate(draft, Y.encodeStateAsUpdate(editor.ydoc));
+  const vector = Y.encodeStateVector(editor.ydoc);
+  // Empty paragraphs without ids: the worst growth once ids are written back.
+  draft.transact(() => {
+    while (Y.encodeStateAsUpdate(draft, vector).byteLength < 20_000) draft.getXmlFragment('default').push([new Y.XmlElement('paragraph')]);
+  });
+  const update = Y.encodeStateAsUpdate(draft, vector);
+  assert.ok(update.byteLength < 0.9 * 65_536 - 1_000, 'on its own it is below the fast threshold');
+  editor.socket.send(collabFrames.update(`doc:${doc}`, update));
+  assert.equal((await editor.waitClosed()).code, 4413);
+  const reader = await open(t, doc, fx!.people.member2);
+  assert.ok(reader.ydoc.getXmlFragment('default').length < 100, 'never applied');
+});
+
+test('a frame between an access-loss commit and a late finishAccessLoss is still refused', { skip: !url && SKIP }, async (t) => {
+  const { people } = fx!;
+  const drive = await fx!.insertDrive({ kind: 'private', name: 'Late finish' });
+  await fx!.addDriveMember(drive, { user: people.owner }, 'full');
+  await fx!.addDriveMember(drive, { user: people.member }, 'edit');
+  const doc = await fx!.insertDocument({ driveId: drive, title: 'Late finish' });
+  const member = await open(t, doc, people.member);
+  const change = { orgId: fx!.orgId, driveId: drive, userIds: [people.member] };
+  let result!: Awaited<ReturnType<typeof applyAccessLossInTx>>;
+  // The caller commits, then awaits other work (cancellations) for longer than
+  // round 1's 30 s safety timeout before it calls finishAccessLoss.
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    result = await db.transaction(async (tx) => {
+      await tx.execute(sql`DELETE FROM drive_members WHERE drive_id = ${drive} AND principal_id = ${people.member}`);
+      return applyAccessLossInTx(tx, change);
+    });
+    mock.timers.tick(31_000);
+  } finally {
+    mock.timers.reset();
+  }
+  t.after(() => finishAccessLoss(change, result));
+  member.typeText('While the caller was busy');
+  assert.equal((await member.waitClosed()).code, 4403);
+  await finishAccessLoss(change, result);
+  const owner = await open(t, doc, people.owner);
+  assert.ok(!owner.text().includes('While the caller was busy'));
+});
+
+test('an access-loss barrier that is never finished is retired after ten minutes with a generation bump', { skip: !url && SKIP }, async () => {
+  assert.ok(accessChange.ACCESS_LOSS_BARRIER_TIMEOUT_MS >= 10 * 60_000, 'the safety timeout is at least ten minutes');
+  const documentId = randomUUID();
+  const userId = randomUUID();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const generation = currentAccessGeneration();
+    // No hooks are registered in this file, so the transaction isn't touched.
+    await applyAccessLossInTx({} as never, { orgId: fx!.orgId, documentIds: [documentId] });
+    assert.equal(accessChange.accessLossBarrierCovers(fx!.orgId, documentId, userId), true);
+    mock.timers.tick(accessChange.ACCESS_LOSS_BARRIER_TIMEOUT_MS - 1);
+    assert.equal(accessChange.accessLossBarrierCovers(fx!.orgId, documentId, userId), true, 'only finishAccessLoss closes it before then');
+    assert.equal(currentAccessGeneration(), generation);
+    mock.timers.tick(1);
+    assert.equal(currentAccessGeneration(), generation + 1, 'every connection reads its role again');
+    assert.equal(accessChange.accessLossBarrierCovers(fx!.orgId, documentId, userId), false);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('a write moving the derive window doesn\'t strand a pending derivation', { skip: !url && SKIP }, async (t) => {
+  collabTestSeams.derivedEveryMs = 6_000;
+  t.after(() => { collabTestSeams.derivedEveryMs = 60_000; });
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Moving window' });
+  const editor = await open(t, doc, fx!.people.member);
+  editor.typeText('Alpha');
+  await pollUntil(async () => (await stored(doc)).content_text.includes('Alpha'), 'the first edit is derived', 10_000);
+  editor.typeText('Bravo');
+  // Stored inside the window: a derive is due when it ends.
+  await pollUntil(async () => storedStateText(await stored(doc)).includes('Bravo'), 'the second edit is stored', 10_000);
+  // A write derives now, moving the window later than that pending derive.
+  await writeDocument({ orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: fx!.people.member2 }, reason: 'import', mutate: (d) => appendParagraph(d, 'Charlie') });
+  editor.typeText('Delta');
+  await pollUntil(async () => storedStateText(await stored(doc)).includes('Delta'), 'the third edit is stored', 10_000);
+  assert.ok(!(await stored(doc)).content_text.includes('Delta'), 'stored inside the moved window: state only');
+  await pollUntil(async () => (await stored(doc)).content_text.includes('Delta'), 'derived when the moved window ends', 12_000);
+});
+
+test('a frame whose size work crosses the token expiry is refused', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 65_536 }));
+  t.after(() => { collabTestSeams.afterSizeCheck = null; });
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Slow measure', json: paragraphs(bigText(58_000)) });
+  const token = await tokenFor(fx!.people.member, fx!.orgId, { expiresInSeconds: 4 });
+  const client = connectCollab({ url: srv!.url, documentId: doc, token });
+  t.after(() => client.destroy());
+  await client.waitSynced();
+  const expiry = tokenExpiry(token);
+  // The size work for the next update runs on past the expiry.
+  collabTestSeams.afterSizeCheck = () => {
+    collabTestSeams.afterSizeCheck = null;
+    while (Date.now() <= expiry + 20) { /* the measurement is slow */ }
+  };
+  await pollUntil(() => Date.now() > expiry - 1_500, 'shortly before the expiry', 5_000);
+  client.typeText('Measured across the expiry');
+  assert.equal((await client.waitClosed()).code, 4401);
+  const reader = await open(t, doc, fx!.people.member2);
+  assert.ok(!reader.text().includes('Measured across the expiry'));
+});
+
+test('a second address with a byte order mark is refused at the door and never logged', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Byte order mark' });
+  const lines = captureConsole(t);
+  const nothing = Y.encodeStateAsUpdate(new Y.Doc());
+  const raw = rawCollab(srv!.url);
+  t.after(() => raw.ws.terminate());
+  assert.ok(await raw.opened());
+  raw.send(collabFrames.update(`doc:${doc}`, nothing));
+  raw.send(collabFrames.update(`﻿doc:${doc}`, nothing));
+  const closed = await raw.closed();
+  assert.ok([4403, 4404].includes(closed.code), `refused at the door (${closed.code})`);
+  assert.ok(lines.every((line) => !line.includes('﻿')), `the address reached the logs: ${lines.join(' | ')}`);
 });
 
 test('shutdown flushes pending stores', { skip: !url && SKIP }, async (t) => {
@@ -1033,4 +1241,43 @@ test('shutdown that cannot store a document says which one and fails', { skip: !
   assert.ok(lines.some((line) => line.includes('[collab] shutdown could not store a document') && line.includes(doc)), lines.join(' | '));
   assert.ok(lines.every((line) => !line.includes('Lost with the database down')), 'nothing a person wrote is logged');
   assert.ok(!storedStateText(await stored(doc)).includes('Lost with the database down'));
+});
+
+test('shutdown waits for a connection mid-load and stores the frames buffered behind it', { skip: !url && SKIP }, async (t) => {
+  srv!.renew();
+  // A document whose store keeps failing keeps shutdown busy for a while.
+  const slow = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Slow to store' });
+  const busy = await open(t, slow, fx!.people.member);
+  busy.typeText('Waiting on a failing store');
+  await pollUntil(() => !busy.provider.hasUnsyncedChanges, 'acknowledged');
+  const dropSlow = await failWrites(slow);
+  t.after(dropSlow);
+  // A new document whose first load waits (it writes its initial state on a held row).
+  const loading = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Mid-load' });
+  const row = await holdRow(loading);
+  t.after(row.release);
+  const late = connectCollab({ url: srv!.url, documentId: loading, token: await tokenFor(fx!.people.member2, fx!.orgId) });
+  t.after(() => late.destroy());
+  await late.waitAuthenticated();
+  let acknowledged = false;
+  let unsynced = late.provider.unsyncedChanges;
+  late.provider.on('unsyncedChanges', ({ number }: { number: number }) => {
+    if (number < unsynced) acknowledged = true;
+    unsynced = number;
+  });
+  late.typeText('Buffered behind the load');
+  const typedAt = Date.now();
+  // The frame waits in the server's buffer for the load; nothing reports it, so give it a moment.
+  await pollUntil(() => Date.now() - typedAt > 300, 'the edit reaches the server');
+  const failures = collabStateForTest().storeFailures;
+  const stopping = srv!.collab.destroy({ retryUntil: Date.now() + 10_000 });
+  stopping.catch(() => undefined);
+  const stopAt = Date.now();
+  await pollUntil(() => collabStateForTest().storeFailures > failures || Date.now() - stopAt > 500, 'shutdown is under way');
+  // The load finishes during shutdown, and the buffered edit is applied and acknowledged.
+  await row.release();
+  await pollUntil(() => acknowledged, 'the buffered edit was applied and acknowledged', 5_000);
+  await dropSlow();
+  await stopping;
+  assert.ok(storedStateText(await stored(loading)).includes('Buffered behind the load'), 'an acknowledged edit was stored before shutdown ended');
 });
