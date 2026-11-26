@@ -10,6 +10,22 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Start from a template, check before installing, and edit apps in the browser
+
+- **Start from a template.** Settings → Apps offers four starters: Hiring pipeline, Vendor
+  tracker, Light CRM and Content calendar. Name one, choose whether to add a few sample
+  records, and install. No file is needed, and the app is your own to change later.
+- **See what you are installing.** Before an app file installs, the check step describes
+  it in plain words: its record types, fields, links and views, and who can see it. It
+  also asks "Let Defty read these records?", and the answer defaults to no.
+- **Edit in the browser.** **Edit** on an app you built opens its file. **Check** reads it
+  for mistakes. **Save** updates the app and raises the version for you if you didn't.
+  Every record is kept. A change that would break existing records is refused and names
+  them. If someone else updated the app first, you're told to reload. Apps that come with
+  Deft, or belong to an App Kit package, open read-only and say why.
+- **Download** saves an app's file. It includes a `$schema` line, so editors check the file
+  as you type.
+
 ### Updating an app: the records that don't fit are named; edits save safely; editors can check app files
 
 - **Records that block an update are named.** When an update is refused because

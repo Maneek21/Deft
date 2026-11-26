@@ -46,7 +46,7 @@ export function ModuleUploadReview({
           <p className="text-[0.6875rem] font-medium uppercase tracking-wide" style={{ color: 'var(--primary)' }}>
             {upgrade ? 'Check the update' : 'Check before installing'}
           </p>
-          <h2 id="app-upload-review-title" ref={headingRef} tabIndex={-1} className="mt-0.5 outline-none break-words text-[0.9375rem] font-semibold" style={{ color: 'var(--on-surface)' }}>
+          <h2 id="app-upload-review-title" ref={headingRef} tabIndex={-1} className="mt-0.5 break-words text-[0.9375rem] font-semibold" style={{ color: 'var(--on-surface)', outline: 'none' }}>
             {preview.name}{' '}
             <span className="font-normal" style={{ color: 'var(--on-surface-variant)' }}>
               {upgrade && fromVersion ? `v${fromVersion} → v${preview.version}` : `v${preview.version}`}
@@ -66,7 +66,7 @@ export function ModuleUploadReview({
       </div>
 
       <div className="mt-4 space-y-3 md:pl-[52px]">
-        {summary ?? (
+        {summary ? <fieldset disabled={busy || locked} className="m-0 min-w-0 border-0 p-0">{summary}</fieldset> : (
           <ul className="space-y-1.5" aria-label="Record types in this app">
             {preview.manifest.collections.map((collection) => (
               <li key={collection.key} className="flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-[0.8125rem]" style={{ background: 'var(--surface-container-high)' }}>
@@ -81,7 +81,7 @@ export function ModuleUploadReview({
         <p className="text-[0.75rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
           {upgrade
             ? 'Every record is kept. If a change would break a record that already exists, Deft refuses the update and tells you which field.'
-            : 'Owners, admins and members can use it. Guests can’t. Deft stores only this file: it runs no code and fetches nothing. You can turn an app off later, but not delete it.'}
+            : `${summary ? '' : 'Owners, admins and members can use it. Guests can’t. '}Deft stores only this file: it runs no code and fetches nothing. You can turn an app off later, but not delete it.`}
         </p>
         <details className="text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
           <summary className="min-h-11 cursor-pointer py-3 md:min-h-0 md:py-1">File details</summary>

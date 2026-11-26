@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import Link from 'next/link';
-import { AppWindow, Check, Copy, FileUp, Loader2, Power, ShieldCheck, X } from 'lucide-react';
+import { AppWindow, Check, Copy, Download, FileUp, Loader2, Pencil, Power, ShieldCheck, X } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state';
 import { AttachmentAppUpgrade } from '@/components/apps/attachment-app-upgrade';
 import { InstallationUpgradeTrust } from '@/components/apps/installation-upgrade-trust';
@@ -16,6 +16,12 @@ import { PublicCancellationOwnerPanel } from '@/components/apps/public-cancellat
 import { AppsHomeLists, AppsSearch, BuildYourOwnPanel } from '@/components/apps/home/apps-home';
 import { ModuleUploadReview } from '@/components/apps/home/module-upload-review';
 import { AgentAccessPicker, type AgentAccess } from '@/components/apps/home/app-tiles';
+import { TemplateGallery } from '@/components/apps/home/template-gallery';
+import { AppFileEditor, appFileReadOnlyReason, downloadAppFile } from '@/components/apps/home/app-file-editor';
+import { ManifestSummary } from '@/components/apps/manifest-summary';
+import { agentAccessPatchFor } from '@/lib/module-describe';
+import { APP_TEMPLATES, installAppTemplate, type AppTemplate } from '@/lib/app-templates';
+import { checkModuleManifestEdit, saveModuleManifestEdit } from '@/lib/module-version-bump';
 import { useSetPageContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
 import { APPS_ENABLED, APP_RESOURCE_SYNC_ENABLED, APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
@@ -23,6 +29,7 @@ import { useAuth } from '@/lib/auth-context';
 import { appApiError, canEnableAppWithoutReview, canStageConnectedUpgrade, isConnectedAppManifest, normalizeAppInspection, type AppInspection, type AppInstallation } from '@/lib/apps';
 import {
   moduleApiError,
+  normalizeModuleInstallation,
   previewModuleManifestJson,
   type BundledModule,
   type ModuleInstallation,
@@ -38,6 +45,7 @@ import {
   moduleUploadRequest,
   planModuleUpload,
   readableManifestError,
+  uniqueAppName,
 } from '@/lib/app-upload-routing';
 import { refreshApps, useAppRealtime, useApps } from '@/hooks/use-apps';
 import { refreshModuleCaches, useBundledModules, useInstalledModules, useModuleRealtime } from '@/hooks/use-modules';
@@ -64,6 +72,8 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
     upgradeTarget: AppInstallation | null;
   } | null>(null);
   const [pendingModule, setPendingModule] = useState<PendingModule | null>(null);
+  const [agentRead, setAgentRead] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const uploadTargetRef = useRef<UploadTarget>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
@@ -74,6 +84,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   const messageRef = useRef<HTMLDivElement>(null);
   const selectedApp = apps.find((app) => app.id === selectedId);
   const canManage = user?.role === 'owner' || user?.role === 'admin';
+  const editingModule = editingId ? installedModules.modules.find((module) => module.id === editingId) ?? null : null;
   const pairingAvailable = APPS_ENABLED && developerPairingAvailable(appsResponse);
   const home = useMemo(() => buildAppsHome({
     modules: installedModules.modules,
@@ -105,6 +116,8 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
         if (target?.kind === 'package') throw new Error(`This is an app file, not an App Kit package. Choose a new package for ${target.app.name}.`);
         const preview = await previewModuleManifestJson(source).catch((reason: unknown) => { throw new Error(readableManifestError(reason, source)); });
         const decision = planModuleUpload(preview, installedModules.modules, target?.kind === 'module' ? target.module.id : null);
+        setAgentRead(false);
+        setEditingId(null);
         setPendingModule({ source, preview, decision });
         return;
       }
@@ -140,13 +153,31 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
       if (!response.ok) {
         throw new Error(await moduleApiError(response, decision.mode === 'upgrade' ? `Unable to update ${preview.name}.` : `Unable to install ${preview.name}.`));
       }
+      const accessPatch = decision.mode === 'install' ? agentAccessPatchFor(agentRead) : null;
+      const accessSet = accessPatch ? await api.patch(`/api/modules/${encodeURIComponent(preview.slug)}`, accessPatch).then((r) => r.ok, () => false) : true;
       await refreshModuleCaches(preview.slug);
       setPendingModule((current) => current === pendingModule ? null : current);
+      if (!accessSet) { setMessage({ tone: 'error', text: `${preview.name} is installed, but Defty's access could not be set. Set it with Defty and agents on its card.` }); return; }
       setMessage(decision.mode === 'upgrade'
         ? { tone: 'success', text: `${preview.name} is updated to v${preview.version}. Every record was kept.` }
-        : { tone: 'success', text: `${preview.name} is installed.`, href: `/modules/${encodeURIComponent(preview.slug)}`, hrefLabel: `Open ${preview.name}` });
+        : { tone: 'success', text: `${preview.name} is installed${accessPatch ? ' and Defty can read its records' : ''}.`, href: `/modules/${encodeURIComponent(preview.slug)}`, hrefLabel: `Open ${preview.name}` });
     } catch (reason) {
       setMessage({ tone: 'error', text: errorText(reason, 'Unable to apply this app file.') });
+    } finally { setBusy(null); }
+  };
+
+  const installTemplate = async (template: AppTemplate, name: string, withSamples: boolean) => {
+    setBusy('template'); setMessage(null);
+    try {
+      const result = await installAppTemplate({ template, name: uniqueAppName(name, installedModules.modules), withSamples, installed: installedModules.modules });
+      await refreshModuleCaches(result.slug);
+      setMessage(result.seedError
+        ? { tone: 'error', text: `${result.name}: ${result.seedError}`, href: `/modules/${encodeURIComponent(result.slug)}`, hrefLabel: `Open ${result.name}` }
+        : { tone: 'success', text: `${result.name} is installed${result.seeded ? ` with ${result.seeded} sample record${result.seeded === 1 ? '' : 's'}` : ''}.`, href: `/modules/${encodeURIComponent(result.slug)}`, hrefLabel: `Open ${result.name}` });
+      return true;
+    } catch (reason) {
+      setMessage({ tone: 'error', text: errorText(reason, `Unable to install ${name}.`) });
+      return false;
     } finally { setBusy(null); }
   };
 
@@ -257,6 +288,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   };
 
   const selectedParts = selectedApp ? installedModules.modules.filter((module) => module.owningAppInstallationId === selectedApp.id) : [];
+  const focusAfterClose = (id: string) => { requestAnimationFrame(() => (document.getElementById(id) ?? document.getElementById('apps-upload-button'))?.focus()); };
   const focusUpload = () => { requestAnimationFrame(() => (document.getElementById('apps-upload-button') ?? document.getElementById('apps-back-link'))?.focus()); };
   // When an action removes the focused control (a review card closing), move focus to the result.
   useEffect(() => {
@@ -273,7 +305,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(2rem,env(safe-area-inset-bottom))] pt-3 md:px-6">
       <div className="mx-auto max-w-5xl space-y-5">
         <header className="sr-only md:not-sr-only md:pt-2"><h1 className="text-[1.5rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Apps</h1><p className="mt-1 text-[0.875rem]" style={{ color: 'var(--on-surface-variant)' }}>Add apps that come with Deft, or build your own.</p></header>
-        <div role="status" aria-live="polite" aria-atomic="true" className={message ? undefined : 'sr-only'}>{message && <div ref={messageRef} tabIndex={-1} className="flex items-start gap-3 rounded-lg px-3 py-2.5 text-[0.8125rem] outline-none" style={{ background: message.tone === 'error' ? 'var(--danger-subtle)' : 'rgba(48,164,108,.12)', color: message.tone === 'error' ? 'var(--error)' : 'var(--status-green)' }}>
+        <div role="status" aria-live="polite" aria-atomic="true" className={message ? undefined : 'sr-only'}>{message && <div ref={messageRef} tabIndex={-1} className="flex items-start gap-3 rounded-lg px-3 py-2.5 text-[0.8125rem]" style={{ outline: 'none', background: message.tone === 'error' ? 'var(--danger-subtle)' : 'rgba(48,164,108,.12)', color: message.tone === 'error' ? 'var(--error)' : 'var(--status-green)' }}>
           <p className="min-w-0 flex-1 whitespace-pre-line break-words leading-relaxed">{message.text}{message.href && <> <Link href={message.href} className="font-semibold underline underline-offset-2">{message.hrefLabel}</Link></>}</p>
           <button type="button" onClick={() => setMessage(null)} aria-label="Dismiss message" className="-my-2 -mr-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-md md:h-8 md:w-8"><X size={14} aria-hidden /></button>
         </div>}</div>
@@ -281,7 +313,8 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
           <div className="flex items-start justify-between gap-3"><div><h2 className="text-sm font-semibold">One-time Codex pairing</h2><p className="mt-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>Enter this only in the CLI prompt. It expires at {new Date(pairing.expires_at).toLocaleTimeString()} and cannot be replayed.</p></div><button type="button" onClick={() => setPairing(null)} aria-label="Dismiss pairing" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md"><X size={16} aria-hidden /></button></div>
           <div className="mt-3 flex items-center gap-2"><code className="rounded-lg px-3 py-2 text-base font-semibold tracking-widest" style={{ background: 'var(--surface-container-high)' }}>{pairing.code}</code><button type="button" className="deft-pill min-h-11" onClick={() => void navigator.clipboard.writeText(pairing.code).then(() => setCopied(true), () => setCopied(false))}>{copied ? <Check size={13} aria-hidden /> : <Copy size={13} aria-hidden />} {copied ? 'Copied' : 'Copy'}</button></div>
         </section>}
-        {pendingModule && <ModuleUploadReview preview={pendingModule.preview} decision={pendingModule.decision} busy={busy === pendingModule.preview.slug} locked={busy !== null} onCancel={() => { setPendingModule(null); focusUpload(); }} onConfirm={() => void confirmModule()} />}
+        {pendingModule && <ModuleUploadReview preview={pendingModule.preview} decision={pendingModule.decision} busy={busy === pendingModule.preview.slug} locked={busy !== null} onCancel={() => { setPendingModule(null); focusUpload(); }} onConfirm={() => void confirmModule()} summary={<ManifestSummary manifest={pendingModule.preview.manifest} {...(pendingModule.decision.mode === 'install' ? { agentRead, onAgentReadChange: setAgentRead } : {})} />} />}
+        {editingModule && !selectedId && <AppFileEditor key={editingModule.id} module={editingModule} locked={busy !== null} onClose={() => { const id = editingModule.id; setEditingId(null); focusAfterClose(`apps-edit-${id}`); }} onCheck={async (source, base) => { const checked = await checkModuleManifestEdit(source, { version: base.version, moduleId: editingModule.moduleId, slug: editingModule.slug }); return checked.ok ? { ok: true, version: checked.preview.version } : { ok: false, lines: checked.lines }; }} onSave={async (source, base) => { setBusy('edit'); try { const saved = await saveModuleManifestEdit({ slug: editingModule.slug, source, activeDigest: base.digest, activeVersion: base.version, moduleId: editingModule.moduleId }); const updated = normalizeModuleInstallation(saved.module); await refreshModuleCaches(editingModule.slug); return { version: saved.version, source: saved.source, digest: updated?.manifestDigest ?? null }; } finally { setBusy(null); } }} />}
         {pending && <InspectionCard pending={pending.inspection} upgradeTarget={pending.upgradeTarget} busy={busy === 'stage'} locked={busy !== null} onCancel={() => { setPending(null); focusUpload(); }} onStage={() => void stage()} />}
         {selectedId ? (
           isLoading ? <div className="flex min-h-48 items-center justify-center"><Loader2 className="animate-spin" role="img" aria-label="Loading apps" /></div>
@@ -301,6 +334,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
         ) : <>
           {isGuest ? <EmptyState icon={<AppWindow size={20} />} title="Apps aren’t available to guests" description="Ask a workspace owner or admin if you need to use an app here." /> : <>
           <BuildYourOwnPanel canManage={canManage} busy={busy !== null || !installedModules.data || Boolean(installedModules.error)} pairingAvailable={pairingAvailable} onUpload={() => choosePackage()} onPair={() => void createPairing()} />
+          {canManage && <TemplateGallery templates={APP_TEMPLATES} busy={busy === 'template'} locked={busy !== null || !installedModules.data} onInstall={installTemplate} />}
           {canManage && APP_RESOURCE_SYNC_ENABLED && <Link className="deft-pill min-h-11" href="/settings/apps/private-resources">Your private App resources</Link>}
           {listLoading ? <div className="flex min-h-48 items-center justify-center"><Loader2 className="animate-spin" role="img" aria-label="Loading apps" style={{ color: 'var(--primary)' }} /></div>
             : listFailed ? <EmptyState icon={<AppWindow size={20} />} title="Apps did not load" description={errorText(installedModules.error, 'Try again.')} action={{ label: 'Try again', onClick: retry }} />
@@ -317,6 +351,10 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
                 onAgentAccess: (module, value) => void updateModule(module, { agent_access: value }),
                 onUploadVersion: (module) => choosePackage({ kind: 'module', module }),
                 onBundledUpdate: (module) => void updateBundledVersion(module),
+                moduleActions: (module) => <>
+                  <button type="button" id={`apps-edit-${module.id}`} disabled={busy !== null} onClick={() => { setPendingModule(null); setEditingId(module.id); }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-[0.8125rem] font-medium disabled:opacity-60 md:min-h-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface)' }} aria-label={`${appFileReadOnlyReason(module) ? 'View the file of' : 'Edit'} ${module.manifest.name || module.slug}`}><Pencil size={14} aria-hidden /> {appFileReadOnlyReason(module) ? 'View file' : 'Edit'}</button>
+                  <button type="button" onClick={() => downloadAppFile(module)} title="Download its file" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg px-3 md:min-h-9 md:min-w-9" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface)' }} aria-label={`Download the file of ${module.manifest.name || module.slug}`}><Download size={14} aria-hidden /></button>
+                </>,
               }} />
             </>}
           </>}
@@ -335,7 +373,7 @@ function InspectionCard({ pending, upgradeTarget, busy, locked = false, onCancel
     || pending.manifest.compatibility.app_protocol === '4'
     || pending.manifest.compatibility.app_protocol === '5' || pending.manifest.compatibility.app_protocol === '7';
   return <section className="rounded-xl p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--primary)' }}>
-    <div className="flex items-start gap-3"><ShieldCheck size={20} style={{ color: 'var(--status-green)' }} /><div className="min-w-0 flex-1"><h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold outline-none">Review {pending.manifest.name}{upgradeTarget ? ' upgrade' : ''}</h2><p className="mt-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>{pending.manifest.description ?? (pending.manifest.schema_version === '6' ? 'App with declared native Calendar actions.' : 'Declarative workspace App.')}</p></div></div>
+    <div className="flex items-start gap-3"><ShieldCheck size={20} style={{ color: 'var(--status-green)' }} /><div className="min-w-0 flex-1"><h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold" style={{ outline: 'none' }}>Review {pending.manifest.name}{upgradeTarget ? ' upgrade' : ''}</h2><p className="mt-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>{pending.manifest.description ?? (pending.manifest.schema_version === '6' ? 'App with declared native Calendar actions.' : 'Declarative workspace App.')}</p></div></div>
     <dl className="mt-4 grid gap-2 text-xs sm:grid-cols-2"><Fact label="Identity" value={`${pending.manifest.id}@${pending.manifest.version}`} /><Fact label="Protocol" value={`App v${pending.manifest.compatibility.app_protocol}`} /><Fact label="Package format" value={pending.package_format} /><Fact label="License" value={pending.manifest.license} /><Fact label="Provenance" value={pending.manifest.provenance ? `Unsigned local · unverified ${pending.manifest.provenance.source_repository}@${pending.manifest.provenance.source_commit}` : 'Unsigned local package · no source attestation'} /><Fact label="Package digest" value={pending.package_digest} mono /></dl>
     {upgradeTarget && <p className="mt-3 rounded-lg px-3 py-2 text-[11px]" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}>This stages {pending.manifest.version} beside active {upgradeTarget.version}. The active version and authority remain unchanged until an owner completes the exact upgrade review.</p>}
     <div className="mt-4"><h3 className="text-xs font-semibold">Exact included app files</h3><ul className="mt-2 space-y-1">{pending.manifest.modules.map((module) => <li key={`${module.module_id}@${module.version}`} className="rounded-md px-2 py-1.5 font-mono text-[10px]" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}>{module.module_id}@{module.version} · {module.manifest_digest}</li>)}</ul></div>
