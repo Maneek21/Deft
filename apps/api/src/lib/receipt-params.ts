@@ -137,7 +137,33 @@ function redactSensitiveReceiptValue(value: unknown): unknown {
  */
 const DOCUMENT_CONTENT_ACTIONS: ReadonlySet<string> = new Set(['create_note', 'write_canvas']);
 
+/**
+ * M7's document tools: an edit's receipt names the document and the summary,
+ * never its operations; a created document's names where it went and the
+ * sizes, never the title or the Markdown (rule C4).
+ */
+function withoutDocumentToolText(action: string, params: Record<string, unknown>, resultValue: unknown): Record<string, unknown> {
+  const result = resultValue && typeof resultValue === 'object' ? resultValue as Record<string, unknown> : {};
+  const documentId = typeof result.document_id === 'string' ? result.document_id
+    : typeof params.document_id === 'string' ? params.document_id : null;
+  if (action === 'edit_document') {
+    return Object.fromEntries(['document_id', 'summary', 'suggestion_id'].flatMap((key) => (typeof params[key] === 'string' ? [[key, params[key]]] : [])));
+  }
+  const omitted = (value: unknown) => (value && typeof value === 'object' && (value as Record<string, unknown>).content_omitted === true
+    ? value
+    : { document_id: documentId, content_omitted: true, content_bytes: Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value ?? '')) });
+  return {
+    ...Object.fromEntries(['drive_id', 'folder_id', 'parent_document_id'].flatMap((key) => (typeof params[key] === 'string' ? [[key, params[key]]] : []))),
+    ...(documentId ? { document_id: documentId } : {}),
+    ...(params.title !== undefined ? { title: omitted(params.title) } : {}),
+    ...(params.markdown !== undefined ? { markdown: omitted(params.markdown) } : {}),
+  };
+}
+
 function withoutDocumentContent(action: string, paramsValue: unknown, resultValue: unknown): unknown {
+  if ((action === 'edit_document' || action === 'create_document') && paramsValue && typeof paramsValue === 'object' && !Array.isArray(paramsValue)) {
+    return withoutDocumentToolText(action, paramsValue as Record<string, unknown>, resultValue);
+  }
   if (!DOCUMENT_CONTENT_ACTIONS.has(action) || !paramsValue || typeof paramsValue !== 'object' || Array.isArray(paramsValue)) {
     return paramsValue;
   }

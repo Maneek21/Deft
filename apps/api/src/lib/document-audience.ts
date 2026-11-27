@@ -22,7 +22,10 @@
 //   snippet, Markdown or drive name), and a shown document's drive is named
 //   only when everyone there can see that drive. The tools held are the three
 //   document tools and the old note and canvas tools, which read documents
-//   since F15. Every edit reply (M7) is held the same way.
+//   since F15. Every edit reply and created document's result (M7,
+//   edit_document and create_document) is held the same way: when not
+//   everyone there can open the document, its title and link go and the
+//   reply keeps only where the edit landed, marked `withheld`.
 // - The audience is checked again when the reply is written (fix round 1):
 //   each tool reports what it showed the model (`shown`), and the reply
 //   transaction re-checks those against the chat's audience as it is then
@@ -84,10 +87,17 @@ export class DocumentAudienceChangedError extends Error {
   }
 }
 
+/** The document read tools: their results name documents and drives. */
+const DOCUMENT_READ_TOOL_NAMES = ['search_documents', 'read_document', 'list_drive', 'search_notes', 'read_note', 'read_canvas'] as const;
+/**
+ * Defty's document write tools (M7, lib/agent-document-write-tools.ts): an
+ * edit's reply and a created document's result name the document and its
+ * title, so they are held the same way (M3's carry-forward).
+ */
+const DOCUMENT_WRITE_TOOL_NAMES = ['edit_document', 'create_document'] as const;
+
 /** The tools whose results are documents and drives, held to a shared conversation's audience. */
-export const AUDIENCE_HELD_TOOLS: ReadonlySet<string> = new Set([
-  'search_documents', 'read_document', 'list_drive', 'search_notes', 'read_note', 'read_canvas',
-]);
+export const AUDIENCE_HELD_TOOLS: ReadonlySet<string> = new Set([...DOCUMENT_READ_TOOL_NAMES, ...DOCUMENT_WRITE_TOOL_NAMES]);
 
 type Executor = Pick<typeof db, 'execute'>;
 type Citation = { type: string; id: string; title?: string; url?: string };
@@ -199,6 +209,9 @@ function referencesOf(toolName: string, result: Record<string, any>): { document
         documentIds: ids(Array.isArray(result.documents) ? result.documents : []),
         driveIds: [...ids(Array.isArray(result.drives) ? result.drives : []), ...(isRecord(result.drive) ? ids([result.drive]) : [])],
       };
+    case 'edit_document':
+    case 'create_document':
+      return { documentIds: typeof result.document_id === 'string' ? [result.document_id] : [], driveIds: [] };
     default:
       return { documentIds: [], driveIds: [] };
   }
@@ -247,6 +260,11 @@ function shownRefs(toolName: string, result: unknown): DocumentRef[] {
       } else {
         for (const row of rowsOf(result.drives)) if (isRecord(row) && row.withheld !== true) drive(row.id);
       }
+      break;
+    case 'edit_document':
+    case 'create_document':
+      // The reply names the document by its title.
+      if (typeof result.document_id === 'string' && typeof result.title === 'string') document({ id: result.document_id });
       break;
   }
   return [...shown.values()];
@@ -346,6 +364,17 @@ export async function holdDocumentToolResponse<T extends { result: any; citation
         };
       }
       break;
+    case 'edit_document':
+    case 'create_document':
+      // An edit's landing (direct or suggest, and its undo) is no document
+      // text and stays, so Defty can still say what happened; the title and
+      // link go.
+      if (!openable.has(result.document_id)) {
+        holdDocument(result.document_id);
+        const { title: _title, url: _url, ...landing } = result;
+        held = { ...landing, withheld: true };
+      }
+      break;
   }
   const withheldDocuments = new Set(withheld.filter((ref) => ref.type === 'document').map((ref) => ref.id));
   return {
@@ -360,8 +389,8 @@ export async function holdDocumentToolResponse<T extends { result: any; citation
 // ---------------------------------------------------------------------------
 // What a run stores (consult rule C4).
 
-/** The tools whose calls documentToolCallForStorage keeps as references. */
-const DOCUMENT_READ_TOOLS: ReadonlySet<string> = AUDIENCE_HELD_TOOLS;
+/** The read tools whose calls documentToolCallForStorage keeps as references. */
+const DOCUMENT_READ_TOOLS: ReadonlySet<string> = new Set(DOCUMENT_READ_TOOL_NAMES);
 
 const stringField = (record: Record<string, any>, key: string) => (typeof record[key] === 'string' ? { [key]: record[key] } : {});
 
@@ -444,8 +473,63 @@ function inputForStorage(toolName: string, input: unknown): unknown {
  * as it is.
  */
 export function documentToolCallForStorage(toolName: string, input: unknown, result: unknown): { input: unknown; result: unknown } {
+  if (toolName === 'edit_document') return { input: editDocumentInputForStorage(input), result: writeResultForStorage(result) };
+  if (toolName === 'create_document') {
+    const documentId = isRecord(result) && typeof result.document_id === 'string' ? result.document_id : null;
+    return { input: createDocumentInputForStorage(input, documentId), result: writeResultForStorage(result) };
+  }
   if (!DOCUMENT_READ_TOOLS.has(toolName)) return { input, result };
   return { input: inputForStorage(toolName, input), result: resultForStorage(toolName, result) };
+}
+
+/** A text field as a run keeps it: never the text, only that it was left out and its size. */
+function omittedText(value: unknown, documentId: string | null): { document_id: string | null; content_omitted: true; content_bytes: number } {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return { document_id: documentId, content_omitted: true, content_bytes: Buffer.byteLength(text) };
+}
+
+const isOmitted = (value: unknown) => isRecord(value) && value.content_omitted === true;
+
+/**
+ * An edit_document call as a run, a message or a plan keeps it (M7, rule C4):
+ * the document, the summary and the model's `mode`, never the operations'
+ * Markdown (they live in the suggestion, or in the agent version's
+ * edit_details). Idempotent.
+ */
+export function editDocumentInputForStorage(input: unknown): unknown {
+  if (!isRecord(input) || input.ops_omitted === true) return input;
+  const ops = Array.isArray(input.ops) ? input.ops : [];
+  return {
+    ...stringField(input, 'document_id'), ...stringField(input, 'summary'), ...stringField(input, 'mode'),
+    ops_omitted: true, op_count: ops.length, ops_bytes: Buffer.byteLength(JSON.stringify(input.ops ?? [])),
+  };
+}
+
+/**
+ * A create_document call as a run, a message or a plan keeps it (M7, rule
+ * C4): where it was to go, never its title or Markdown. `documentId` names
+ * the document once it exists. Idempotent.
+ */
+export function createDocumentInputForStorage(input: unknown, documentId: string | null = null): unknown {
+  if (!isRecord(input)) return input;
+  const id = documentId ?? (typeof input.document_id === 'string' ? input.document_id : null);
+  return {
+    ...(id ? { document_id: id } : {}),
+    ...stringField(input, 'drive_id'), ...stringField(input, 'folder_id'), ...stringField(input, 'parent_document_id'),
+    ...(input.title !== undefined ? { title: isOmitted(input.title) ? input.title : omittedText(input.title, id) } : {}),
+    ...(input.markdown !== undefined ? { markdown: isOmitted(input.markdown) ? input.markdown : omittedText(input.markdown, id) } : {}),
+  };
+}
+
+/** A write tool's result as a run keeps it: the document and the landing, never the title. */
+function writeResultForStorage(result: unknown): unknown {
+  if (!isRecord(result)) return result;
+  if ('error' in result) return { ...stringField(result, 'error'), ...stringField(result, 'code'), ...stringField(result, 'landing'), ...stringField(result, 'reason') };
+  return {
+    ...stringField(result, 'document_id'), ...stringField(result, 'landing'), ...stringField(result, 'reason'), ...stringField(result, 'status'),
+    ...(isRecord(result.undo) && typeof result.undo.action_id === 'string' ? { undo: { action_id: result.undo.action_id } } : {}),
+    withheld: result.withheld === true,
+  };
 }
 
 /**

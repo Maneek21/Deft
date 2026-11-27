@@ -42,6 +42,10 @@ import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLost
 import {
   AUDIENCE_CHANGED_REPLY, DocumentAudienceChangedError, documentsNoLongerShown, enqueueWithheldDocumentNotice, type WithheldRef,
 } from '../../lib/document-audience.js';
+import {
+  CREATE_DOCUMENT_ACTION, DOCUMENT_EDIT_ACTION, documentEditActionParams, EDIT_REFUSAL_COPY,
+} from '../../lib/agent-document-write-tools.js';
+import { documentRoleFor, driveRoleFor, roleAtLeast } from '../../lib/document-access.js';
 
 export async function withAgentWorkingSignal<T>(input: {
   spaceId: string; threadId: string | null; agentUserId: string;
@@ -118,6 +122,17 @@ export function hasAppBindingInvokeAttempt(
   return (actions ?? []).some((action) => action?.action === 'app_binding_invoke');
 }
 
+/**
+ * A write the runner settled itself: an App binding call, or a document edit
+ * (M7: applied under the chat exception, queued as a suggestion, or refused).
+ * No compiler recovery or deterministic fallback proposes another write for it.
+ */
+export function hasRunnerSettledWrite(
+  actions: Array<{ action?: unknown }> | null | undefined,
+): boolean {
+  return hasAppBindingInvokeAttempt(actions) || (actions ?? []).some((action) => action?.action === DOCUMENT_EDIT_ACTION);
+}
+
 export function shouldRecoverWithActionCompiler({
   readOnlyRequest,
   wantsDiscussionTask,
@@ -135,7 +150,7 @@ export function shouldRecoverWithActionCompiler({
     && !wantsDiscussionTask
     && hasWriteIntent
     && runnerPendingActions.length === 0
-    && !hasAppBindingInvokeAttempt([...runnerPendingActions, ...runnerExecutedActions]);
+    && !hasRunnerSettledWrite([...runnerPendingActions, ...runnerExecutedActions]);
 }
 
 export function shouldAttemptActionCompiler({
@@ -175,7 +190,7 @@ export function selectGroundedOrFallbackActions({
 }): any[] {
   if (readOnlyRequest) return [];
   if (runnerPendingActions.length > 0) return runnerPendingActions;
-  if (hasAppBindingInvokeAttempt(runnerExecutedActions)) return [];
+  if (hasRunnerSettledWrite(runnerExecutedActions)) return [];
   return fallbackActions;
 }
 
@@ -522,6 +537,41 @@ export async function resolvePendingActionTargets(
       )).limit(1) : [];
       if (!targetSpace) {
         warnings.push('I could not verify access to the target space for this note.');
+        continue;
+      }
+      resolvedActions.push(action);
+      continue;
+    }
+
+    if (action.action === DOCUMENT_EDIT_ACTION) {
+      // M7: an edit stays a proposal only while its asker can edit the document;
+      // it keeps the document, the summary and the operations its suggestion is
+      // made from (persistAgentReplyWithActions stores { document_id, summary }).
+      const documentId = typeof action.params.document_id === 'string' ? action.params.document_id : '';
+      const role = documentId ? await documentRoleFor(userId, orgId, documentId) : null;
+      if (!role) {
+        warnings.push('I could not find that document.');
+        continue;
+      }
+      if (!roleAtLeast(role, 'edit')) {
+        warnings.push(EDIT_REFUSAL_COPY.asker_cannot_edit);
+        continue;
+      }
+      resolvedActions.push({ ...action, params: { ...documentEditActionParams(action.params), ops: action.params.ops } });
+      continue;
+    }
+
+    if (action.action === CREATE_DOCUMENT_ACTION) {
+      // M7: a drive or a parent page named must be one the asker can add to;
+      // the executor checks again under its locks (createDocumentInTx).
+      const driveId = typeof action.params.drive_id === 'string' && action.params.drive_id ? action.params.drive_id : null;
+      const parentId = typeof action.params.parent_document_id === 'string' && action.params.parent_document_id ? action.params.parent_document_id : null;
+      if (driveId && !roleAtLeast(await driveRoleFor(userId, orgId, driveId), 'edit')) {
+        warnings.push('I could not find that drive, or you can\'t add documents to it.');
+        continue;
+      }
+      if (parentId && !roleAtLeast(await documentRoleFor(userId, orgId, parentId), 'edit')) {
+        warnings.push('I could not find that page, or you can\'t add sub-pages to it.');
         continue;
       }
       resolvedActions.push(action);
@@ -1775,6 +1825,8 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
               // create_task can inherit source_message_id without the LLM having
               // to know about it.
               sourceMessageId: requestMessageId,
+              // M7: only the triggering message's own text can ask for a direct edit.
+              askerMessageText: content,
               conversationId: spaceId,
               spaceContext: space ? {
                 type: space.type as 'dm' | 'group_dm' | 'agent_conversation' | 'public' | 'private',
@@ -1897,12 +1949,12 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         callerName: callerUser?.name ?? null,
       })
       : null;
-    const runnerHasAppBindingInvoke = hasAppBindingInvokeAttempt([
+    const runnerSettledWrite = hasRunnerSettledWrite([
       ...result.pendingActions,
       ...result.executedActions,
     ]);
     const providerUnavailable = result.model === 'agent-unconfigured';
-    const allowDeterministicFallbacks = !providerUnavailable && result.pendingActions.length === 0 && !runnerHasAppBindingInvoke;
+    const allowDeterministicFallbacks = !providerUnavailable && result.pendingActions.length === 0 && !runnerSettledWrite;
     if (fallbackProjectName === null && allowDeterministicFallbacks && !wantsDiscussionTask) {
       fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent, userId);
     }

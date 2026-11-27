@@ -34,7 +34,7 @@ import {
 import { getMCPToolsForAgent, parseMCPToolName } from './mcp-tools.js';
 import { isDestructiveAction } from './agent-approval.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
-import { readCanvasDocument, readNoteDocument, searchNoteDocuments } from './legacy-notes.js';
+import { logDeprecatedNoteTool, readCanvasDocument, readNoteDocument, searchNoteDocuments } from './legacy-notes.js';
 import { runDocumentReadTool } from './agent-document-tools.js';
 import { holdDocumentToolResponse, type DocumentRef, type WithheldRef } from './document-audience.js';
 import { capabilityService } from './capability-service.js';
@@ -2552,6 +2552,8 @@ export async function executeToolCall(
     // In a shared conversation each of these is held to its audience, as the
     // document tools are (lib/document-audience.ts).
     case 'read_canvas': {
+      // M7: an alias of read_document now (lib/legacy-notes.ts).
+      logDeprecatedNoteTool('read_canvas');
       await requireActiveOrgMembership(orgId, _userId);
       const spaceName = typeof params.space_name === 'string' ? params.space_name : '';
       if (!spaceName.trim()) return { result: { error: 'space_name is required', code: 'SPACE_REQUIRED' }, citations: [] };
@@ -2570,6 +2572,7 @@ export async function executeToolCall(
     }
 
     case 'search_notes': {
+      logDeprecatedNoteTool('search_notes');
       await requireActiveOrgMembership(orgId, _userId);
       const query = typeof params.query === 'string' ? params.query.trim() : '';
       if (!query) return { result: { error: 'query is required', code: 'QUERY_REQUIRED' }, citations: [] };
@@ -2583,6 +2586,7 @@ export async function executeToolCall(
     }
 
     case 'read_note': {
+      logDeprecatedNoteTool('read_note');
       await requireActiveOrgMembership(orgId, _userId);
       const noteId = typeof params.note_id === 'string' ? params.note_id : '';
       if (!noteId) return { result: { error: 'note_id is required', code: 'NOTE_REQUIRED' }, citations: [] };

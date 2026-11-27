@@ -1383,8 +1383,8 @@ async function approveActionLocked(
 
   // Retained native proposals remain audit records, never replacement sends.
   if(row.source==='native_email'||row.action==='email_send')return {status:'error',code:'UNSUPPORTED_ACTION',message:'The built-in mailbox action is retired'};
-  // An edit suggestion's executor is executeAction's (M7 adds the tool to ACTION_TOOLS).
-  const isNativeAction = ACTION_TOOLS.has(row.action) || row.action === DOCUMENT_EDIT_ACTION;
+  // An edit suggestion's executor is executeAction's: edit_document is a registered action tool (M7).
+  const isNativeAction = ACTION_TOOLS.has(row.action);
   if (!MCP_ACTION_KINDS.has(row.action) && !row.action.startsWith('mcp__') && !isNativeAction) {
     return {
       status: 'error',

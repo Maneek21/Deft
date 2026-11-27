@@ -52,12 +52,14 @@ import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.j
 import { clientSafeErrorMessage } from './client-safe-error.js';
 import { authorizeNativeActionTarget } from './agent-action-visibility.js';
 import {
-  canvasDocumentToWrite, createNoteDocument, noteContentJson, noteToolActor, noteToolError, omitExecutedToolContent,
+  canvasDocumentToWrite, createNoteDocument, logDeprecatedNoteTool, noteContentJson, noteToolActor, noteToolError, omitExecutedToolContent,
   promotableNoteDocument, readCanvasDocument, readNoteDocument, replaceDocumentContent, searchNoteDocuments,
   type JSONContent as NoteJSONContent,
 } from './legacy-notes.js';
 import { updateDocument } from './documents.js';
 import { DOCUMENT_EDIT_ACTION, executeDocumentEditAction } from './document-suggestions.js';
+import type { DocumentEditOp } from './document-edit.js';
+import { CREATE_DOCUMENT_ACTION, createAgentDocument, documentEditActionParams } from './agent-document-write-tools.js';
 import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
@@ -1561,6 +1563,12 @@ export async function executeAction(
     trustedHumanMcpPrincipal?: boolean;
     /** Set only by the approval resolver: the claim token of the edit suggestion this approval claimed. */
     suggestionClaimToken?: string;
+    /**
+     * Set only by the chat exception's direct edit (M7, executeActionDirect
+     * from lib/agent-runner.ts): the call's operations, which the action's
+     * params never hold (rule C4).
+     */
+    documentEditOps?: DocumentEditOp[];
   },
 ): Promise<{ success: boolean; result: any; error?: string }> {
   const agentEmployeeId = options?.agentEmployeeId ?? null;
@@ -1705,10 +1713,17 @@ export async function executeAction(
 
     switch (action) {
       // An agent's document edit, approved by its asker: the claimed suggestion's
-      // blocks, through the one writer (lib/document-suggestions.ts, M6). M7 adds
-      // the direct path for an edit with no suggestion.
+      // blocks, through the one writer (lib/document-suggestions.ts, M6); or the
+      // chat exception's direct edit with the call's own operations (M7).
       case DOCUMENT_EDIT_ACTION:
-        return executeDocumentEditAction({ orgId, actionId, claimToken: options?.suggestionClaimToken });
+        return executeDocumentEditAction({
+          orgId, actionId, claimToken: options?.suggestionClaimToken, directOps: options?.documentEditOps,
+        });
+
+      // A document Defty or an agent creates (M7, lib/agent-document-write-tools.ts):
+      // as the person who asked (Defty) or the agent itself; only references are kept.
+      case CREATE_DOCUMENT_ACTION:
+        return createAgentDocument({ orgId, actionId, creatorId: userId, agentEmployeeId, params });
 
       case DOCUMENT_SEND_ACTION: {
         let documentActorUserId = userId;
@@ -3156,6 +3171,7 @@ export async function executeAction(
       }
 
       case 'write_canvas': {
+        logDeprecatedNoteTool('write_canvas');
         // Block 2.3 — replace a space's canvas content. The canvas is its
         // document since the notes move (F15): written through the one writer
         // (rule C2) as the agent (Defty for the person who asked), so the
@@ -3323,6 +3339,7 @@ export async function executeAction(
       }
 
       case 'create_note': {
+        logDeprecatedNoteTool('create_note');
         // A document since the notes move (F15, lib/legacy-notes.ts): in the
         // creator's My drive, shared with the space (can view) for a space
         // note, or in Shared notes for an org note, as the move places notes.
@@ -3506,6 +3523,8 @@ type ExecuteActionDirectOptions = {
   humanMcpClientId?: string;
   /** Internal plan rail that can only add a human checkpoint. */
   forceApproval?: boolean;
+  /** The chat exception's direct edit only (M7): edit_document's operations, never stored in params. */
+  documentEditOps?: DocumentEditOp[];
 };
 
 type ExecuteActionDirectResult = {
@@ -3623,6 +3642,8 @@ async function executeActionDirectLocked(
   // background runner, plans, and MCP). Invalid/disabled module writes must not
   // create even a pending agent_actions row containing record values.
   const humanPrincipal = humanMcpPrincipal(params);
+  // An edit_document action stores only { document_id, summary, suggestion_id? } (M7, rule C4).
+  if (action === DOCUMENT_EDIT_ACTION) params = documentEditActionParams(params);
   params = normalizeAgentModuleActionParams(action, params) as Record<string, any>;
   params = normalizeAgentModuleBulkCreateParams(action, params) as Record<string, any>;
   params = normalizeAgentModuleTaskLinkParams(action, params) as Record<string, any>;
@@ -3987,6 +4008,7 @@ async function executeActionDirectLocked(
 
   const result = await executeAction(actionRecord.id, action, params, orgId, userId, {
     agentEmployeeId: options?.agentEmployeeId,
+    ...(action === DOCUMENT_EDIT_ACTION && options?.documentEditOps ? { documentEditOps: options.documentEditOps } : {}),
     trustedHumanMcpPrincipal: Boolean(
       isModuleRecordBulkCreateAction(action)
       && humanPrincipal

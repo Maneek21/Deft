@@ -720,7 +720,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'read_canvas',
     description:
-      'Read the shared canvas of a space: since canvases became documents, the space\'s canvas document, if the caller can open it. Returns title + content (Markdown) + its /d/ link.',
+      'Deprecated: use read_document on the canvas document. Read the shared canvas of a space: since canvases became documents, the space\'s canvas document, if the caller can open it. Returns title + content (Markdown) + its /d/ link.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -732,7 +732,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'write_canvas',
     description:
-      'Replace the content of a space\'s canvas document (canvases became documents; a space with no canvas gets none). Pass the full next content as a TipTap JSON document, an HTML string or Markdown.',
+      'Deprecated: use edit_document on the canvas document. Replace the content of a space\'s canvas document (canvases became documents; a space with no canvas gets none). Pass the full next content as a TipTap JSON document, an HTML string or Markdown.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -803,11 +803,61 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       required: [],
     },
   },
+  // ─── Documents (drives, M7): write with the asker's access ──────────
+  {
+    name: 'create_document',
+    description:
+      'Create a new document from Markdown, as the person who asked: in drive_id (and folder_id in it), or as a sub-page of parent_document_id, else in their My drive. Always waits for their one-click approval in chat.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        title: { type: 'string', description: 'The document title' },
+        markdown: { type: 'string', description: 'Optional: the content, as Markdown' },
+        drive_id: { type: 'string', description: 'Optional: the drive to create it in' },
+        folder_id: { type: 'string', description: 'Optional: a folder of that drive' },
+        parent_document_id: { type: 'string', description: 'Optional: create it as a sub-page of this document' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'edit_document',
+    description:
+      'Edit an existing document by its blocks: read_document first and use the <!-- block:<id> --> ids it shows. Each op is replace (block_id, markdown), insert_after (block_id, markdown), append (markdown) or delete (block_id). Depending on the workspace trust level, the drive, the person\'s setting and their request, the edit goes straight in (the result says landing "direct" and carries an undo action id) or waits as a suggestion only they review (landing "suggest"). A refusal means you can only comment. In a shared chat, a document not everyone there can open comes back withheld: never name or describe it.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        document_id: { type: 'string', description: 'The document to edit' },
+        ops: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 200,
+          description: 'The block operations, applied in order',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['replace', 'insert_after', 'append', 'delete'] },
+              block_id: { type: 'string', description: 'The block, for replace, insert_after and delete' },
+              markdown: { type: 'string', description: 'The new content, for replace, insert_after and append' },
+            },
+            required: ['op'],
+          },
+        },
+        summary: { type: 'string', description: 'A short summary of the change, shown in the document history' },
+        mode: {
+          type: 'string',
+          enum: ['direct', 'suggest'],
+          description: 'Optional: "suggest" when the person asked to review the edit first; "direct" only when they asked for it to go straight in. Mode can only lower where an edit lands: the person\'s own words, their setting and the workspace decide whether it goes straight in.',
+        },
+      },
+      required: ['document_id', 'ops', 'summary'],
+    },
+  },
   // ─── Block 2.1 — note tools ─────────────────────────────────────────
   {
     name: 'search_notes',
     description:
-      'Search the notes (documents, since notes became documents) the caller can open, by title/content. Returns up to `limit` matches (default 10), each with its /d/ link.',
+      'Deprecated: use search_documents. Search the notes (documents, since notes became documents) the caller can open, by title/content. Returns up to `limit` matches (default 10), each with its /d/ link.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -825,7 +875,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'create_note',
     description:
-      'Create a new note, as a document: in the caller\'s My drive by default, shared with a space for "space", in Shared notes for "org". Use when the user asks you to "save this as a note" or "jot this down".',
+      'Deprecated: use create_document. Create a new note, as a document: in the caller\'s My drive by default, shared with a space for "space", in Shared notes for "org".',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -847,7 +897,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'read_note',
     description:
-      'Read a single note (a document, or an old note id) by id. Returns title, content (Markdown), updated_at and its /d/ link. Only a document the caller can open.',
+      'Deprecated: use read_document. Read a single note (a document, or an old note id) by id. Returns title, content (Markdown), updated_at and its /d/ link. Only a document the caller can open.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -931,6 +981,10 @@ export const ACTION_TOOLS = new Set([
   // ─── Block 2.1 — note writes ─────────────────────────────────────────
   'create_note',
   'note_to_wiki',
+  // ─── Documents (M7) — create waits for its card; an edit may go straight
+  // in under the chat exception (lib/agent-document-write-tools.ts) ──────
+  'create_document',
+  'edit_document',
   // ─── Block 2.2 — thread reply ────────────────────────────────────────
   'post_thread_reply',
   // ─── Block 2.3 — canvas write ────────────────────────────────────────

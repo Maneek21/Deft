@@ -91,7 +91,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import * as Y from 'yjs';
-import { agentActions, users } from '@deft/db/schema';
+import { agentActions, agentEmployees, users } from '@deft/db/schema';
 import { documents, documentSuggestions, documentVersions, type DocumentSuggestionStatus } from '@deft/db/documents';
 import { blockHash, topLevelBlocks } from '@deft/doc-schema';
 import { deriveContent, type JSONContent } from '../collab/persistence.js';
@@ -448,6 +448,7 @@ export function suggestionRetryRefusal(code: RetryCode, fromReview: boolean): Su
 
 type ExecutorOutcome =
   | { success: true; result: { document_id: string; suggestion_id: string; status: DocumentSuggestionStatus; applied_block_ids: string[]; version_id: string } }
+  | { success: true; result: { document_id: string; landing: 'direct'; changed_block_ids: string[]; version_id: string } }
   | { success: false; result: Record<string, unknown> | null; error: string };
 
 /** Closes the suggestion after a failure the asker can't retry, while it carries this request's claim; the approval records the error. */
@@ -465,12 +466,21 @@ const retry = (code: RetryCode, error: string): ExecutorOutcome => ({ success: f
  * taken over: nothing is written, and the approval reopens. Returns
  * references only: the document, the suggestion, its outcome, the blocks
  * applied and the agent version.
+ *
+ * `directOps` (M7): the chat exception's direct edit (lib/agent-runner.ts,
+ * executeActionDirect with source `document_edit_exception`). Its operations
+ * come only from that call, never from the action's params, which hold
+ * { document_id, summary } (rule C4); an action that has a suggestion is
+ * never applied this way.
  */
-export async function executeDocumentEditAction(i: { orgId: string; actionId: string; claimToken?: string }): Promise<ExecutorOutcome> {
+export async function executeDocumentEditAction(i: { orgId: string; actionId: string; claimToken?: string; directOps?: DocumentEditOp[] }): Promise<ExecutorOutcome> {
   const [s] = await db.select().from(documentSuggestions)
     .where(and(eq(documentSuggestions.action_id, i.actionId), eq(documentSuggestions.org_id, i.orgId))).limit(1);
-  // M7 adds the direct path for an edit approved without a suggestion.
-  if (!s) return { success: false, result: null, error: 'This edit has no suggestion to apply' };
+  if (!s) {
+    if (i.directOps) return executeDirectDocumentEdit(i.orgId, i.actionId, i.directOps);
+    return { success: false, result: null, error: 'This edit has no suggestion to apply' };
+  }
+  if (i.directOps) return { success: false, result: null, error: 'This edit is waiting as a suggestion' };
   const token = i.claimToken;
   if (!token || s.status !== 'applying' || s.claim_token !== token || !s.selected_block_ids?.length || s.reviewed_revision === null) {
     return retry('SUGGESTION_ALREADY_RESOLVING', RESOLVING_MESSAGE);
@@ -526,6 +536,55 @@ export async function executeDocumentEditAction(i: { orgId: string; actionId: st
 /** Thrown inside the write when the suggestion stopped being claimed (it was cancelled meanwhile): the write rolls back. */
 class SuggestionNoLongerClaimed extends Error {
   constructor() { super('the suggestion is no longer claimed'); }
+}
+
+/** The agent an edit_document action writes as: its employee's own user, or Defty's (canonical) user. */
+async function editingAgentUserId(orgId: string, agentEmployeeId: string | null): Promise<string | null> {
+  if (agentEmployeeId) {
+    const [employee] = await db.select({ user_id: agentEmployees.user_id }).from(agentEmployees)
+      .where(and(eq(agentEmployees.id, agentEmployeeId), eq(agentEmployees.org_id, orgId))).limit(1);
+    return employee?.user_id ?? null;
+  }
+  const [defty] = await db.select({ id: users.id }).from(users).where(and(eq(users.email, DEFTY_EMAIL), eq(users.kind, 'agent'))).limit(1);
+  return defty?.id ?? null;
+}
+
+/**
+ * The chat exception's direct edit (M7): M4's applyDocumentEditDirect with the
+ * call's own operations, as the action's agent for the person who asked (the
+ * writer checks their edit role again, and refuses a drive set to
+ * suggestions only). Checked first, as an approved suggestion is: the asker
+ * still keeps the chat the action came from. The outcome is stamped on the
+ * action, references only; the version, credit, highlight, audit and undo
+ * are M4's.
+ */
+async function executeDirectDocumentEdit(orgId: string, actionId: string, ops: DocumentEditOp[]): Promise<ExecutorOutcome> {
+  const settle = async (outcome: ExecutorOutcome): Promise<ExecutorOutcome> => {
+    await db.update(agentActions).set(outcome.success
+      ? { result: outcome.result, after_state: { document_id: outcome.result.document_id, version_id: outcome.result.version_id }, executed_at: new Date() }
+      : { error: outcome.error.slice(0, 2_000), executed_at: new Date() })
+      .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)));
+    return outcome;
+  };
+  const failed = (error: string): Promise<ExecutorOutcome> => settle({ success: false, result: null, error });
+  const [action] = await db.select({ user_id: agentActions.user_id, params: agentActions.params, agent_employee_id: agentActions.agent_employee_id })
+    .from(agentActions).where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId), requesterKeepsSourceRoomsSql())).limit(1);
+  if (!action) return failed('Cancelled: the person who asked no longer has access to the conversation this came from');
+  const params = isRecord(action.params) ? action.params : {};
+  const documentId = typeof params.document_id === 'string' ? params.document_id : '';
+  const agentUserId = await editingAgentUserId(orgId, action.agent_employee_id);
+  if (!documentId || !agentUserId) return failed('This edit has no document to apply to');
+  try {
+    const applied = await applyDocumentEditDirect({
+      orgId, documentId, agentUserId, askerId: action.user_id, actionId, ops: checkedOps(ops), summary: summaryOf(params),
+    });
+    return settle({ success: true, result: { document_id: documentId, landing: 'direct', changed_block_ids: applied.changedBlockIds, version_id: applied.versionId } });
+  } catch (error) {
+    if (error instanceof DocumentEditRefused) return failed('Some blocks this edit names are not in the document');
+    if (error instanceof DocumentWriteRefused && error.code === 'FORBIDDEN') return failed('You can only comment on this document');
+    if (error instanceof DocumentWriteRefused || error instanceof DocumentRefusal) return failed(error.message);
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

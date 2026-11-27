@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import {collectCompilerReadFacts,validateCompilerGrounding} from './agent-compiler-read-facts.js';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
-import { agentActions, messages, orgs, projects, tasks } from '@deft/db/schema';
+import { agentActions, agentEmployees, messages, orgs, projects, tasks } from '@deft/db/schema';
 import { getApprovalTier, mandatoryApprovalTier } from './agent-approval.js';
 import { isDatabaseError } from './defty-reply-guard.js';
 import { db } from './db.js';
@@ -47,6 +47,13 @@ import {
   validateDocumentSendDraft,
 } from './document-send.js';
 import { isTaskPriority } from './task-priority.js';
+import {
+  CREATE_DOCUMENT_ACTION, createDocumentInputForStorage, DOCUMENT_EDIT_ACTION, documentEditActionParams,
+} from './agent-document-write-tools.js';
+import { DocumentEditRefused } from './document-edit.js';
+import { proposeDocumentEdit } from './document-suggestions.js';
+import { DocumentRefusal } from './documents.js';
+import { DocumentWriteRefused } from './document-writer.js';
 
 type ApprovalTier = 'auto' | 'quick' | 'full';
 
@@ -98,6 +105,9 @@ function safeActionParamsForMessage(action: string, actionParams: unknown): unkn
   if (action === DOCUMENT_SEND_ACTION) {
     return sanitizeDocumentSendParams(actionParams);
   }
+  // M7 (rule C4): an edit's operations and a new document's title and Markdown never reach a message.
+  if (action === DOCUMENT_EDIT_ACTION) return documentEditActionParams(actionParams);
+  if (action === CREATE_DOCUMENT_ACTION) return createDocumentInputForStorage(actionParams);
   if(action==='email_send')return {account_id:actionParams.account_id,draft_id:actionParams.draft_id,draft_revision:actionParams.draft_revision,content_digest:actionParams.content_digest,review_url:actionParams.review_url};
   return actionParams;
 }
@@ -469,7 +479,8 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
           conversation_id: params.spaceId,
           message_id: agentMessage.id,
           action: p.action,
-          params: p.params,
+          // M7 (rule C4): an edit's params are { document_id, summary }; its operations become the suggestion below.
+          params: p.action === DOCUMENT_EDIT_ACTION ? documentEditActionParams(p.params) : p.params,
           approval_tier: normalizeApprovalTier(p),
           approval_status: 'pending' as const,
           source: p.source ?? 'mention',
@@ -479,8 +490,10 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
         })),
       )
       .returning();
+    const proposedEdits = await proposeDocumentEditsInTx(tx, params, novelActions, actions);
+    rejectedOtherActions.push(...proposedEdits.refused);
 
-    const persistedActions = [...linkedActions, ...actions];
+    const persistedActions = [...linkedActions, ...proposedEdits.kept];
     // Message metadata reaches every space member; it anchors each action by
     // id only. Params stay on the audience-checked agent_actions row.
     const inlineActions = persistedActions.map((action) => ({
@@ -513,6 +526,53 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
     })
   ));
   return persisted;
+}
+
+type ProposalTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type ActionRow = typeof agentActions.$inferSelect;
+
+/**
+ * M7: makes each inserted edit_document action's suggestion (M6's
+ * proposeDocumentEdit) from its proposal's operations, in the transaction
+ * that stores the action, each in its own savepoint. An edit that can't be
+ * suggested (the asker can no longer edit, a block is gone, the document
+ * moved) is removed with its row and reported as not prepared; the rest of
+ * the reply stands. `rows` are `proposals` inserted, in order.
+ */
+async function proposeDocumentEditsInTx(tx: ProposalTx, params: PersistReplyWithActionsParams,
+  proposals: ProposedAgentAction[], rows: ActionRow[]): Promise<{ kept: ActionRow[]; refused: string[] }> {
+  const kept: ActionRow[] = [];
+  const refused: string[] = [];
+  for (const [index, row] of rows.entries()) {
+    if (row.action !== DOCUMENT_EDIT_ACTION) {
+      kept.push(row);
+      continue;
+    }
+    const proposal = proposals[index];
+    const stored = documentEditActionParams(row.params);
+    try {
+      // Fail closed when the row isn't the proposal it should be.
+      if (!proposal || proposal.action !== DOCUMENT_EDIT_ACTION || documentEditActionParams(proposal.params).document_id !== stored.document_id) {
+        throw new DocumentRefusal(400, 'VALIDATION_ERROR', 'The edit does not match its proposal');
+      }
+      const agentUserId = proposal.agent_employee_id
+        ? (await tx.select({ user_id: agentEmployees.user_id }).from(agentEmployees)
+          .where(and(eq(agentEmployees.id, proposal.agent_employee_id), eq(agentEmployees.org_id, params.orgId))).limit(1))[0]?.user_id
+        : params.agentUserId;
+      if (!agentUserId) throw new DocumentRefusal(400, 'VALIDATION_ERROR', 'The edit has no agent');
+      const { suggestionId } = await tx.transaction((savepoint) => proposeDocumentEdit(savepoint, {
+        orgId: params.orgId, documentId: stored.document_id, actionId: row.id, askerId: params.userId, agentUserId,
+        ops: proposal.params.ops,
+      }));
+      kept.push({ ...row, params: { ...stored, suggestion_id: suggestionId } });
+    } catch (error) {
+      if (!(error instanceof DocumentRefusal || error instanceof DocumentEditRefused || error instanceof DocumentWriteRefused)) throw error;
+      await tx.delete(agentActions).where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, params.orgId)));
+      refused.push(DOCUMENT_EDIT_ACTION);
+      console.warn('[agent-action-proposals] An edit suggestion could not be prepared; its action was not stored');
+    }
+  }
+  return { kept, refused };
 }
 
 function normalizeApprovalTier(action: ProposedAgentAction): ApprovalTier {

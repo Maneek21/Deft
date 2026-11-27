@@ -277,6 +277,33 @@ export async function createNoteDocument(input: CreateNoteDocumentInput): Promis
 // The old note and canvas tools (Defty, agents, MCP): the same names and
 // parameters, reading and writing documents.
 
+/**
+ * The old note and canvas tools Defty still offers, each an alias now of the
+ * document tool that replaces it (M7): their descriptions begin
+ * "Deprecated:", and each use is logged. note_to_wiki stays until H3.
+ */
+export const DEPRECATED_NOTE_TOOLS = {
+  search_notes: 'search_documents',
+  read_note: 'read_document',
+  create_note: 'create_document',
+  read_canvas: 'read_document',
+  write_canvas: 'edit_document',
+} as const;
+
+/**
+ * Logs a use of an old note or canvas tool: `[deprecated] <old>: use <new>`.
+ * Each line is a fixed string (the logs carry no dynamic value).
+ */
+export function logDeprecatedNoteTool(name: keyof typeof DEPRECATED_NOTE_TOOLS): void {
+  switch (name) {
+    case 'search_notes': console.warn('[deprecated] search_notes: use search_documents'); break;
+    case 'read_note': console.warn('[deprecated] read_note: use read_document'); break;
+    case 'create_note': console.warn('[deprecated] create_note: use create_document'); break;
+    case 'read_canvas': console.warn('[deprecated] read_canvas: use read_document'); break;
+    case 'write_canvas': console.warn('[deprecated] write_canvas: use edit_document'); break;
+  }
+}
+
 /** A document a note tool lists: a short snippet of its text, never its content, and its link. */
 export type NoteDocumentSummary = { id: string; title: string; drive_kind: string; updated_at: Date; snippet: string; url: string };
 

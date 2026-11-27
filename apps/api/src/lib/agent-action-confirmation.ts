@@ -56,6 +56,12 @@ export function summarizeConfirmedAction(action: ConfirmedAction) {
       return `Saved${title ? ` "${title}"` : ' the item'} to knowledge.`;
     case 'create_note':
       return `Created note${title ? ` "${title}"` : ''}.`;
+    // M7: posted in the chat, so neither names the document (rule C4); its link
+    // and title are for the people who can open it.
+    case 'create_document':
+      return 'Created the document.';
+    case 'edit_document':
+      return result.status === 'partially_accepted' ? 'Applied part of the suggested edit.' : 'Applied the suggested edit.';
     case 'note_to_wiki':
       return `Promoted${title ? ` "${title}"` : ' the note'} to wiki.`;
     case 'write_canvas':
@@ -78,6 +84,9 @@ export function summarizeConfirmedAction(action: ConfirmedAction) {
 /** Plain label for an approved action that did not complete. */
 export function summarizeFailedAction(action: ConfirmedAction) {
   const params = record(action.params);
+  // M7: a document's title is never posted in the chat (rule C4).
+  if (action.action === 'create_document') return 'Create document did not complete.';
+  if (action.action === 'edit_document') return 'Edit document did not complete.';
   const target = typeof params.title === 'string' && params.title.trim()
     ? params.title.trim()
     : typeof params.task_identifier === 'string' && params.task_identifier.trim()

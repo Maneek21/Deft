@@ -28,6 +28,7 @@ import {
 } from './agent-actions.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import { runAgentQuery } from './agent-runner.js';
+import { DOCUMENT_EDIT_ACTION } from './document-suggestions.js';
 import type { TrustLevel } from './agent-approval.js';
 import { getIO } from '../socket.js';
 import { getMCPToolsForAgent } from './mcp-tools.js';
@@ -116,8 +117,19 @@ export async function assertPlanEmployeeBindable(orgId: string, agentEmployeeId:
   }
 }
 
+/**
+ * M7: a document edit is made from chat, where its asker's request and
+ * setting decide where it lands, never as a plan step: a step would store
+ * its operations (document text) in the plan, and an approved plan would
+ * apply them with no suggestion to review.
+ */
+export const PLAN_DOCUMENT_EDIT_ERROR = 'Document edits are made from chat, not as plan steps';
+
 /** Plans with connected steps are created and approved for workspace members. */
 export async function assertPlanStepsAllowedFor(orgId: string, userId: string, steps: unknown): Promise<void> {
+  if (Array.isArray(steps) && steps.some((step) => (step as { tool?: unknown } | null)?.tool === DOCUMENT_EDIT_ACTION)) {
+    throw new PlanAccessError(PLAN_DOCUMENT_EDIT_ERROR);
+  }
   const hasConnectedStep = Array.isArray(steps)
     && steps.some((step) => isConnectedToolName((step as { tool?: unknown } | null)?.tool));
   if (hasConnectedStep && await isWorkspaceGuest(orgId, userId)) {
@@ -599,6 +611,8 @@ async function executePlanUnlocked(
       if (connectedStepsRefused && isConnectedToolName(step.tool)) {
         throw new PlanApprovalBoundaryError(CONNECTED_TOOL_UNAVAILABLE_ERROR);
       }
+      // M7: a plan made before the rule, or written around it, still never edits a document.
+      if (step.tool === DOCUMENT_EDIT_ACTION) throw new PlanApprovalBoundaryError(PLAN_DOCUMENT_EDIT_ERROR);
       const mcpToolPolicy = step.tool.startsWith('mcp__')
         ? (await getMCPToolsForAgent(orgId, plan.agent_employee_id ?? undefined))
           .find((tool) => tool.name === step.tool)

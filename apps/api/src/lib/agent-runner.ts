@@ -29,7 +29,10 @@ import {
 } from './agent-module-next-reads.js';
 import { executeActionDirect, isModuleWriteAction } from './agent-actions.js';
 import { toolInputWithContentOmitted } from './legacy-notes.js';
-import { citationForStorage, documentToolCallForStorage, type DocumentRef, type WithheldRef } from './document-audience.js';
+import { citationForStorage, documentToolCallForStorage, holdDocumentToolResponse, type DocumentRef, type WithheldRef } from './document-audience.js';
+import {
+  CREATE_DOCUMENT_ACTION, decideDocumentEdit, DOCUMENT_EDIT_ACTION, documentEditReply, expireUnsuggestedEditAction,
+} from './agent-document-write-tools.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier, type TrustLevel } from './agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
 import { getIO } from '../socket.js';
@@ -58,6 +61,7 @@ Rules:
 - Keep conversation evidence scoped to the current channel or group DM. Quote another channel only when the user explicitly asks for it and can read it. Do not add unrelated project task lists to a conversation answer.
 - Before proposing a write action that names a person (assignee, mentioned user) or project, verify they exist using the appropriate search tool. If the named entity doesn't exist in this workspace, ASK the user to clarify rather than confidently proposing a write against a fabricated name. Never invent a project name to attach a task to — if the user has not named a project, use the single project linked to this space, otherwise the single active accessible project. If several remain, ask which project and name up to five candidates. If the user explicitly says "no project", set project_name to "" (empty string). NEVER default to "General", "Inbox", "Default", or any other invented project name; there is no implicit default project. Same rule for assignee_name when unassigned.
 - For registered write actions (including tasks, messages, wiki, notes, reminders, canvas, and decision links), clearly explain what you'll do. When invoked from a chat mention, writes are not executed immediately — they're queued for the user's approval, which appears as an Approve/Reject card on your reply and in the user's Inbox under the Approvals tab. Do NOT refer to an "Agent panel" or "Agent dashboard" — neither exists.
+- After editing a document, say whether the edit went straight in or is waiting as a suggestion, and offer Undo for a direct edit.
 - You are responding in a chat thread. Keep your reply as a single cohesive message.
 - Use compact markdown lists when helpful; headings require a requested summary or report.
 - Do NOT narrate your tool usage. Do NOT say "I'll search for..." or "Let me look up..." — just use the tools silently and present your findings directly.
@@ -346,6 +350,13 @@ export async function runAgentQuery(params: {
   toolPolicy?: 'default' | 'none';
   /** false: no durable note is saved from this run's answer (default: saved for an employee). */
   durableNotes?: boolean;
+  /**
+   * M7: the asker's own triggering chat message, as they wrote it, and
+   * nothing else: never document text, a tool result, the model's arguments
+   * or an earlier message. Only it can carry "just do it" for edit_document
+   * (lib/document-edit-landing.ts askerRequestedDirect). Null or absent: none.
+   */
+  askerMessageText?: string | null;
 }): Promise<{
   text: string;
   citations: any[];
@@ -834,6 +845,80 @@ export async function runAgentQuery(params: {
           toolResults.push({ type: 'tool_result', tool_use_id: tool.id, is_error: true, content: JSON.stringify({ error: referenceError }) });
           continue;
         }
+        if (tool.name === DOCUMENT_EDIT_ACTION) {
+          // M7, the chat exception (lib/agent-document-write-tools.ts): where an
+          // edit lands is decided here, before the rule that chat writes wait
+          // for approval. Background work is refused before anything is read.
+          // Only the asker's own triggering message can say "just do it".
+          const decision = await decideDocumentEdit({
+            orgId, askerId: userId, agentEmployeeId, background: mode === 'background', input: tool.input,
+            askerMessageText: mode === 'chat_mention' && typeof params.askerMessageText === 'string' ? params.askerMessageText : null,
+          });
+          let reply: Record<string, unknown>;
+          let failed = false;
+          let executedAction: { actionId: string | null; success: boolean } | null = null;
+          if (decision.kind === 'refuse') {
+            reply = decision.reply;
+            failed = true;
+            executedAction = { actionId: null, success: false };
+          } else {
+            let landed = decision;
+            reply = {};
+            if (decision.kind === 'direct') {
+              const direct = await executeActionDirect(DOCUMENT_EDIT_ACTION, decision.actionParams, orgId, userId,
+                params.conversationId ?? null, 'quick', {
+                  agentEmployeeId,
+                  source: 'document_edit_exception',
+                  ...(params.sourceMessageId ? { messageId: params.sourceMessageId } : {}),
+                  toolUseId: tool.id,
+                  documentEditOps: decision.call.ops,
+                });
+              if (direct.requiresApproval) {
+                // The employee's own trust was lowered meanwhile: a suggestion instead.
+                await expireUnsuggestedEditAction(orgId, direct.actionId);
+                landed = { ...decision, kind: 'suggest', landing: { landing: 'suggest', reason: 'conservative_trust' } };
+              } else {
+                executedAction = { actionId: direct.actionId, success: direct.success };
+                failed = !direct.success;
+                reply = direct.success
+                  ? documentEditReply(decision, direct.actionId)
+                  : { error: direct.error ?? 'The edit could not be applied', code: 'EDIT_FAILED' };
+              }
+            }
+            if (landed.kind === 'suggest') {
+              // persistAgentReplyWithActions stores { document_id, summary } and
+              // makes the suggestion from the operations in its transaction.
+              pendingActions.push({
+                action: DOCUMENT_EDIT_ACTION,
+                params: { ...landed.actionParams, ops: landed.call.ops },
+                tool_use_id: tool.id,
+                approval_tier: 'quick',
+                agent_employee_id: agentEmployeeId ?? null,
+                mcp_connection_id: null,
+              });
+              reply = documentEditReply(landed);
+            }
+          }
+          // M3: the reply names the document, so it is held to the room's audience.
+          const held = await holdDocumentToolResponse({
+            orgId, askerId: userId, conversationId: params.conversationId, toolName: DOCUMENT_EDIT_ACTION, response: { result: reply, citations: [] },
+          });
+          if (held.withheld.length) withheldDocuments.push(...held.withheld);
+          for (const ref of held.shown) shownDocuments.set(`${ref.type}:${ref.id}`, ref);
+          // Rule C4: the call is kept without its operations wherever the run keeps it.
+          const stored = documentToolCallForStorage(DOCUMENT_EDIT_ACTION, tool.input, held.result);
+          if (executedAction) {
+            executedActions.push({ actionId: executedAction.actionId, action: DOCUMENT_EDIT_ACTION, params: stored.input, success: executedAction.success, result: stored.result });
+          }
+          tool.input = stored.input as typeof tool.input;
+          toolResults.push({
+            type: 'tool_result' as const,
+            tool_use_id: tool.id,
+            content: JSON.stringify(held.result),
+            ...(failed ? { is_error: true } : {}),
+          });
+          continue;
+        }
         const approvalTier = getApprovalTier(tool.name, callApprovalTier);
         if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input, approvalTier)) {
           // Background mode: auto-execute if trust level permits
@@ -860,6 +945,18 @@ export async function runAgentQuery(params: {
             // executed actions, the history sent back to the model).
             tool.input = toolInputWithContentOmitted(tool.name, tool.input, result) as typeof tool.input;
           }
+          // M7 (rule C4): a document's title and Markdown are never kept with the call.
+          if (tool.name === CREATE_DOCUMENT_ACTION) tool.input = documentToolCallForStorage(tool.name, tool.input, success ? result : null).input as typeof tool.input;
+          let modelResult = result;
+          if (success && tool.name === CREATE_DOCUMENT_ACTION) {
+            // M3: the created document is held to the conversation's audience.
+            const held = await holdDocumentToolResponse({
+              orgId, askerId: userId, conversationId: params.conversationId, toolName: tool.name, response: { result, citations: [] },
+            });
+            if (held.withheld.length) withheldDocuments.push(...held.withheld);
+            for (const ref of held.shown) shownDocuments.set(`${ref.type}:${ref.id}`, ref);
+            modelResult = held.result;
+          }
           executedActions.push({ actionId, action: tool.name, params: tool.input, success, result, error });
           if (requiresApproval) {
             pendingActions.push({
@@ -881,7 +978,7 @@ export async function runAgentQuery(params: {
             tool_use_id: tool.id,
             content: JSON.stringify(
               success
-                ? { status: 'auto_executed', ...result }
+                ? { status: 'auto_executed', ...modelResult }
                 : requiresApproval
                   ? { status: 'approval_required', action_id: actionId, approval_tier: currentTier ?? approvalTier }
                   : { status: 'auto_execute_failed', ...failureResult, error: errorMsg },
@@ -904,6 +1001,9 @@ export async function runAgentQuery(params: {
             agent_employee_id: agentEmployeeId ?? null,
             mcp_connection_id: mcpConnectionIds.get(tool.name) ?? null,
           });
+          // M7 (rule C4): the proposal keeps its title and Markdown for the card
+          // (agent_actions), but the call the run keeps (agent_blocks) never does.
+          if (tool.name === CREATE_DOCUMENT_ACTION) tool.input = documentToolCallForStorage(tool.name, tool.input, null).input as typeof tool.input;
           toolResults.push({
             type: 'tool_result' as const,
             tool_use_id: tool.id,
