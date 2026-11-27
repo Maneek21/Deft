@@ -19,7 +19,8 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   Attendees are matched by email address. Only you can change or delete the event, and
   attendees see no **Edit** or **Delete**. A guest, a deactivated member, someone outside
   the workspace and members who aren't attendees see nothing. Events imported from another
-  calendar are unchanged. Nobody is notified.
+  calendar, and invitations accepted from email or an app, stay visible only to their
+  owner. Nobody is notified.
 
 ## [0.3.0-preview.156] — 2026-11-27 (prerelease)
 

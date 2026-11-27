@@ -6,18 +6,25 @@ import { canonicalDeftyEmployeeCondition } from './defty-identity.js';
  * changing or cancelling an event stays with its own user (events.user_id).
  *
  * Events belong to their direct user or to the owner of the connected account.
- * The connected account must be in the event's organization as well. A native
- * Deft event is also seen, read-only, by each attendee (metadata.attendees,
+ * The connected account must be in the event's organization as well. An event
+ * made in Deft is also seen, read-only, by each attendee (metadata.attendees,
  * matched by email, ignoring case) who is an active owner, admin or member of
  * the event's organization. A guest, a deactivated member and anyone outside
- * the organization see nothing; an imported event stays its owner's. */
+ * the organization see nothing. An imported event stays its owner's: one from
+ * another calendar, and an invitation accepted from email or an app, which is
+ * stored as a native event marked by email_invitation, app_integration_invitation
+ * or email_invitation_response (native-calendar-invitation-create.ts). */
 function ownerCondition(viewerUserId: string | typeof agentEmployees.user_id): SQL {
   return sql`(${events.user_id} = ${viewerUserId} OR EXISTS (
     SELECT 1 FROM ${connectedAccounts}
     WHERE ${connectedAccounts.id} = ${events.connected_account_id}
       AND ${connectedAccounts.org_id} = ${events.org_id}
       AND ${connectedAccounts.user_id} = ${viewerUserId}
-  ) OR (${events.source} = 'native' AND ${events.event_type} = 'calendar_event' AND EXISTS (
+  ) OR (${events.source} = 'native' AND ${events.event_type} = 'calendar_event'
+    AND ${events.metadata} -> 'email_invitation' IS NULL
+    AND ${events.metadata} -> 'app_integration_invitation' IS NULL
+    AND ${events.metadata} -> 'email_invitation_response' IS NULL
+    AND EXISTS (
     SELECT 1 FROM ${orgMembers} attendee_member
     INNER JOIN ${users} attendee_user ON attendee_user.id = attendee_member.user_id
     WHERE attendee_member.org_id = ${events.org_id}

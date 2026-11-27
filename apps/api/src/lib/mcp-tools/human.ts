@@ -3039,14 +3039,12 @@ export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: 
 
   if ((args.include_calendar ?? true) && hasScope(ctx, 'read:calendar')) {
     const eventRows = await db.execute(sql`
-      SELECT e.id, e.title, e.body, e.source, e.event_type, e.timestamp, e.url, e.metadata
-      FROM events e
-      LEFT JOIN connected_accounts ca ON ca.id = e.connected_account_id
-      WHERE e.org_id = ${ctx.org_id}
-        AND (e.user_id = ${ctx.user_id} OR ca.user_id = ${ctx.user_id})
-        AND e.timestamp >= now() - interval '2 hours'
-        AND e.timestamp <= now() + interval '7 days'
-      ORDER BY e.timestamp ASC
+      SELECT events.id, events.title, events.body, events.source, events.event_type, events.timestamp, events.url, events.metadata
+      FROM events
+      WHERE ${liveHumanCalendarEventCondition(ctx.org_id, ctx.user_id)}
+        AND events.timestamp >= now() - interval '2 hours'
+        AND events.timestamp <= now() + interval '7 days'
+      ORDER BY events.timestamp ASC
       LIMIT ${Math.min(limit, 20)}
     `);
     digest.upcoming_events = (eventRows as any).rows ?? [];
