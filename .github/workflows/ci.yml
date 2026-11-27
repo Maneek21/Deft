@@ -185,6 +185,7 @@ jobs:
           src/lib/modules.test.ts
           src/lib/upload-errors-readable.test.ts
           src/lib/upload-errors-hostile.test.ts
+          test/upload-refusal-messages.test.tsx
           src/lib/module-describe.test.ts
           src/lib/app-templates.test.ts
           src/lib/module-version-bump.test.ts
@@ -266,6 +267,7 @@ jobs:
           src/lib/report-problem-mounted.test.ts
           src/lib/report-problem-reopen-mounted.test.ts
           src/lib/signup-install-ping-mounted.test.ts
+          src/lib/welcome-first-message-mounted.test.ts
           src/lib/two-step-recovery-mounted.test.ts
           src/lib/agent-management-mounted.test.ts
       - name: Test that signup and setup pages request nothing from a third party

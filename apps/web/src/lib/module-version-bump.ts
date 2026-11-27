@@ -1,3 +1,4 @@
+import { nextPatchVersion } from '@deft/shared/modules';
 import {
   ModuleManifestError,
   formatModuleManifestError,
@@ -15,15 +16,8 @@ import {
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 
-/** The next version after `active`: 1.2.3 → 1.2.4, and 1.2.3-beta.1 → 1.2.3. */
-export function nextPatchVersion(active: string): string | null {
-  const match = SEMVER.exec(active.trim());
-  if (!match) return null;
-  const [, major, minor, patch, prerelease] = match;
-  if (prerelease) return `${major}.${minor}.${patch}`;
-  // BigInt: version numbers may be larger than a JavaScript number holds exactly.
-  return `${major}.${minor}.${BigInt(patch!) + 1n}`;
-}
+/** The next version after `active`: 1.2.3 → 1.2.4, and 1.2.3-beta.1 → 1.2.3. The server suggests the same one. */
+export { nextPatchVersion };
 
 function compareNumeric(left: string, right: string): number {
   const difference = BigInt(left) - BigInt(right);

@@ -5,7 +5,7 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
-    "test": "tsx --test test/modules.test.ts test/module-issues.test.ts test/module-issues-hostile.test.ts test/module-schema-key.test.ts test/module-json-schema.test.ts test/capabilities.test.ts test/app-runs.test.ts test/resources.test.ts test/resources-v2.test.ts test/app-platform-authority.test.ts",
+    "test": "tsx --test test/modules.test.ts test/module-issues.test.ts test/module-issues-hostile.test.ts test/module-schema-key.test.ts test/module-schema-key-diagnostics.test.ts test/module-json-schema.test.ts test/capabilities.test.ts test/app-runs.test.ts test/resources.test.ts test/resources-v2.test.ts test/app-platform-authority.test.ts",
     "typecheck": "node ../../node_modules/ts7/bin/tsc --noEmit"
   },
   "exports": {

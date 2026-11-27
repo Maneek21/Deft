@@ -64,7 +64,8 @@ test('the box starts unticked, and a report sent without ticking it asks for no 
   const { browser, tab, sent } = await mount({ status: 201, body: { reference: '7A1E9C02' } });
   try {
     await tab.getByText(NOTE).waitFor();
-    assert.equal(await tab.getByLabel('Email me about this report').isChecked(), false);
+    // Wait for the unticked box rather than read it once, as the reopen test does.
+    await assert.doesNotReject(tab.getByRole('checkbox', { name: 'Email me about this report', exact: true, checked: false }).waitFor(), 'the box starts unticked');
     await tab.getByLabel('What happened?').fill('The calendar shows the wrong week.');
     await tab.getByRole('button', { name: 'Send report' }).click();
     await tab.getByText('7A1E9C02').waitFor();

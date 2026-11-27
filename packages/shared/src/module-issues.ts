@@ -43,6 +43,11 @@ export type ReadableIssueOptions = {
   prefix?: string;
   /** The message when nothing readable can be said. */
   fallback?: string;
+  /**
+   * Whether the top level may carry a "$schema" link, as an app file may.
+   * Default true; an App package has none, so there it is an unknown key.
+   */
+  schemaKeyAllowed?: boolean;
 };
 
 type RawIssue = {
@@ -63,6 +68,10 @@ type RawIssue = {
 };
 
 type FlatIssue = { issue: RawIssue; path: Array<string | number> };
+
+// Keep in step with the "$schema" rule in ./modules: a text URL of at most this many characters.
+const SCHEMA_KEY_MAX_CHARS = 2048;
+const SCHEMA_KEY_ISSUE = 'deft_schema_key';
 
 // C0/C1 controls, zero-width characters, bidi controls, BOM and line/paragraph separators.
 const UNSAFE_RANGES: ReadonlyArray<readonly [number, number]> = [
@@ -332,6 +341,10 @@ function issueMessage(issue: RawIssue, path: Array<string | number>, input: unkn
       return typeof issue.divisor === 'number' ? `must be a multiple of ${issue.divisor}` : 'must be a whole step';
     case 'invalid_key':
       return 'has a key that is not allowed';
+    case SCHEMA_KEY_ISSUE:
+      return typeof value === 'string'
+        ? `must be a text URL of at most ${SCHEMA_KEY_MAX_CHARS} characters (you have ${Array.from(value).length})`
+        : `must be a text URL (found ${typeName(value)})`;
     case 'invalid_union': {
       const options = Array.isArray(issue.options) ? issue.options : [];
       if (options.length === 0) return 'does not match any allowed shape';
@@ -379,6 +392,30 @@ function flattenIssues(issues: unknown[], base: Array<string | number>, depth: n
     }
     out.push({ issue, path });
   }
+}
+
+function isSchemaLink(value: unknown): boolean {
+  return typeof value === 'string' && Array.from(value).length <= SCHEMA_KEY_MAX_CHARS;
+}
+
+/**
+ * The parser drops a top-level "$schema" text URL and leaves anything else in
+ * place, so the validator calls it an unknown key. Say what it must be instead,
+ * on its own line; any other unknown keys keep their line.
+ */
+function explainSchemaKey(flat: FlatIssue[], input: unknown): FlatIssue[] {
+  if (!isRecord(input) || !Object.prototype.hasOwnProperty.call(input, '$schema') || isSchemaLink(input.$schema)) return flat;
+  return flat.flatMap((item): FlatIssue[] => {
+    const keys = item.issue.keys;
+    if (item.issue.code !== 'unrecognized_keys' || item.path.length !== 0 || !Array.isArray(keys) || !keys.includes('$schema')) {
+      return [item];
+    }
+    const rest = keys.filter((key) => key !== '$schema');
+    return [
+      { issue: { code: SCHEMA_KEY_ISSUE }, path: ['$schema'] },
+      ...(rest.length > 0 ? [{ issue: { ...item.issue, keys: rest }, path: item.path }] : []),
+    ];
+  });
 }
 
 function errorIssues(error: unknown): unknown[] | null {
@@ -434,8 +471,9 @@ export function limitIssueLines(lines: string[]): string[] {
 
 /** Readable lines for a list of validator issues (zod-shaped, from any zod copy). */
 export function formatManifestIssues(issues: unknown[], options: ReadableIssueOptions = {}): ReadableIssueReport {
-  const flat: FlatIssue[] = [];
+  let flat: FlatIssue[] = [];
   flattenIssues(issues, [], 0, flat);
+  if (options.schemaKeyAllowed !== false) flat = explainSchemaKey(flat, options.input);
   const subject = cleanLabel(options.subject) ?? 'App file';
   const prefix = options.prefix ? cleanLabel(options.prefix) : null;
   const readable: ReadableIssue[] = [];

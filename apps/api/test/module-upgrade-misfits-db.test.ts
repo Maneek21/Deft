@@ -137,3 +137,66 @@ test('five records are named in all, across lines, and details stay at 20 record
   assert.equal(records.length, 20);
   assert.ok(records.every((record) => record.problems.length === 2));
 });
+
+test('removing a record type that still holds records names the record type and its records', { skip: !canRun }, async () => {
+  const { actor, installed } = await seed([{ name: 'Dana Example' }]);
+  const withRoles = {
+    ...hiring('1.1.0', baseFields),
+    collections: [
+      ...hiring('1.1.0', baseFields).collections,
+      { key: 'roles', name: 'Roles', fields: [{ key: 'title', label: 'Title', type: 'text', required: true }], search: { title_field: 'title', fields: ['title'] } },
+    ],
+  };
+  const added = await upgradeModuleInstallationToManifest(actor, 'misfits', withRoles, {
+    source: 'sideloaded',
+    expected_active_manifest_digest: installed.manifest_digest,
+  });
+  for (const title of ['Product designer', 'Backend engineer']) {
+    await createModuleRecord(actor, {
+      module_id: installed.module_id,
+      collection_key: 'roles',
+      data: { title },
+      relations: {},
+      expected_manifest_digest: added.manifest_digest,
+      idempotency_key: randomUUID(),
+    });
+  }
+  const error = await refusal(upgradeModuleInstallationToManifest(actor, 'misfits', hiring('1.2.0', baseFields), {
+    source: 'sideloaded',
+    expected_active_manifest_digest: added.manifest_digest,
+  }));
+  assert.equal(error.status, 400);
+  assert.equal(error.code, 'MODULE_VALIDATION_ERROR');
+  assert.match(error.message, /^Roles: record type removed, but it still holds the records "(Product designer|Backend engineer)" and "(Product designer|Backend engineer)"$/);
+  assert.equal(error.details?.record_count, 2);
+});
+
+test('an update with an older or the same version names both versions and suggests the next one', { skip: !canRun }, async () => {
+  const { actor, installed } = await seed([]);
+  const current = await upgradeModuleInstallationToManifest(actor, 'misfits', hiring('1.2.0', baseFields), {
+    source: 'sideloaded',
+    expected_active_manifest_digest: installed.manifest_digest,
+  });
+  const older = await refusal(upgradeModuleInstallationToManifest(actor, 'misfits', hiring('1.0.5', baseFields), {
+    source: 'sideloaded',
+    expected_active_manifest_digest: current.manifest_digest,
+  }));
+  assert.equal(older.status, 409);
+  assert.equal(older.code, 'MODULE_UPDATE_NOT_AVAILABLE');
+  assert.equal(older.message, 'The installed app is 1.2.0 and this file is 1.0.5.\nGive the file a higher version, such as 1.2.1.');
+  const changed = hiring('1.2.0', [...baseFields, { key: 'phone', label: 'Phone', type: 'text' }]);
+  const same = await refusal(upgradeModuleInstallationToManifest(actor, 'misfits', changed, {
+    source: 'sideloaded',
+    expected_active_manifest_digest: current.manifest_digest,
+  }));
+  assert.equal(same.status, 409);
+  assert.equal(same.code, 'MODULE_UPDATE_NOT_AVAILABLE');
+  assert.equal(same.message, 'The installed app is 1.2.0 and this file is also 1.2.0.\nGive the file a higher version, such as 1.2.1.');
+  const identical = await refusal(upgradeModuleInstallationToManifest(actor, 'misfits', hiring('1.2.0', baseFields), {
+    source: 'sideloaded',
+    expected_active_manifest_digest: current.manifest_digest,
+  }));
+  assert.equal(identical.status, 409);
+  assert.equal(identical.code, 'MODULE_UPDATE_NOT_AVAILABLE');
+  assert.equal(identical.message, same.message);
+});

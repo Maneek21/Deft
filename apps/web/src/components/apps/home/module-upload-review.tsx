@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, type ReactNode } from 'react';
 import { Download, FileCheck2, Loader2, RefreshCw, X } from 'lucide-react';
+import { describeVersionNotHigher } from '@deft/shared/modules';
 import type { ModuleManifestPreview, ModuleManifestUploadDecision } from '@/lib/modules';
+import { compareVersions } from '@/lib/module-version-bump';
 
 function plural(count: number, one: string, many = `${one}s`) {
   return `${count} ${count === 1 ? one : many}`;
@@ -32,6 +34,8 @@ export function ModuleUploadReview({
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => { headingRef.current?.focus(); }, []);
   const fromVersion = upgrade ? decision.target.manifest.version : null;
+  // The server refuses an update that is not a higher version, so say so here and offer no Update.
+  const notHigher = fromVersion !== null && (compareVersions(preview.version, fromVersion) ?? 1) <= 0;
   return (
     <section
       aria-labelledby="app-upload-review-title"
@@ -78,11 +82,18 @@ export function ModuleUploadReview({
             ))}
           </ul>
         )}
-        <p className="text-[0.75rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
-          {upgrade
-            ? 'Every record is kept. If a change would break a record that already exists, Deft refuses the update and tells you which field.'
-            : `${summary ? '' : 'Owners, admins and members can use it. Guests can’t. '}Deft stores only this file: it runs no code and fetches nothing. You can turn an app off later, but not delete it.`}
-        </p>
+        {notHigher && fromVersion ? (
+          <p role="alert" className="text-[0.8125rem] leading-relaxed" style={{ color: 'var(--error)' }}>
+            This file’s version is not higher than the installed one, so it can’t update {decision.target?.manifest.name || preview.name}.{' '}
+            {describeVersionNotHigher(fromVersion, preview.version)}
+          </p>
+        ) : (
+          <p className="text-[0.75rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
+            {upgrade
+              ? 'Every record is kept. If a change would break a record that already exists, Deft refuses the update and tells you which field.'
+              : `${summary ? '' : 'Owners, admins and members can use it. Guests can’t. '}Deft stores only this file: it runs no code and fetches nothing. You can turn an app off later, but not delete it.`}
+          </p>
+        )}
         <details className="text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
           <summary className="min-h-11 cursor-pointer py-3 md:min-h-0 md:py-1">File details</summary>
           <dl className="mt-1 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -101,16 +112,18 @@ export function ModuleUploadReview({
           >
             Cancel
           </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={busy || locked}
-            className="flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 text-[0.8125rem] font-medium text-white disabled:opacity-50"
-            style={{ background: 'var(--primary-container)' }}
-          >
-            {busy ? <Loader2 size={14} className="animate-spin" aria-hidden /> : upgrade ? <RefreshCw size={14} aria-hidden /> : <Download size={14} aria-hidden />}
-            {upgrade ? `Update to v${preview.version}` : `Install ${preview.name}`}
-          </button>
+          {notHigher ? null : (
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={busy || locked}
+              className="flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 text-[0.8125rem] font-medium text-white disabled:opacity-50"
+              style={{ background: 'var(--primary-container)' }}
+            >
+              {busy ? <Loader2 size={14} className="animate-spin" aria-hidden /> : upgrade ? <RefreshCw size={14} aria-hidden /> : <Download size={14} aria-hidden />}
+              {upgrade ? `Update to v${preview.version}` : `Install ${preview.name}`}
+            </button>
+          )}
         </div>
       </div>
     </section>

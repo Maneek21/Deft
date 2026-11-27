@@ -10,6 +10,35 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### The welcome "Say hello in #general" is posted
+
+- The last step of the welcome tour, **Say hello in #general**, now posts your hello to
+  #general. **Post and finish** used to send it to an address that doesn't exist, so the
+  hello was lost without a word. If the hello can't be posted, the step now says "Your
+  hello wasn't posted. Try again, or skip and say hello in #general later." and stays
+  open, so you can try again or skip; trying again can't post the hello twice. The hello
+  goes only to #general: with no #general, the step says so instead of posting it to
+  another space you're in.
+
+### Sharing a note with a person works
+
+- **Share note** now shares the note with the person you pick. The dialog sent no one
+  (the server answered "user_id required"), so a note couldn't be shared with a person;
+  only **Org** visibility worked. **Add people** now leaves out you, the people the note is
+  already shared with, and Defty, which reads notes as the person asking it and so gains
+  nothing from a share. If a share is refused, the dialog says "Couldn't share the note
+  with *name*. Try again." A person under **Shared with** whose name you can't see is shown
+  by email address, or as "Someone".
+- `GET /api/members` gives each person an `is_defty` flag, so Defty can be recognised even
+  by a guest, who sees no one else's email address.
+
+## [0.3.0-preview.156] — 2026-11-27 (prerelease)
+
+Changes since `v0.3.0-preview.155`: #620, #621 and #622. Release scope `core` (no Hermes
+compatibility claim). Cut from master at `e7bbd39d`. No database migration:
+`packages/db/upgrades` is unchanged since 155, and `DEFT_SCHEMA_HEAD` stays
+`0.3.0-preview.154`.
+
 ### "Email me about this report" starts unticked
 
 - On hosted Deft, the **Email me about this report** box in **Report a problem** (user
@@ -24,6 +53,25 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   workspaces get no Email helper. It also says the newest Email release's
   `compatibility.json` names Deft 0.3.0-preview.138, and that no Email release has been
   tested with 0.3.0-preview.155.
+
+### Clearer messages when an app update is refused
+
+- **Upload new version** with a file whose version is older than, or the same as, the
+  installed app no longer offers **Update**. The check now says the file's version is not
+  higher than the installed one, names both versions, and suggests the next one: "The
+  installed app is 1.2.0 and this file is 1.0.5. Give the file a higher version, such as
+  1.2.1." The server refuses such an update with the same words, and the page no longer
+  adds "Refresh and try again." The server used to suggest 1.0.1 whatever the installed
+  version was, and a file identical to the installed one got only "No newer version of this
+  app is available".
+- Removing a record type that still holds records is refused, as before, with a line that
+  says so and names the records, such as: "Roles: record type removed, but it still holds the
+  records "Product designer" and "Backend engineer"". It used to read "Roles → Record: does
+  not fit in …".
+- A `"$schema"` that is not text of at most 2,048 characters is now reported as
+  "$schema: must be a text URL (found a number)" (or "must be a text URL of at most 2048
+  characters (you have …)") instead of "unknown key "$schema"". Deft checks only that it is
+  text and its length, not that it is a URL.
 
 ## [0.3.0-preview.155] — 2026-11-26 (prerelease)
 
