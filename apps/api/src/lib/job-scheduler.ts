@@ -15,6 +15,10 @@ export async function initScheduler(): Promise<void> {
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'chat-observation-backfill', 'cron:chat-observation-backfill');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'chat-knowledge-batch', 'cron:chat-knowledge-batch');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'attention-maintenance', 'cron:attention-maintenance');
+  // Agent edit suggestions pending for 14 days expire (M6): once a day, each
+  // day's run keyed `document-suggestion-expiry:<yyyy-mm-dd>`.
+  const { ensureDocumentSuggestionExpiry } = await import('../workers/handlers/document-suggestion-expiry.js');
+  await ensureDocumentSuggestionExpiry();
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'people-graph', 'cron:people-graph');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'manager-pulse', 'cron:manager-pulse');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'burnout-detect', 'cron:burnout-detect');

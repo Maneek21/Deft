@@ -53,6 +53,7 @@ import {
   sanitizeModuleActionParamsForReceipt,
   hasHumanMcpBulkProvenance,
 } from '../lib/agent-approval-resolver.js';
+import { isSuggestionApprovalCode } from '../lib/document-suggestions.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { markWorkIntentDismissedForAction } from '../lib/work-intents.js';
 import { getIO } from '../socket.js';
@@ -1271,9 +1272,13 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
         if (settled?.approval_status === 'pending') return c.json(approvalRetryableBody(result.message));
         return c.json(approvedButFailedBody(result.message, action.action, settled?.result));
       }
+      // A document edit suggestion that wasn't applied is still pending: the
+      // card sends the asker to review it in the document (lib/document-suggestions.ts).
       const statusCode =
         result.code === 'NOT_FOUND' ? 404
         : result.code === 'FORBIDDEN' ? 403
+        : result.code === 'BUSY' ? 503
+        : isSuggestionApprovalCode(result.code) ? 409
         : 400;
       return c.json(
         { error: result.message, code: result.code },

@@ -6,8 +6,9 @@ import * as documentsSchema from '@deft/db/documents';
 import { UPGRADE_NOTIFICATION_TYPES, asStoredNotificationType } from '../src/lib/notification-types.js';
 
 // Drives and documents are created by upgrade 0.3.0-preview.155, and meeting
-// notes links and each person's agent edit setting by 0.3.0-preview.156
-// (db:push-full and db:upgrade both apply them), not by schema.ts.
+// notes links, each person's agent edit setting and agent edit suggestions
+// by 0.3.0-preview.156 (db:push-full and db:upgrade both apply them), not by
+// schema.ts.
 
 const DRIVE_TABLES = [
   'doc_favorites',
@@ -15,6 +16,7 @@ const DRIVE_TABLES = [
   'document_attachments',
   'document_event_links',
   'document_shares',
+  'document_suggestions',
   'document_user_settings',
   'document_versions',
   'documents',
@@ -85,8 +87,8 @@ before(async () => {
 
 after(async () => {
   const orgIds = [orgA, orgB];
-  for (const table of ['document_user_settings', 'document_event_links', 'document_shares', 'drive_members', 'document_versions', 'document_attachments',
-    'doc_favorites', 'note_document_map', 'documents', 'doc_folders', 'drives', 'events', 'spaces', 'org_members']) {
+  for (const table of ['document_suggestions', 'agent_actions', 'document_user_settings', 'document_event_links', 'document_shares', 'drive_members',
+    'document_versions', 'document_attachments', 'doc_favorites', 'note_document_map', 'documents', 'doc_folders', 'drives', 'events', 'spaces', 'org_members']) {
     await client.query(`DELETE FROM ${table} WHERE org_id = ANY($1)`, [orgIds]);
   }
   await client.query('DELETE FROM users WHERE id = ANY($1)', [[alice, bob, carol]]);
@@ -104,7 +106,7 @@ test('the Drizzle mirror matches every column the upgrade creates', async () => 
   const mirrors = [documentsSchema.drives, documentsSchema.driveMembers, documentsSchema.docFolders,
     documentsSchema.documents, documentsSchema.documentShares, documentsSchema.documentVersions,
     documentsSchema.documentAttachments, documentsSchema.docFavorites, documentsSchema.noteDocumentMap, documentsSchema.drivesMoveRuns,
-    documentsSchema.documentEventLinks, documentsSchema.documentUserSettings];
+    documentsSchema.documentEventLinks, documentsSchema.documentUserSettings, documentsSchema.documentSuggestions];
   const sqlType = (type: string) => (type === 'timestamp' ? 'timestamp without time zone' : type);
   const mirrored = mirrors.map(getTableConfig);
   assert.deepEqual(mirrored.map((table) => table.name).sort(), DRIVE_TABLES);
@@ -333,6 +335,38 @@ test("a person's agent edit setting must name a person of its own workspace, onc
   }
 });
 
+test("a suggestion names its own workspace's action, asker and agent, once per action, with a known status", async () => {
+  const doc = await document(orgA, await drive(orgA));
+  const action = async (orgId: string, userId: string) => {
+    const id = newId();
+    await client.query(`INSERT INTO agent_actions (id, org_id, user_id, action, params, approval_tier)
+      VALUES ($1, $2, $3, 'edit_document', '{}', 'quick')`, [id, orgId, userId]);
+    return id;
+  };
+  const actionA = await action(orgA, alice);
+  const actionB = await action(orgB, bob);
+  const suggestion = `INSERT INTO document_suggestions (id, org_id, document_id, action_id, asker_user_id, agent_user_id,
+      base_json, base_revision, ops, proposed_json, changed_block_ids, status)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, 0, '[]', $7, '{}', $8)`;
+  // Another workspace's action, asker or agent, and a row of another workspace for this document.
+  await rejectsWith('23503', suggestion, [newId(), orgA, doc, actionB, alice, carol, EMPTY_DOC, 'pending']);
+  await rejectsWith('23503', suggestion, [newId(), orgA, doc, actionA, bob, carol, EMPTY_DOC, 'pending']);
+  await rejectsWith('23503', suggestion, [newId(), orgA, doc, actionA, alice, bob, EMPTY_DOC, 'pending']);
+  await rejectsWith('23503', suggestion, [newId(), orgA, doc, newId(), alice, carol, EMPTY_DOC, 'pending']);
+  await rejectsWith('23503', suggestion, [newId(), orgB, doc, actionB, bob, bob, EMPTY_DOC, 'pending']);
+  await rejectsWith('23514', suggestion, [newId(), orgA, doc, actionA, alice, carol, EMPTY_DOC, 'approved']);
+  const id = newId();
+  await client.query(suggestion, [id, orgA, doc, actionA, alice, carol, EMPTY_DOC, 'pending']);
+  await rejectsWith('23505', suggestion, [newId(), orgA, doc, actionA, alice, carol, EMPTY_DOC, 'pending']);
+  await rejectsWith('23503', 'UPDATE document_suggestions SET asker_user_id = $1 WHERE id = $2', [bob, id]);
+  await rejectsWith('23503', 'UPDATE document_suggestions SET agent_user_id = $1 WHERE id = $2', [bob, id]);
+  await rejectsWith('23503', 'UPDATE document_suggestions SET action_id = $1 WHERE id = $2', [actionB, id]);
+  // A status change checks nothing again; deleting the action removes its suggestion.
+  await client.query("UPDATE document_suggestions SET status = 'applying' WHERE id = $1", [id]);
+  await client.query('DELETE FROM agent_actions WHERE id = $1', [actionA]);
+  assert.equal((await client.query('SELECT 1 FROM document_suggestions WHERE id = $1', [id])).rowCount, 0);
+});
+
 test('a retried agent edit stores one version', async () => {
   const doc = await document(orgA, await drive(orgA));
   const version = `INSERT INTO document_versions (id, org_id, document_id, kind, action_id, content_json, size_bytes)
@@ -398,6 +432,22 @@ const DEFINITIONS: Record<string, { constraints: string; indexes: string }> = {
     ].join(' | '),
     indexes: 'CREATE UNIQUE INDEX document_user_settings_org_user_key ON public.document_user_settings USING btree (org_id, user_id)',
   },
+  document_suggestions: {
+    constraints: [
+      'document_suggestions_action_id_fkey: FOREIGN KEY (action_id) REFERENCES agent_actions(id) ON DELETE CASCADE',
+      'document_suggestions_agent_user_id_fkey: FOREIGN KEY (agent_user_id) REFERENCES users(id)',
+      'document_suggestions_asker_user_id_fkey: FOREIGN KEY (asker_user_id) REFERENCES users(id)',
+      'document_suggestions_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id)',
+      'document_suggestions_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id)',
+      "document_suggestions_status_check: CHECK ((status = ANY (ARRAY['pending'::text, 'applying'::text, 'accepted'::text, 'partially_accepted'::text, 'rejected'::text, 'expired'::text, 'cancelled'::text])))",
+    ].join(' | '),
+    indexes: [
+      'CREATE UNIQUE INDEX document_suggestions_action_key ON public.document_suggestions USING btree (action_id)',
+      'CREATE INDEX document_suggestions_asker_status_idx ON public.document_suggestions USING btree (org_id, asker_user_id, status)',
+      'CREATE INDEX document_suggestions_document_status_idx ON public.document_suggestions USING btree (org_id, document_id, status)',
+      "CREATE INDEX document_suggestions_open_created_idx ON public.document_suggestions USING btree (created_at) WHERE (status = ANY (ARRAY['pending'::text, 'applying'::text]))",
+    ].join(' | '),
+  },
   document_shares: {
     constraints: [
       'document_shares_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id)',
@@ -412,7 +462,7 @@ const DEFINITIONS: Record<string, { constraints: string; indexes: string }> = {
   },
 };
 
-test('documents, drive_members, document_shares, document_event_links and document_user_settings have the definitions the upgrade job checks', async () => {
+test('documents, drive_members, document_shares, document_event_links, document_user_settings and document_suggestions have the definitions the upgrade job checks', async () => {
   for (const [table, expected] of Object.entries(DEFINITIONS)) {
     const constraints = await client.query<{ v: string }>(constraintsSql, [`public.${table}`]);
     const indexes = await client.query<{ v: string }>(indexesSql, [`public.${table}`]);

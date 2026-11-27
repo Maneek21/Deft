@@ -54,6 +54,10 @@ const CRON_DELAYS: Record<string, number> = {
   'app-automation-scan': 60_000,
   // Scheduled GitHub sync scan; off when DEFT_GITHUB_SYNC_INTERVAL_MIN is 0/off.
   ...(githubSyncIntervalMs() > 0 ? { [GITHUB_SYNC_SCAN_JOB]: GITHUB_SYNC_SCAN_MS } : {}),
+  // Not here: the daily 'document-suggestion-expiry' pass keys each day's
+  // run on its date (`document-suggestion-expiry:<yyyy-mm-dd>`, rule C1), so it
+  // schedules itself (handlers/document-suggestion-expiry.ts); this map's
+  // occurrences reuse one key. reconcileRecurringJobs repairs its chain.
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -435,6 +439,10 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       const mod = await import('./handlers/attention-maintenance.js');
       return mod.handleAttentionMaintenance;
     }
+    case 'document-suggestion-expiry': {
+      const mod = await import('./handlers/document-suggestion-expiry.js');
+      return mod.handleDocumentSuggestionExpiry;
+    }
     case 'app-integration-notification': {
       const mod = await import('../lib/app-integration-notification-service.js');
       return mod.handleAppIntegrationNotification;
@@ -740,6 +748,8 @@ function trackBackground<T>(promise: Promise<T>): Promise<T> {
 async function reconcileRecurringJobs(): Promise<void> {
   await ensureAppResourceSyncScan();
   await ensureAppAutomationScan({ mode: 'startup' });
+  // The next day's suggestion expiry pass (its day's key: a no-op once queued).
+  await import('./handlers/document-suggestion-expiry.js').then((mod) => mod.ensureDocumentSuggestionExpiry());
   await Promise.all(Object.entries(CRON_KEYS)
     .filter(([jobName]) => jobName !== 'agent-heartbeat'
       && jobName !== 'app-automation-scan')

@@ -53,6 +53,14 @@
 // change, and a retry by an actor or asker who has lost the right gets the
 // writer's refusal, never the first run's references.
 //
+// An accepted suggestion (M6, lib/document-suggestions.ts) is applied by the
+// same function, with only the blocks the asker chose (`selectedBlockIds`)
+// and AgentEditWriteOptions: reason 'suggestion' (allowed on a drive set to
+// suggestions only), the revision the asker reviewed (`expectedRevision`),
+// operations on blocks deleted since left out (`skipMissing`), and the
+// suggestion's outcome committed in the same transaction. So its version,
+// credit, highlight, audit and undo are a direct edit's.
+//
 // Undo (POST /api/documents/agent-edits/:actionId/undo): through the one
 // writer as the person undoing, reason `restore`, needs edit. For each block
 // the edit changed, compared with the live document: a block whose hash is
@@ -341,10 +349,13 @@ function updateHighlights(doc: Y.Doc, change: (current: AgentHighlight[]) => Age
 /** Runs the edit on the live document `doc` (the header); returns its edit_details. */
 function editInDoc(doc: Y.Doc, i: {
   actionId: string; agentUserId: string; askerId: string; summary: string; ops: DocumentEditOp[]; selectedBlockIds?: string[];
+  skipMissing?: boolean;
 }): EditDetails {
   const current = contentOf(doc);
   const result = applyOpsToJson(current, i.ops, { idSeed: i.actionId, selectedBlockIds: i.selectedBlockIds });
-  if (result.missingBlockIds.length > 0) throw new DocumentEditRefused('BLOCK_NOT_FOUND', result.missingBlockIds);
+  // With skipMissing, an edit refuses only when nothing at all is left to apply.
+  const refused = i.skipMissing ? result.changedBlockIds.length === 0 : result.missingBlockIds.length > 0;
+  if (refused) throw new DocumentEditRefused('BLOCK_NOT_FOUND', result.missingBlockIds);
   applyToFragment(doc, result.json, result.changedBlockIds);
 
   const after = hashesOf(contentOf(doc));
@@ -391,15 +402,33 @@ async function appliedEdit(x: Executor, orgId: string, documentId: string, actio
 }
 
 /**
+ * How an accepted suggestion's write (lib/document-suggestions.ts, M6)
+ * differs from a direct edit. The result is otherwise the same: one `agent`
+ * version, credit, highlight, audit and undo, for the blocks applied.
+ */
+export type AgentEditWriteOptions = {
+  /** 'suggestion' for an accepted suggestion, which a drive set to suggestions only allows. Default 'agent_edit'. */
+  reason?: 'agent_edit' | 'suggestion';
+  /** The writer refuses REVISION_CHANGED unless the document is still at this revision. */
+  expectedRevision?: number;
+  /** Operations naming blocks that are no longer there are left out; BLOCK_NOT_FOUND only when nothing is left to apply. */
+  skipMissing?: boolean;
+  /** The caller's work in the write's transaction, after the agent version: it commits or rolls back with the edit. */
+  inTransaction?: (tx: Tx, applied: { versionId: string; changedBlockIds: string[] }) => Promise<void>;
+};
+
+/**
  * Applies the agent's operations straight into the document (the header), at
  * the asker's request, as one write through writeDocument. Returns the agent
  * version and the changed block ids; an action already applied returns its
  * version and writes nothing, once the writer's checks have passed. Throws
  * DocumentEditRefused (BLOCK_NOT_FOUND) or the writer's DocumentWriteRefused
- * (FORBIDDEN, TOO_LARGE, BUSY, INVALID_CONTENT), having written nothing.
+ * (FORBIDDEN, TOO_LARGE, BUSY, INVALID_CONTENT, and REVISION_CHANGED with
+ * `opts.expectedRevision`), having written nothing.
  */
 export async function applyDocumentEditDirect(i: { orgId: string; documentId: string; agentUserId: string; askerId: string;
-  actionId: string; ops: DocumentEditOp[]; summary: string; selectedBlockIds?: string[] }): Promise<{ versionId: string; changedBlockIds: string[] }> {
+  actionId: string; ops: DocumentEditOp[]; summary: string; selectedBlockIds?: string[] },
+opts: AgentEditWriteOptions = {}): Promise<{ versionId: string; changedBlockIds: string[] }> {
   const summary = i.summary.trim();
   const outcome: { details: EditDetails | null; versionId: string | null } = { details: null, versionId: null };
   try {
@@ -407,7 +436,8 @@ export async function applyDocumentEditDirect(i: { orgId: string; documentId: st
       orgId: i.orgId,
       documentId: i.documentId,
       actor: { kind: 'agent', userId: i.agentUserId, askerId: i.askerId, actionId: i.actionId },
-      reason: 'agent_edit',
+      reason: opts.reason ?? 'agent_edit',
+      expectedRevision: opts.expectedRevision,
       // After the writer's checks, with the row locked, before anything changes (the header).
       beforeMutate: async (tx) => {
         const already = await appliedEdit(tx, i.orgId, i.documentId, i.actionId);
@@ -416,6 +446,7 @@ export async function applyDocumentEditDirect(i: { orgId: string; documentId: st
       mutate: (doc) => {
         outcome.details = editInDoc(doc, {
           actionId: i.actionId, agentUserId: i.agentUserId, askerId: i.askerId, summary, ops: i.ops, selectedBlockIds: i.selectedBlockIds,
+          skipMissing: opts.skipMissing,
         });
       },
       // The credit commits with the content, or neither does.
@@ -425,6 +456,7 @@ export async function applyDocumentEditDirect(i: { orgId: string; documentId: st
           agentUserId: i.agentUserId, actionId: i.actionId, editDetails: outcome.details, json: afterJson,
         });
         outcome.versionId = created.id;
+        await opts.inTransaction?.(tx, { versionId: created.id, changedBlockIds: outcome.details!.changed_block_ids });
       },
     }));
   } catch (error) {

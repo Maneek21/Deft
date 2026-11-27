@@ -272,6 +272,47 @@ export const documentUserSettings = pgTable('document_user_settings', {
   unique('document_user_settings_org_user_key').on(t.org_id, t.user_id),
 ]);
 
+/** Where an agent's suggested edit stands (M6): open while 'pending' or
+ * 'applying' (claimed with the blocks chosen), then one of the outcomes. */
+export const DOCUMENT_SUGGESTION_STATUSES = ['pending', 'applying', 'accepted', 'partially_accepted', 'rejected', 'expired', 'cancelled'] as const;
+export type DocumentSuggestionStatus = (typeof DOCUMENT_SUGGESTION_STATUSES)[number];
+
+/** An agent's edit to a document waiting as a suggestion, one per agent
+ * action (M6). `base_json` (at `base_revision`) is the content it was
+ * proposed on and `proposed_json` the content its `ops` give; both hold
+ * document text, so only the asker reads them (lib/document-suggestions.ts).
+ * Created by upgrade 0.3.0-preview.156, which also holds the org-qualified
+ * document key, the action key (deleting the action removes the row), the
+ * CHECK on `status`, and the trigger `document_suggestion_check`: the action
+ * is the row's workspace's, and the asker and the agent have an
+ * `org_members` row in it. */
+export const documentSuggestions = pgTable('document_suggestions', {
+  id: id(),
+  org_id: text('org_id').notNull(),
+  document_id: text('document_id').notNull(),
+  action_id: text('action_id').notNull(),
+  asker_user_id: text('asker_user_id').notNull(),
+  agent_user_id: text('agent_user_id').notNull(),
+  base_json: jsonb('base_json').notNull(),
+  base_revision: bigint('base_revision', { mode: 'number' }).notNull(),
+  ops: jsonb('ops').notNull(),
+  proposed_json: jsonb('proposed_json').notNull(),
+  changed_block_ids: text('changed_block_ids').array().notNull(),
+  selected_block_ids: text('selected_block_ids').array(),
+  reviewed_revision: bigint('reviewed_revision', { mode: 'number' }),
+  status: text('status').$type<DocumentSuggestionStatus>().default('pending').notNull(),
+  applied_block_ids: text('applied_block_ids').array(),
+  resolved_at: timestamp('resolved_at'),
+  resolved_by: text('resolved_by'),
+  created_at: createdAt(),
+  updated_at: updatedAt(),
+}, (t) => [
+  unique('document_suggestions_action_key').on(t.action_id),
+  index('document_suggestions_document_status_idx').on(t.org_id, t.document_id, t.status),
+  index('document_suggestions_asker_status_idx').on(t.org_id, t.asker_user_id, t.status),
+  index('document_suggestions_open_created_idx').on(t.created_at).where(sql`status IN ('pending', 'applying')`),
+]);
+
 export type DriveRow = typeof drives.$inferSelect;
 export type DriveMemberRow = typeof driveMembers.$inferSelect;
 export type DocFolderRow = typeof docFolders.$inferSelect;
@@ -283,3 +324,4 @@ export type DocFavoriteRow = typeof docFavorites.$inferSelect;
 export type NoteDocumentMapRow = typeof noteDocumentMap.$inferSelect;
 export type DocumentEventLinkRow = typeof documentEventLinks.$inferSelect;
 export type DocumentUserSettingsRow = typeof documentUserSettings.$inferSelect;
+export type DocumentSuggestionRow = typeof documentSuggestions.$inferSelect;

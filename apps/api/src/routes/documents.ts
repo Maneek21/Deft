@@ -55,6 +55,19 @@
 // refusals answer as for a restore. It answers { restored_block_ids,
 // conflicted_block_ids }; undoing again restores nothing.
 //
+// Suggestions (M6; the rules are in lib/document-suggestions.ts): GET
+// /:id/suggestions needs view and answers { mine, others }: the caller's own
+// pending suggestions, and everyone else's only as { pending, asker_name }.
+// Only the person who asked reviews (GET /:id/suggestions/:sid), applies
+// (POST .../apply { block_ids: string[] | 'all', revision? }) or rejects (POST
+// .../reject, no body) a suggestion: anyone else who can open the document
+// is 403 NOT_REQUESTER, anyone who can't (or a suggestion not on this
+// document) is 404. Applying answers { status, applied_block_ids, version_id };
+// 409 SUGGESTION_ALREADY_RESOLVING when another apply or a decision came
+// first, 409 REVISION_CHANGED when the document moved since the review read
+// at `revision` (REVIEW_IN_DOCUMENT without it), 409 NOTHING_TO_APPLY, 409
+// SUGGESTION_NOT_APPLIED when it was closed instead, and 503 BUSY.
+//
 // Settings (M5; the rules are in lib/document-edit-landing.ts), mounted at
 // /api/document-settings: GET answers { agent_edit_mode }, the caller's own
 // setting in their workspace, `suggest_when_open` when they have saved none;
@@ -82,6 +95,7 @@ import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 import { documentCards, MAX_DOCUMENT_CARDS } from '../lib/chat-documents.js';
 import { DocumentWriteRefused, type DocumentWriteRefusalCode } from '../lib/document-writer.js';
 import { undoAgentEdit } from '../lib/document-edit.js';
+import { applySuggestion, listDocumentSuggestions, rejectSuggestion, reviewSuggestion } from '../lib/document-suggestions.js';
 import { AGENT_EDIT_MODES, agentEditModeFor, setAgentEditMode } from '../lib/document-edit-landing.js';
 import { getActiveOrgMembership } from '../lib/org-membership.js';
 import {
@@ -149,6 +163,11 @@ const versionPageSchema = z.object({
   before: idSchema.optional(),
 });
 const settingsSchema = z.object({ agent_edit_mode: z.enum(AGENT_EDIT_MODES) }).strict();
+/** The blocks of a suggestion to apply (each one it changes, or every one), and the document revision the review was read at. */
+const applySuggestionSchema = z.object({
+  block_ids: z.union([z.literal('all'), z.array(idSchema).min(1).max(1000)]),
+  revision: z.number().int().min(0).optional(),
+}).strict();
 
 /** One snapshot for GET /:id's role, document, drive and breadcrumb. */
 const READ_SNAPSHOT: PgTransactionConfig = { isolationLevel: 'repeatable read', accessMode: 'read only' };
@@ -523,6 +542,57 @@ documentRoutes.post('/agent-edits/:actionId/undo', async (c) => {
     return c.json({ restored_block_ids: undone.restoredBlockIds, conflicted_block_ids: undone.conflictedBlockIds });
   } catch (error) {
     return failed(c, error, 'undo the edit');
+  }
+});
+
+// GET /api/documents/:id/suggestions (needs view): the caller's own pending suggestions, and how many wait for whom.
+documentRoutes.get('/:id/suggestions', async (c) => {
+  try {
+    const user = c.get('user');
+    return c.json(await listDocumentSuggestions({ orgId: user.org_id, documentId: c.req.param('id'), userId: user.id }));
+  } catch (error) {
+    return failed(c, error, 'list the suggestions');
+  }
+});
+
+// GET /api/documents/:id/suggestions/:sid (the asker only): the suggestion in full, with conflicts and the revision read at.
+documentRoutes.get('/:id/suggestions/:sid', async (c) => {
+  try {
+    const user = c.get('user');
+    const suggestion = await reviewSuggestion({
+      orgId: user.org_id, suggestionId: c.req.param('sid'), userId: user.id, documentId: c.req.param('id'),
+    });
+    return c.json({ suggestion });
+  } catch (error) {
+    return failed(c, error, 'load the suggestion');
+  }
+});
+
+// POST /api/documents/:id/suggestions/:sid/apply { block_ids, revision? } (the asker only): applies the blocks chosen.
+documentRoutes.post('/:id/suggestions/:sid/apply', async (c) => {
+  try {
+    const user = c.get('user');
+    const parsed = applySuggestionSchema.safeParse(await jsonBody(c));
+    if (!parsed.success) return invalid(c);
+    const applied = await applySuggestion({
+      orgId: user.org_id, suggestionId: c.req.param('sid'), userId: user.id, documentId: c.req.param('id'),
+      blockIds: parsed.data.block_ids, revision: parsed.data.revision,
+    });
+    return c.json({ status: applied.status, applied_block_ids: applied.appliedBlockIds, version_id: applied.versionId });
+  } catch (error) {
+    return failed(c, error, 'apply the suggestion');
+  }
+});
+
+// POST /api/documents/:id/suggestions/:sid/reject (the asker only): takes no body.
+documentRoutes.post('/:id/suggestions/:sid/reject', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!(await noBodyOrJson(c))) return invalid(c);
+    await rejectSuggestion({ orgId: user.org_id, suggestionId: c.req.param('sid'), userId: user.id, documentId: c.req.param('id') });
+    return c.json({ status: 'rejected' });
+  } catch (error) {
+    return failed(c, error, 'reject the suggestion');
   }
 });
 

@@ -749,6 +749,17 @@ jobs:
               THEN
                 RAISE EXCEPTION 'document user settings table missing or different after upgrade';
               END IF;
+              -- Same definitions as apps/api/test/documents-schema-db.test.ts (fresh install): agent edit suggestions (.156).
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.document_suggestions'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'document_suggestions_action_id_fkey: FOREIGN KEY (action_id) REFERENCES agent_actions(id) ON DELETE CASCADE | document_suggestions_agent_user_id_fkey: FOREIGN KEY (agent_user_id) REFERENCES users(id) | document_suggestions_asker_user_id_fkey: FOREIGN KEY (asker_user_id) REFERENCES users(id) | document_suggestions_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id) | document_suggestions_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id) | document_suggestions_status_check: CHECK ((status = ANY (ARRAY[''pending''::text, ''applying''::text, ''accepted''::text, ''partially_accepted''::text, ''rejected''::text, ''expired''::text, ''cancelled''::text])))'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.document_suggestions'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE UNIQUE INDEX document_suggestions_action_key ON public.document_suggestions USING btree (action_id) | CREATE INDEX document_suggestions_asker_status_idx ON public.document_suggestions USING btree (org_id, asker_user_id, status) | CREATE INDEX document_suggestions_document_status_idx ON public.document_suggestions USING btree (org_id, document_id, status) | CREATE INDEX document_suggestions_open_created_idx ON public.document_suggestions USING btree (created_at) WHERE (status = ANY (ARRAY[''pending''::text, ''applying''::text]))'
+              THEN
+                RAISE EXCEPTION 'document suggestions table missing or different after upgrade';
+              END IF;
             END \$\$;
           "
           bash scripts/ci/snapshot-upgrade-data.sh "$RUNNER_TEMP/upgrade-after"
@@ -757,7 +768,7 @@ jobs:
         # db:push-full (fresh installs, dev and test databases) and db:upgrade
         # (every existing install) must build the same set of tables, including
         # those that only upgrades create (ics_publish_tokens, user_two_step,
-        # note_files, drives, documents, document_event_links, document_user_settings), and the same enum labels, functions,
+        # note_files, drives, documents, document_event_links, document_user_settings, document_suggestions), and the same enum labels, functions,
         # triggers and columns: enum labels and trigger functions also come only
         # from upgrades.
         run: |
@@ -768,7 +779,7 @@ jobs:
           tables_sql="SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1"
           psql "$fresh_url" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-fresh.txt"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-upgraded.txt"
-          for table in ics_publish_tokens seat_statements user_two_step note_files drives documents document_event_links document_user_settings deft_schema_migrations; do
+          for table in ics_publish_tokens seat_statements user_two_step note_files drives documents document_event_links document_user_settings document_suggestions deft_schema_migrations; do
             grep -qx "$table" "$RUNNER_TEMP/tables-fresh.txt" || { echo "fresh install is missing $table" >&2; exit 1; }
           done
           diff --unified --label fresh-install --label upgraded "$RUNNER_TEMP/tables-fresh.txt" "$RUNNER_TEMP/tables-upgraded.txt"

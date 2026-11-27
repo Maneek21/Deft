@@ -57,6 +57,7 @@ import {
   type JSONContent as NoteJSONContent,
 } from './legacy-notes.js';
 import { updateDocument } from './documents.js';
+import { DOCUMENT_EDIT_ACTION, executeDocumentEditAction } from './document-suggestions.js';
 import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
@@ -1701,6 +1702,12 @@ export async function executeAction(
     }
 
     switch (action) {
+      // An agent's document edit, approved by its asker: the claimed suggestion's
+      // blocks, through the one writer (lib/document-suggestions.ts, M6). M7 adds
+      // the direct path for an edit with no suggestion.
+      case DOCUMENT_EDIT_ACTION:
+        return executeDocumentEditAction({ orgId, actionId });
+
       case DOCUMENT_SEND_ACTION: {
         let documentActorUserId = userId;
         if (!agentEmployeeId) {

@@ -190,6 +190,7 @@ export const FK_PAIRS: Array<[child: string, col: string, parent: string]> = [
   ['clips', 'message_id', 'messages'],
   ['clips', 'space_id', 'spaces'],
   ['document_event_links', 'event_id', 'events'],
+  ['document_suggestions', 'action_id', 'agent_actions'],
   ['duplicate_flags', 'task_a_id', 'tasks'],
   ['duplicate_flags', 'task_b_id', 'tasks'],
   ['email_calendar_invitations', 'event_id', 'events'],
@@ -415,6 +416,9 @@ const MEMBER_COLUMNS: Array<[table: string, col: string]> = [
   ['drives', 'created_by'],
   ['doc_favorites', 'user_id'],
   ['document_user_settings', 'user_id'],
+  ['document_suggestions', 'asker_user_id'],
+  // An agent's user (Defty, or an employee's) has an org_members row in the row's workspace.
+  ['document_suggestions', 'agent_user_id'],
   ['wiki_citations', 'source_user_id'],
   ['work_intents', 'converted_by'],
   ['work_intents', 'dismissed_by'],

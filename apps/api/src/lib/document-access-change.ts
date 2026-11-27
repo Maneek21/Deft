@@ -117,12 +117,28 @@ export function accessLossBarrierCovers(orgId: string, documentId: string, userI
 }
 
 /**
+ * The modules whose hooks register when they load (M6's suggestions,
+ * lib/document-suggestions.ts), loaded before the first loss runs the hooks,
+ * so every process that applies a loss has them, whatever it imported. A
+ * dynamic import: they import this module.
+ */
+let hookModules: Promise<unknown> | null = null;
+function loadHookModules(): Promise<unknown> {
+  hookModules ??= import('./document-suggestions.js').catch((error) => {
+    hookModules = null;
+    throw error;
+  });
+  return hookModules;
+}
+
+/**
  * Runs every registered hook in the caller's transaction, after the change.
  * A hook that throws fails the transaction, so the change and what the hook
  * would have cancelled never part. Opens the change's barrier first (before
  * the commit); finishAccessLoss with the returned result closes it.
  */
 export async function applyAccessLossInTx(tx: Tx, change: DocumentAccessChange): Promise<{ cancelledActionIds: string[] }> {
+  await loadHookModules();
   const barrier = openBarrier(change);
   const cancelled = new Set<string>();
   for (const hook of hooks) {

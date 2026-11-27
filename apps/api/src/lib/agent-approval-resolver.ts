@@ -19,8 +19,10 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * or reject their own proposed write. Org owners and admins may review any
  * proposal. An approver assignment counts when it names one of these
  * reviewers, so it never admits anyone else. Action-specific
- * rules stay stricter: record-mirror nominations are owner-only and App Run
- * releases keep their owner and web-session rules. Internal
+ * rules stay stricter: record-mirror nominations are owner-only, App Run
+ * releases keep their owner and web-session rules, and an agent's document
+ * edit suggestion (`edit_document`, lib/document-suggestions.ts) is decided
+ * only by the person who asked, with no owner or admin fallback. Internal
  * system flows must opt into the explicit `internal` bypass instead of
  * impersonating a human reviewer.
  *
@@ -121,6 +123,16 @@ import {
 } from './module-record-bulk-create.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import {
+  DOCUMENT_EDIT_ACTION,
+  prepareSuggestionForApproval,
+  releaseSuggestionClaimInTx,
+  suggestionRetryOf,
+  suggestionRetryRefusal,
+  syncSuggestionWithAction,
+  type SuggestionApprovalCode,
+  type SuggestionClaim,
+} from './document-suggestions.js';
+import {
   APP_RUN_APPROVAL_ACTION,
 } from './app-run-approval-adapter.js';
 import { getAppRunRuntime } from './app-run-runtime.js';
@@ -182,12 +194,15 @@ export { sanitizeModuleActionParamsForReceipt };
  * record through this resolver. App Runs remain outside MCP action catalogs
  * and budgets; this predicate only owns the human approval handoff. */
 export function isApprovalResolverAction(action: string): boolean {
-  return action === 'email_send' || action === 'app_record_mirror_nominate' || action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
+  return action === 'email_send' || action === 'app_record_mirror_nominate' || action === APP_RUN_APPROVAL_ACTION
+    // An agent's document edit suggestion (M6): only its asker decides it, here.
+    || action === DOCUMENT_EDIT_ACTION
+    || MCP_ACTION_KINDS.has(action);
 }
 
 /** The action names `isApprovalResolverAction` accepts, for SQL filters. */
 export const APPROVAL_RESOLVER_ACTION_NAMES: readonly string[] = Object.freeze([
-  'email_send', 'app_record_mirror_nominate', APP_RUN_APPROVAL_ACTION, ...MCP_ACTION_KINDS,
+  'email_send', 'app_record_mirror_nominate', APP_RUN_APPROVAL_ACTION, DOCUMENT_EDIT_ACTION, ...MCP_ACTION_KINDS,
 ]);
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
@@ -675,7 +690,13 @@ export type ApprovalResolverError =
   | { status: 'error'; code: 'EXECUTE_FAILED'; message: string; refusalCode?: WikiProposalRefusalCode }
   /** This request's execution lease dropped: nothing was recorded and the
    *  approved action is left for recovery to settle. */
-  | { status: 'error'; code: 'LEASE_LOST'; message: string };
+  | { status: 'error'; code: 'LEASE_LOST'; message: string }
+  /** A document edit suggestion (lib/document-suggestions.ts) was not applied
+   *  and its action is pending: the document moved since it was reviewed
+   *  (REVIEW_IN_DOCUMENT from the card, REVISION_CHANGED from the review),
+   *  another apply came first, nothing chosen can be applied, or live editing
+   *  is busy. */
+  | { status: 'error'; code: SuggestionApprovalCode; message: string };
 
 /**
  * `decidedElsewhere` is set when the row was already settled or another
@@ -845,6 +866,13 @@ export async function reviewerRefusal(
   // the internal system path never stands in for the owning human.
   if (decision === 'approve' && row.action === 'app_record_mirror_nominate' && userId !== row.user_id) {
     return 'only the owning user may approve a record-mirror nomination';
+  }
+  // A document edit suggestion is its asker's alone (the 13 Nov rule; the M6
+  // consult): no owner or admin fallback, and no internal stand-in, for
+  // approval or rejection.
+  if (row.action === DOCUMENT_EDIT_ACTION) {
+    const asker = options.requesterId ?? await loadActionRequesterId(row);
+    return membership !== null && asker === userId ? null : 'only the person who asked may review this suggestion';
   }
   const humanCanReview = membership !== null && (
     (options.requesterId ?? await loadActionRequesterId(row)) === userId
@@ -1142,13 +1170,27 @@ async function dispatchAction(
 export async function approveAction(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string } = {},
+  options: {
+    internal?: boolean;
+    appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>;
+    humanWebSessionId?: string;
+    /** Set only by applySuggestion (lib/document-suggestions.ts), which claimed the action's edit suggestion with the asker's choice first. */
+    suggestionClaim?: SuggestionClaim;
+  } = {},
 ): Promise<ApprovalResolverResult> {
+  const seen: { action?: string } = {};
   // The execution lease is held for the whole approval so a recovery can
   // tell a live executor from one that is gone.
   const result = await withApprovalLease(
     actionId,
-    (lease) => approveActionLocked(actionId, approverUserId, options, lease),
+    async (lease) => {
+      const outcome = await approveActionLocked(actionId, approverUserId, { ...options, seen }, lease);
+      // An edit suggestion claimed for an approval that didn't start goes back to pending.
+      if (seen.action === DOCUMENT_EDIT_ACTION && outcome.status === 'error' && outcome.code !== 'LEASE_LOST') {
+        await releaseSuggestionClaimInTx(db, actionId);
+      }
+      return outcome;
+    },
   );
   if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
     await publishApprovalResolution(actionId, approverUserId);
@@ -1167,6 +1209,9 @@ async function approveActionLocked(
     humanWebSessionId?: string;
     /** Maintenance resume of a decision already recorded under `approverUserId`. */
     resume?: boolean;
+    suggestionClaim?: SuggestionClaim;
+    /** Filled with the action's kind once read, for approveAction. */
+    seen?: { action?: string };
   },
   lease: DbAdvisoryLease,
 ): Promise<ApprovalResolverResult> {
@@ -1178,6 +1223,7 @@ async function approveActionLocked(
     .from(agentActions)
     .where(eq(agentActions.id, actionId))
     .limit(1);
+  if (row && options.seen) options.seen.action = row.action;
 
   if (!row) {
     return {
@@ -1315,7 +1361,9 @@ async function approveActionLocked(
 
   // Retained native proposals remain audit records, never replacement sends.
   if(row.source==='native_email'||row.action==='email_send')return {status:'error',code:'UNSUPPORTED_ACTION',message:'The built-in mailbox action is retired'};
-  if (!MCP_ACTION_KINDS.has(row.action) && !row.action.startsWith('mcp__') && !ACTION_TOOLS.has(row.action)) {
+  // An edit suggestion's executor is executeAction's (M7 adds the tool to ACTION_TOOLS).
+  const isNativeAction = ACTION_TOOLS.has(row.action) || row.action === DOCUMENT_EDIT_ACTION;
+  if (!MCP_ACTION_KINDS.has(row.action) && !row.action.startsWith('mcp__') && !isNativeAction) {
     return {
       status: 'error',
       code: 'UNSUPPORTED_ACTION',
@@ -1468,6 +1516,15 @@ async function approveActionLocked(
     }
   }
 
+  // A document edit suggestion is claimed with the blocks to apply (or the
+  // apply route's claim is checked) as late as it can be before the action
+  // is, after the reviewer rule (lib/document-suggestions.ts): the document
+  // must still be at the revision the asker saw, or nothing changes.
+  if (row.action === DOCUMENT_EDIT_ACTION && !resumesApprovedModule) {
+    const refused = await prepareSuggestionForApproval(row.org_id, row.id, options.suggestionClaim ?? null);
+    if (refused) return { status: 'error', code: refused.code, message: refused.message };
+  }
+
   // Phase 12 review fix — atomic claim. Two concurrent callers could both
   // pass the `status === 'pending'` read above; the UPDATE … WHERE … AND
   // approval_status = 'pending' only succeeds for one of them. If this
@@ -1562,7 +1619,7 @@ async function approveActionLocked(
     if (!await actionSourceIsCurrent(actionId, sourceReaderId)) {
       toolResult = { content: [{ type: 'text', text: sourceUnavailable().message }], isError: true };
     } else if (
-      ACTION_TOOLS.has(row.action)
+      isNativeAction
       && (!MCP_ACTION_KINDS.has(row.action) || (isModuleMutation && !ctx))
     ) {
       const executed = await executeAgentAction(
@@ -1618,6 +1675,35 @@ async function approveActionLocked(
   } catch {
     // leave as string
   }
+
+  // An edit suggestion the executor could not apply with nothing written
+  // (the document moved since the revision the asker saw, live editing was
+  // busy, or nothing chosen is left): the action and the suggestion go back
+  // to pending under this request's claim, as a retryable failure leaves an
+  // ordinary approval, and the asker is sent to review it again.
+  const suggestionRetry = row.action === DOCUMENT_EDIT_ACTION && isError && !caughtError ? suggestionRetryOf(parsedResult) : null;
+  if (suggestionRetry) {
+    if (lease.lost) return leaseLost(actionId);
+    const reopened = await db.transaction(async (tx) => {
+      const [back] = await tx.update(agentActions)
+        .set({ approval_status: 'pending', approved_at: null, approved_by_user_id: null, executed_at: null, result: null, error: null })
+        .where(and(
+          eq(agentActions.id, actionId),
+          eq(agentActions.org_id, row.org_id),
+          eq(agentActions.approval_status, 'approved'),
+          ownsClaim(claimToken!),
+        ))
+        .returning({ id: agentActions.id });
+      if (!back) return false;
+      await releaseSuggestionClaimInTx(tx, actionId);
+      return true;
+    });
+    if (reopened) {
+      const refused = suggestionRetryRefusal(suggestionRetry, options.suggestionClaim?.fromReview === true);
+      return { status: 'error', code: refused.code, message: refused.message };
+    }
+  }
+
   const partialBulkResult = row.action === MODULE_RECORD_BULK_CREATE_ACTION
     && isError
     && parsedResult !== null
@@ -2049,6 +2135,8 @@ async function rejectActionOnce(
       dismissedBy: rejecterUserId,
       reason: rejectionReason,
     }, tx);
+    // A document edit suggestion is rejected with its action, in this commit.
+    if (row.action === DOCUMENT_EDIT_ACTION) await syncSuggestionWithAction(tx, row.id, 'rejected');
     return claimed;
   });
 

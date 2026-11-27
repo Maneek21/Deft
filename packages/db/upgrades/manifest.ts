@@ -335,7 +335,7 @@ export const upgradeManifest = {
     {version:'0.3.0-preview.149',file:'0.3.0-preview.149-two-step-verification.sql',description:'Add two-step verification secrets, single-use recovery code hashes and sign-in challenges'},
     {version:'0.3.0-preview.154',file:'0.3.0-preview.154-note-files.sql',description:'Record which uploaded files each note shows, so everyone who can read a note can load its images'},
     {version:'0.3.0-preview.155',file:'0.3.0-preview.155-drives-and-documents.sql',description:'Add drives, folders, documents, shares, versions, attachments, favorites, the notes move map and its run record, with org-qualified keys, a principal check and document search'},
-    {version:'0.3.0-preview.156',file:'0.3.0-preview.156-drives-suggestions.sql',description:'Link meeting-notes documents to calendar events, with an org-qualified document key and an event workspace check, and keep the agent edit setting of each person'},
+    {version:'0.3.0-preview.156',file:'0.3.0-preview.156-drives-suggestions.sql',description:'Link meeting-notes documents to calendar events, with an org-qualified document key and an event workspace check, keep the agent edit setting of each person, and keep agent edit suggestions for the person who asked to review'},
   ] satisfies UpgradeMigration[],
 } as const;
 

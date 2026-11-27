@@ -8,6 +8,7 @@ import {
 } from './module-action-visibility.js';
 import { terminalizePendingModuleActions } from './module-action-terminalization.js';
 import { cancelLostRoomActions } from './lost-room-action-cancellation.js';
+import { DOCUMENT_EDIT_ACTION } from './document-suggestions.js';
 
 export const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -49,13 +50,15 @@ export async function maintainAttentionSystem(
   }
 
   // Preserve the legacy status-only behavior for every non-module action.
+  // A document edit suggestion keeps its action for 14 days and expires with
+  // it in its own daily job (lib/document-suggestions.ts), never here.
   const expired = await db
     .update(agentActions)
     .set({ approval_status: 'expired' })
     .where(and(
       eq(agentActions.approval_status, 'pending'),
       lt(agentActions.created_at, cutoff),
-      notInArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES]),
+      notInArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES, DOCUMENT_EDIT_ACTION]),
     ))
     .returning({
       id: agentActions.id,
