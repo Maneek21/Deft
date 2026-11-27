@@ -54,6 +54,13 @@
 // caller can't open, is 404; below edit is 403 FORBIDDEN_ROLE; the writer's
 // refusals answer as for a restore. It answers { restored_block_ids,
 // conflicted_block_ids }; undoing again restores nothing.
+//
+// Settings (M5; the rules are in lib/document-edit-landing.ts), mounted at
+// /api/document-settings: GET answers { agent_edit_mode }, the caller's own
+// setting in their workspace, `suggest_when_open` when they have saved none;
+// PATCH { agent_edit_mode } saves it ('direct', 'suggest' or
+// 'suggest_when_open'; any other body is 400). Both need an active
+// membership: an inactive member is 403 ORG_MEMBERSHIP_INACTIVE.
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
@@ -75,6 +82,8 @@ import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 import { documentCards, MAX_DOCUMENT_CARDS } from '../lib/chat-documents.js';
 import { DocumentWriteRefused, type DocumentWriteRefusalCode } from '../lib/document-writer.js';
 import { undoAgentEdit } from '../lib/document-edit.js';
+import { AGENT_EDIT_MODES, agentEditModeFor, setAgentEditMode } from '../lib/document-edit-landing.js';
+import { getActiveOrgMembership } from '../lib/org-membership.js';
 import {
   getVersion, listVersions, nameVersion, restoreVersion, VERSION_PAGE_DEFAULT, VERSION_PAGE_MAX,
 } from '../lib/document-versions.js';
@@ -82,6 +91,8 @@ import {
 export const documentRoutes = new Hono();
 /** Mounted at /api/document-templates (M1). */
 export const documentTemplateRoutes = new Hono();
+/** Mounted at /api/document-settings (M5): the caller's own settings in their workspace. */
+export const documentSettingsRoutes = new Hono();
 
 // GET /api/document-templates: the built-in, workspace and personal templates
 // the caller can use. POST /api/documents takes `template` (see lib/documents.ts).
@@ -137,11 +148,14 @@ const versionPageSchema = z.object({
   limit: z.string().regex(/^\d{1,4}$/).transform(Number).pipe(z.number().int().min(1).max(VERSION_PAGE_MAX)).optional(),
   before: idSchema.optional(),
 });
+const settingsSchema = z.object({ agent_edit_mode: z.enum(AGENT_EDIT_MODES) }).strict();
 
 /** One snapshot for GET /:id's role, document, drive and breadcrumb. */
 const READ_SNAPSHOT: PgTransactionConfig = { isolationLevel: 'repeatable read', accessMode: 'read only' };
 
 const NOT_FOUND = { error: 'Document not found', code: 'NOT_FOUND' } as const;
+/** The auth middleware's code for a membership that has ended; the settings routes check it themselves too. */
+const INACTIVE = { error: 'You are no longer an active member of this workspace', code: 'ORG_MEMBERSHIP_INACTIVE' } as const;
 
 function invalid(c: Context) {
   return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
@@ -162,6 +176,31 @@ function failed(c: Context, error: unknown, what: string) {
   console.error('[documents] a document request failed');
   return c.json({ error: `Failed to ${what}`, code: 'INTERNAL_ERROR' }, 500);
 }
+
+// GET /api/document-settings: the caller's own setting in their workspace (the header).
+documentSettingsRoutes.get('/', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!(await getActiveOrgMembership(user.org_id, user.id))) return c.json(INACTIVE, 403);
+    return c.json({ agent_edit_mode: await agentEditModeFor(user.org_id, user.id) });
+  } catch (error) {
+    return failed(c, error, 'load the document settings');
+  }
+});
+
+// PATCH /api/document-settings { agent_edit_mode }: saves the caller's own setting; null from the save means no active membership.
+documentSettingsRoutes.patch('/', async (c) => {
+  try {
+    const user = c.get('user');
+    const parsed = settingsSchema.safeParse(await jsonBody(c));
+    if (!parsed.success) return invalid(c);
+    const saved = await setAgentEditMode(user.org_id, user.id, parsed.data.agent_edit_mode);
+    if (!saved) return c.json(INACTIVE, 403);
+    return c.json({ agent_edit_mode: saved });
+  } catch (error) {
+    return failed(c, error, 'save the document settings');
+  }
+});
 
 // POST /api/documents { drive_id?, folder_id?, parent_document_id?, title?, json? }:
 // needs edit on the drive; no drive and no parent page means My drive.

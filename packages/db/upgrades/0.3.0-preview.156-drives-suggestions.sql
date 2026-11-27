@@ -1,6 +1,7 @@
 -- Drives and documents, checkpoint 2: meeting notes, agent edit settings and
--- suggestions. Add-only. It starts with document_event_links (M2); the
--- suggestion tables are added to this file while it is unreleased.
+-- suggestions. Add-only. It holds document_event_links (M2) and
+-- document_user_settings (M5); the suggestion tables are added to this file
+-- while it is unreleased.
 -- No IF NOT EXISTS: a same-named leftover fails the upgrade instead of being
 -- recorded as applied.
 
@@ -48,3 +49,40 @@ $$;
 CREATE TRIGGER document_event_links_event_check
   BEFORE INSERT OR UPDATE OF org_id, event_id ON document_event_links
   FOR EACH ROW EXECUTE FUNCTION document_event_link_check();
+
+-- Each person's setting for where an agent's edit to a document lands (M5):
+-- 'direct' straight in, 'suggest' as a suggestion, 'suggest_when_open' (the
+-- default) as a suggestion only while someone else has the document open.
+-- One row per person and workspace; a person with no row has the default.
+CREATE TABLE document_user_settings (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES orgs(id),
+  user_id text NOT NULL REFERENCES users(id),
+  agent_edit_mode text NOT NULL DEFAULT 'suggest_when_open'
+    CHECK (agent_edit_mode IN ('direct', 'suggest', 'suggest_when_open')),
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT document_user_settings_org_user_key UNIQUE (org_id, user_id)
+);
+
+-- users are global, so the person must have an org_members row in the row's
+-- workspace, as F2's doc_member_user_check holds a favorite's user. A
+-- trigger rather than a foreign key to org_members, so membership rows stay
+-- free to change; it runs only when the org or the person is set, so a
+-- departed person's row can still be read and changed.
+CREATE FUNCTION document_user_settings_member_check() RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, public, pg_temp
+AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public.org_members m WHERE m.org_id = NEW.org_id AND m.user_id = NEW.user_id) THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'document_user_settings: user % is not in workspace %', NEW.user_id, NEW.org_id
+    USING ERRCODE = 'foreign_key_violation';
+END;
+$$;
+
+CREATE TRIGGER document_user_settings_member_check
+  BEFORE INSERT OR UPDATE OF org_id, user_id ON document_user_settings
+  FOR EACH ROW EXECUTE FUNCTION document_user_settings_member_check();

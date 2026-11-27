@@ -6,8 +6,8 @@ import * as documentsSchema from '@deft/db/documents';
 import { UPGRADE_NOTIFICATION_TYPES, asStoredNotificationType } from '../src/lib/notification-types.js';
 
 // Drives and documents are created by upgrade 0.3.0-preview.155, and meeting
-// notes links by 0.3.0-preview.156 (db:push-full and db:upgrade both apply
-// them), not by schema.ts.
+// notes links and each person's agent edit setting by 0.3.0-preview.156
+// (db:push-full and db:upgrade both apply them), not by schema.ts.
 
 const DRIVE_TABLES = [
   'doc_favorites',
@@ -15,6 +15,7 @@ const DRIVE_TABLES = [
   'document_attachments',
   'document_event_links',
   'document_shares',
+  'document_user_settings',
   'document_versions',
   'documents',
   'drive_members',
@@ -84,7 +85,7 @@ before(async () => {
 
 after(async () => {
   const orgIds = [orgA, orgB];
-  for (const table of ['document_event_links', 'document_shares', 'drive_members', 'document_versions', 'document_attachments',
+  for (const table of ['document_user_settings', 'document_event_links', 'document_shares', 'drive_members', 'document_versions', 'document_attachments',
     'doc_favorites', 'note_document_map', 'documents', 'doc_folders', 'drives', 'events', 'spaces', 'org_members']) {
     await client.query(`DELETE FROM ${table} WHERE org_id = ANY($1)`, [orgIds]);
   }
@@ -103,7 +104,7 @@ test('the Drizzle mirror matches every column the upgrade creates', async () => 
   const mirrors = [documentsSchema.drives, documentsSchema.driveMembers, documentsSchema.docFolders,
     documentsSchema.documents, documentsSchema.documentShares, documentsSchema.documentVersions,
     documentsSchema.documentAttachments, documentsSchema.docFavorites, documentsSchema.noteDocumentMap, documentsSchema.drivesMoveRuns,
-    documentsSchema.documentEventLinks];
+    documentsSchema.documentEventLinks, documentsSchema.documentUserSettings];
   const sqlType = (type: string) => (type === 'timestamp' ? 'timestamp without time zone' : type);
   const mirrored = mirrors.map(getTableConfig);
   assert.deepEqual(mirrored.map((table) => table.name).sort(), DRIVE_TABLES);
@@ -304,6 +305,34 @@ test("a meeting-notes link to another org's event or document is refused", async
   assert.equal((await client.query('SELECT 1 FROM documents WHERE id = $1', [docA])).rowCount, 1);
 });
 
+test("a person's agent edit setting must name a person of its own workspace, once, with a known mode", async () => {
+  const setting = 'INSERT INTO document_user_settings (id, org_id, user_id, agent_edit_mode) VALUES ($1, $2, $3, $4)';
+  // Bob is a person of the other workspace; a made-up id is nobody.
+  await rejectsWith('23503', setting, [newId(), orgA, bob, 'direct']);
+  await rejectsWith('23503', setting, [newId(), orgA, newId(), 'direct']);
+  await rejectsWith('23514', setting, [newId(), orgA, alice, 'always']);
+  const id = newId();
+  await client.query('INSERT INTO document_user_settings (id, org_id, user_id) VALUES ($1, $2, $3)', [id, orgA, alice]);
+  const stored = await client.query<{ agent_edit_mode: string }>('SELECT agent_edit_mode FROM document_user_settings WHERE id = $1', [id]);
+  assert.equal(stored.rows[0]?.agent_edit_mode, 'suggest_when_open', 'the default');
+  await rejectsWith('23505', setting, [newId(), orgA, alice, 'direct']);
+  await rejectsWith('23503', 'UPDATE document_user_settings SET user_id = $1 WHERE id = $2', [bob, id]);
+  await rejectsWith('23503', 'UPDATE document_user_settings SET org_id = $1 WHERE id = $2', [orgB, id]);
+  await rejectsWith('23514', "UPDATE document_user_settings SET agent_edit_mode = 'DIRECT' WHERE id = $1", [id]);
+  // The same person has a row of their own in another workspace they belong to.
+  await client.query('INSERT INTO org_members (id, org_id, user_id) VALUES ($1, $2, $3)', [newId(), orgB, alice]);
+  await client.query(setting, [newId(), orgB, alice, 'direct']);
+  // Changing the mode doesn't depend on the membership row; naming the person again does.
+  await client.query('BEGIN');
+  try {
+    await client.query('DELETE FROM org_members WHERE org_id = $1 AND user_id = $2', [orgA, alice]);
+    await client.query("UPDATE document_user_settings SET agent_edit_mode = 'suggest' WHERE id = $1", [id]);
+    await rejectsWith('23503', 'UPDATE document_user_settings SET user_id = user_id WHERE id = $1', [id]);
+  } finally {
+    await client.query('ROLLBACK');
+  }
+});
+
 test('a retried agent edit stores one version', async () => {
   const doc = await document(orgA, await drive(orgA));
   const version = `INSERT INTO document_versions (id, org_id, document_id, kind, action_id, content_json, size_bytes)
@@ -361,6 +390,14 @@ const DEFINITIONS: Record<string, { constraints: string; indexes: string }> = {
       'CREATE UNIQUE INDEX document_event_links_event_document_key ON public.document_event_links USING btree (event_id, document_id)',
     ].join(' | '),
   },
+  document_user_settings: {
+    constraints: [
+      "document_user_settings_agent_edit_mode_check: CHECK ((agent_edit_mode = ANY (ARRAY['direct'::text, 'suggest'::text, 'suggest_when_open'::text])))",
+      'document_user_settings_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id)',
+      'document_user_settings_user_id_fkey: FOREIGN KEY (user_id) REFERENCES users(id)',
+    ].join(' | '),
+    indexes: 'CREATE UNIQUE INDEX document_user_settings_org_user_key ON public.document_user_settings USING btree (org_id, user_id)',
+  },
   document_shares: {
     constraints: [
       'document_shares_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id)',
@@ -375,7 +412,7 @@ const DEFINITIONS: Record<string, { constraints: string; indexes: string }> = {
   },
 };
 
-test('documents, drive_members, document_shares and document_event_links have the definitions the upgrade job checks', async () => {
+test('documents, drive_members, document_shares, document_event_links and document_user_settings have the definitions the upgrade job checks', async () => {
   for (const [table, expected] of Object.entries(DEFINITIONS)) {
     const constraints = await client.query<{ v: string }>(constraintsSql, [`public.${table}`]);
     const indexes = await client.query<{ v: string }>(indexesSql, [`public.${table}`]);

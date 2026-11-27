@@ -414,6 +414,7 @@ const MEMBER_COLUMNS: Array<[table: string, col: string]> = [
   ['drives', 'owner_user_id'],
   ['drives', 'created_by'],
   ['doc_favorites', 'user_id'],
+  ['document_user_settings', 'user_id'],
   ['wiki_citations', 'source_user_id'],
   ['work_intents', 'converted_by'],
   ['work_intents', 'dismissed_by'],

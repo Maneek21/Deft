@@ -252,6 +252,26 @@ export const documentEventLinks = pgTable('document_event_links', {
   index('document_event_links_document_idx').on(t.org_id, t.document_id),
 ]);
 
+/** Where an agent's edit to a document lands, as a person sets it (M5). */
+export const AGENT_EDIT_MODES = ['direct', 'suggest', 'suggest_when_open'] as const;
+export type AgentEditMode = (typeof AGENT_EDIT_MODES)[number];
+
+/** Each person's agent edit setting, one row per person and workspace; no
+ * row means `suggest_when_open`. Created by upgrade 0.3.0-preview.156, which
+ * also holds the CHECK on agent_edit_mode and the trigger
+ * `document_user_settings_member_check`: the person needs an `org_members`
+ * row in the row's workspace, checked when the org or the person is set. */
+export const documentUserSettings = pgTable('document_user_settings', {
+  id: id(),
+  org_id: text('org_id').notNull(),
+  user_id: text('user_id').notNull(),
+  agent_edit_mode: text('agent_edit_mode').$type<AgentEditMode>().default('suggest_when_open').notNull(),
+  created_at: createdAt(),
+  updated_at: updatedAt(),
+}, (t) => [
+  unique('document_user_settings_org_user_key').on(t.org_id, t.user_id),
+]);
+
 export type DriveRow = typeof drives.$inferSelect;
 export type DriveMemberRow = typeof driveMembers.$inferSelect;
 export type DocFolderRow = typeof docFolders.$inferSelect;
@@ -262,3 +282,4 @@ export type DocumentAttachmentRow = typeof documentAttachments.$inferSelect;
 export type DocFavoriteRow = typeof docFavorites.$inferSelect;
 export type NoteDocumentMapRow = typeof noteDocumentMap.$inferSelect;
 export type DocumentEventLinkRow = typeof documentEventLinks.$inferSelect;
+export type DocumentUserSettingsRow = typeof documentUserSettings.$inferSelect;
