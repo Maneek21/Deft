@@ -22,7 +22,7 @@ import { nativeDeliveryAccessSql, nativeNotificationAccessSql } from './native-m
 import { taskHiddenFromGuestSql } from './task-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import { visibleDocumentIdSql } from './document-access.js';
-import { DOCUMENT_DRAFT_ACTION, DOCUMENT_DRAFT_ITEM_BODY, draftItemBodySql } from './document-draft-params.js';
+import { DOCUMENT_DRAFT_ACTION, DOCUMENT_DRAFT_ITEM_BODY, documentTextHiddenFrom, draftItemBodySql } from './document-draft-params.js';
 import type { AnyNotificationType } from './notification-types.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
 import {
@@ -455,10 +455,13 @@ export function notificationToAttentionDraft(notification: LegacyNotification): 
   };
 }
 
-function approvalActionLabel(action: AgentAction): string {
+function approvalActionLabel(action: AgentAction, userId: string): string {
   if (isModuleGovernedWriteActionName(action.action)) return action.action.replaceAll('_', ' ');
   // M7 fix round 2 (I3): a document draft's item never carries its title.
   if (action.action === DOCUMENT_DRAFT_ACTION) return DOCUMENT_DRAFT_ITEM_BODY;
+  // M7 fix round 4: a note or canvas draft's title or text only on the item of
+  // the person who asked; a fallback reviewer's item names nothing.
+  if (documentTextHiddenFrom(action, userId)) return DOCUMENT_DRAFT_ITEM_BODY;
   const params = objectMetadata(action.params);
   return metadataString(params, 'summary', 'title', 'task_title', 'page_title', 'content')
     ?? action.action.replaceAll('_', ' ');
@@ -485,7 +488,7 @@ export function approvalToAttentionDraft(action: AgentAction, userId: string): A
     sourceId: action.id,
     sourceEventId: `approval-requested:${action.id}`,
     title: `Review ${action.action.replaceAll('_', ' ')}`,
-    body: approvalActionLabel(action),
+    body: approvalActionLabel(action, userId),
     link,
     metadata: {
       action_id: action.id,

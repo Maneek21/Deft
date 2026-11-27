@@ -105,6 +105,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
+ * True when `viewerId` may not see the text this action's params hold for a
+ * document (fix round 4): a document draft, or a note or canvas alias, whose
+ * requester (its `user_id`) is someone else, or a row read without its
+ * `user_id`. Surfaces that show such text in their own words (an approval
+ * item's body) use this; params go through documentTextParamsForViewer.
+ */
+export function documentTextHiddenFrom(row: { action: string; user_id?: string | null }, viewerId: string): boolean {
+  return Object.hasOwn(DOCUMENT_TEXT_ACTIONS, row.action) && !(typeof row.user_id === 'string' && row.user_id === viewerId);
+}
+
+/**
  * An action as `viewerId` may see it (fix round 3). A document draft's text
  * (a create_document's title and Markdown, a create_note's or write_canvas's
  * title and content, pending or settled) is shown only to the person who
@@ -116,8 +127,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * A row read without its `user_id` is shown the same way.
  */
 export function documentTextParamsForViewer<T extends { action: string; params?: unknown; user_id?: string | null }>(row: T, viewerId: string): T {
-  const fields = DOCUMENT_TEXT_ACTIONS[row.action];
-  if (!fields || (typeof row.user_id === 'string' && row.user_id === viewerId)) return row;
+  if (!documentTextHiddenFrom(row, viewerId)) return row;
+  const fields = DOCUMENT_TEXT_ACTIONS[row.action]!;
   const params = isRecord(row.params) ? row.params : {};
   const kept: Record<string, unknown> = {};
   for (const key of DRAFT_ID_KEYS) {

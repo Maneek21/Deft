@@ -74,6 +74,7 @@ import { buildNativeAppActionActor } from './agent-app-action-actor.js';
 import { resolveNativeWikiReader, readNativeWiki, searchNativeWiki } from './native-wiki-owner.js';
 import { liveHumanCalendarEventCondition, liveEmployeeCalendarEventCondition } from './calendar-event-visibility.js';
 import { deftyMessageCitation } from './defty-message-source.js';
+import { documentTextParamsForViewer } from './document-draft-params.js';
 
 // Workspace-wide views of people and of the agent roster: a guest sees only
 // the people who share a space with them, so Defty does not run these for one.
@@ -2450,9 +2451,10 @@ export async function executeToolCall(
         conditions.push(eq(agentActions.agent_employee_id, employee_id));
       }
 
-      const actions = await db
+      const rows = await db
         .select({
           id: agentActions.id,
+          user_id: agentActions.user_id,
           action: agentActions.action,
           params: agentActions.params,
           approval_status: agentActions.approval_status,
@@ -2466,6 +2468,13 @@ export async function executeToolCall(
         .where(and(...conditions))
         .orderBy(desc(agentActions.created_at))
         .limit(maxResults);
+      // M7 fix round 4: the result reaches the person reading (and the model
+      // repeats it), so a document draft's text is there only for the person
+      // who asked for it; an owner or admin reading others' actions gets its size.
+      const actions = rows.map((row) => {
+        const { user_id: _requester, ...shown } = documentTextParamsForViewer(row, _userId);
+        return shown;
+      });
 
       return {
         result: {

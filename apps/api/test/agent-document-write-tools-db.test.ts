@@ -82,7 +82,7 @@ const { agentRoutes } = await import('../src/routes/agent.js');
 const { agentPlanRoutes } = await import('../src/routes/agent-plans.js');
 const { inboxRoutes } = await import('../src/routes/inbox.js');
 const { attentionRoutes } = await import('../src/routes/attention.js');
-const { humanApprovalGet } = await import('../src/lib/mcp-tools/human.js');
+const { humanApprovalGet, humanAttentionDigest, humanAttentionList } = await import('../src/lib/mcp-tools/human.js');
 const { resolveApprovalItemsWithoutReviewer } = await import('../src/lib/attention.js');
 const { documentRoutes } = await import('../src/routes/documents.js');
 const { closeDb } = await import('../src/lib/db.js');
@@ -1108,4 +1108,104 @@ test('fix round 3: a pending draft\'s text is shown only to the person who asked
   // The asker, back, sees it again.
   await setMemberActive(member, true);
   assert.equal((await card(member))?.params?.title, title);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 4
+
+/** The MCP context of a person's personal connection, with the workspace scope only. */
+const mcpCtx = (userId: string, role: string) => ({ org_id: fx.orgId, user_id: userId, role, scopes: ['read:workspace'] } as any);
+
+test('fix round 4: MCP attention_digest shows a pending draft\'s text only to the person who asked; a fallback admin sees its size', { skip }, async (t) => {
+  const { member, admin } = fx.people;
+  await setTrust('standard');
+  const title = `Digest ${token('dgtitle')}`;
+  const body = `Copied from a private page: ${token('dgbody')}`;
+  // A public room: a fallback reviewer must be able to read the room the request came from.
+  const room = await insertChat([member]);
+  const draft = await pendingDraft(member, room, 'digest', title, body);
+  const digestFor = async (userId: string, role: string) => {
+    const result = await humanAttentionDigest({ limit: 50, include_calendar: false, include_recent: false }, mcpCtx(userId, role));
+    assert.notEqual(result.isError, true, text(result));
+    const digest = JSON.parse(result.content[0]?.text ?? '{}') as { pending_approvals: any[] };
+    return { result, entry: digest.pending_approvals.find((approval) => approval.id === draft.id) };
+  };
+
+  // The person who asked sees the draft's text in their digest.
+  const mine = await digestFor(member, 'member');
+  assert.ok(mine.entry, 'the asker reviews the draft');
+  assert.equal(mine.entry.params?.title, title);
+  assert.equal(mine.entry.params?.markdown, body);
+
+  // The asker leaves the workspace: an admin becomes the reviewer.
+  t.after(() => setMemberActive(member, true));
+  await setMemberActive(member, false);
+  const theirs = await digestFor(admin, 'admin');
+  assert.ok(theirs.entry, 'the fallback admin reviews the draft in the digest');
+  assert.match(String(theirs.entry.params?.summary), /^Document draft, \d+ bytes$/);
+  assert.equal(theirs.entry.params?.title?.content_omitted, true);
+  assert.equal(theirs.entry.params?.markdown?.content_omitted, true);
+  assert.equal(theirs.entry.user_id, undefined, 'the digest keeps its shape');
+  for (const leaked of [token('dgtitle'), token('dgbody')]) {
+    assert.ok(!text(theirs.result).includes(leaked), `the fallback admin's digest shows no ${leaked}`);
+  }
+  await setMemberActive(member, true);
+});
+
+test('fix round 4: Defty\'s get_agent_activity gives an admin a pending draft\'s size, never its text; the person who asked reads the text', { skip }, async () => {
+  const { member, admin } = fx.people;
+  await setTrust('standard');
+  const title = `Activity ${token('actitle')}`;
+  const body = `Copied from a private page: ${token('acbody')}`;
+  const room = await insertChat([member]);
+  const draft = await pendingDraft(member, room, 'activity', title, body);
+  const read = async (userId: string) => {
+    const { result } = await executeToolCall('get_agent_activity', { limit: 100 }, fx.orgId, userId);
+    return { result, entry: ((result?.actions ?? []) as any[]).find((action) => action.id === draft.id) };
+  };
+
+  // An admin reads every action in the workspace, and the model would repeat what it is given.
+  const theirs = await read(admin);
+  assert.ok(theirs.entry, 'the admin reads the action');
+  assert.match(String(theirs.entry.params?.summary), /^Document draft, \d+ bytes$/);
+  assert.equal(theirs.entry.params?.title?.content_omitted, true);
+  for (const leaked of [token('actitle'), token('acbody')]) {
+    assert.ok(!text(theirs.result).includes(leaked), `the admin's activity read shows no ${leaked}`);
+  }
+
+  // The person who asked reads their own draft.
+  const mine = await read(member);
+  assert.equal(mine.entry?.params?.title, title);
+  assert.equal(mine.entry?.params?.markdown, body);
+});
+
+test('fix round 4: a pending note draft\'s approval item names it for the person who asked; a fallback admin\'s item names nothing', { skip }, async (t) => {
+  const { member, admin } = fx.people;
+  await setTrust('standard');
+  const title = `Note ${token('nttitle')}`;
+  const room = await insertChat([member]);
+  const callId = `toolu_m7_note_${run}`;
+  await askDefty({ asker: member, spaceId: room, content: 'Make a note of the agenda',
+    turns: [[{ id: callId, name: 'create_note', input: { title, content: `Body ${token('ntbody')}`, visibility: 'private' } }]] });
+  const { rows: [action] } = await fx.client.query('SELECT id, approval_status FROM agent_actions WHERE org_id = $1 AND tool_use_id = $2', [fx.orgId, callId]);
+  assert.equal(action?.approval_status, 'pending');
+  const itemsOf = async (userId: string) => (await fx.client.query(`SELECT body, title FROM attention_items
+    WHERE org_id = $1 AND source_type = 'agent_action' AND source_id = $2 AND user_id = $3`, [fx.orgId, action.id, userId])).rows;
+  await pollUntil(async () => (await itemsOf(member)).length > 0, 'the asker has the approval item');
+  assert.ok(text(await itemsOf(member)).includes(token('nttitle')), 'the person who asked sees what the note is');
+
+  // The asker leaves the workspace: the admin's inbox raises its own item for the draft it now reviews.
+  t.after(() => setMemberActive(member, true));
+  await setMemberActive(member, false);
+  const listed = await fx.request(admin, 'GET', '/api/attention');
+  assert.equal(listed.status, 200);
+  const listedText = await listed.text();
+  const adminItems = await itemsOf(admin);
+  assert.ok(adminItems.length > 0, 'the fallback admin has an item for the draft');
+  for (const item of adminItems) assert.equal(item.body, 'Document draft', text(item));
+  const mcp = await humanAttentionList({ lane: 'all' }, mcpCtx(admin, 'admin'));
+  for (const [where, value] of [['/api/attention', listedText], ['MCP attention_list', text(mcp)]] as const) {
+    for (const leaked of [token('nttitle'), token('ntbody')]) assert.ok(!value.includes(leaked), `${where} shows the admin no ${leaked}`);
+  }
+  await setMemberActive(member, true);
 });

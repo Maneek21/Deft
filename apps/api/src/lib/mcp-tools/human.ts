@@ -2980,8 +2980,9 @@ export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: 
 
     // The approvals the user reviews now, by the web's gate (as approval_list).
     const reviewer = await approvalReviewerSql(ctx, 'read');
-    digest.pending_approvals = !reviewer ? [] : await db.select({
+    const approvals = !reviewer ? [] : await db.select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       params: agentActions.params,
       approval_tier: agentActions.approval_tier,
@@ -2993,6 +2994,11 @@ export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: 
       inArray(agentActions.approval_tier, ['quick', 'full']),
       reviewer,
     )).orderBy(desc(agentActions.created_at)).limit(limit);
+    // M7 fix round 4: a document draft's text only for the person who asked (a fallback reviewer sees its size), as approval_list.
+    digest.pending_approvals = approvals.map((row) => {
+      const { user_id: _requester, ...shown } = documentTextParamsForViewer(row, ctx.user_id);
+      return shown;
+    });
   }
 
   if (hasScope(ctx, 'read:messages')) {
