@@ -20,6 +20,7 @@ import { selectVerifiedResponse } from './agent-response-verification.js';
 import { retrieveContext } from './retrieve-context.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
+import { createPlanInputForStorage } from './agent-plans.js';
 import { isReadOnlyAgentRequest } from './agent-request-policy.js';
 import { agentToolFailure } from './agent-tool-result.js';
 import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles, containsLinkConstruct, decodedJsonText, decodeHtmlEntities, mentionsApproval, requiresRuntimeActionEvidence, hasRuntimeActionEvidence } from './agent-source-grounding.js';
@@ -1014,7 +1015,11 @@ export async function runAgentQuery(params: {
         // this run keeps it (the executed actions, the assistant blocks callers
         // store as agent_blocks, the citations they store); the model is given
         // the result itself below.
-        const stored = documentToolCallForStorage(tool.name, tool.input, result);
+        const read = documentToolCallForStorage(tool.name, tool.input, result);
+        // M7 fix round 2: a plan's literal document text is kept by the plan
+        // alone, for its creator and approvers; the call the run keeps (the
+        // room's agent_blocks, the executed actions) holds each text as its size.
+        const stored = tool.name === 'create_plan' ? { ...read, input: createPlanInputForStorage(tool.input) } : read;
         executedActions.push({
           actionId: null,
           action: tool.name,
@@ -1041,8 +1046,10 @@ export async function runAgentQuery(params: {
         });
         } catch (error) {
           const result = agentToolFailure(error);
-          // A failed document read keeps its references only too (M3).
-          tool.input = documentToolCallForStorage(tool.name, tool.input, result).input as typeof tool.input;
+          // A failed document read keeps its references only too (M3), and a failed plan its literals' sizes.
+          tool.input = (tool.name === 'create_plan'
+            ? createPlanInputForStorage(tool.input)
+            : documentToolCallForStorage(tool.name, tool.input, result).input) as typeof tool.input;
           executedActions.push({ actionId: null, action: tool.name, params: tool.input, success: false, result, readOnly: true });
           toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify(result), is_error: true });
         }

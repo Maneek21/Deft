@@ -6,7 +6,10 @@
  * - Plan steps: a completed step of a document tool keeps references only,
  *   in its params, its result and the plan's context, so a plan's creator who
  *   loses the document sees none of it (a plan stored before keeps none
- *   either: completed steps are read back as references).
+ *   either: every step and context entry is read back from the allowlist).
+ *   Literal text written for a step is kept like a pending draft, for the
+ *   plan's creator and approvers, until the step completes (fix round 2); a
+ *   read's text is never kept, and a later run reads it again.
  * - MCP replay: a note tool's idempotent answer is stored as references, and
  *   a replay reads the note again with the caller's access now.
  *
@@ -19,6 +22,7 @@ import { closeDb } from '../src/lib/db.js';
 import { createPlanRow, executePlan } from '../src/lib/agent-plans.js';
 import { ensureDeftyDm, ensureDeftyMembership } from '../src/lib/ensure-defty-membership.js';
 import { humanNoteCreate, humanNoteUpdate, type HumanToolContext } from '../src/lib/mcp-tools/human.js';
+import { agentRoutes } from '../src/routes/agent.js';
 import { agentPlanRoutes } from '../src/routes/agent-plans.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -30,14 +34,14 @@ let fx: DrivesFixture;
 
 before(async () => {
   if (skip) return;
-  fx = await setupDrivesFixture('m7c4', { routes: [{ path: '/api/agent-plans', app: agentPlanRoutes }] });
+  fx = await setupDrivesFixture('m7c4', { routes: [{ path: '/api/agent-plans', app: agentPlanRoutes }, { path: '/api/agent', app: agentRoutes }] });
   await ensureDeftyMembership(fx.orgId);
 });
 
 after(async () => {
   if (skip) return;
   if (fx) {
-    for (const table of ['action_receipts', 'agent_actions', 'agent_plans', 'job_queue', 'messages']) {
+    for (const table of ['attention_events', 'attention_items', 'action_receipts', 'agent_action_approvers', 'agent_actions', 'agent_plans', 'job_queue', 'messages']) {
       await fx.client.query(`DELETE FROM ${table} WHERE org_id = ANY($1::text[])`, [[fx.orgId, fx.otherOrgId]]);
     }
     await fx.teardown();
@@ -116,66 +120,129 @@ test('a completed plan step keeps document references only: the creator who lost
   }
 });
 
-test('fix round 1 (I2): no step of a plan keeps document text, in any status, from creation on', { skip }, async () => {
-  const { member } = fx.people;
-  await fx.client.query('UPDATE orgs SET trust_level = $1 WHERE id = $2', ['standard', fx.orgId]);
-  const drive = await fx.insertDrive({ kind: 'private', name: 'M7 C4 statuses' });
+test('fix round 2: a plan makes documents from its literal text across a resume; a read\'s text is never stored, and no literal outlives its step', { skip }, async () => {
+  const { member, member2 } = fx.people;
+  // Conservative: a step later steps depend on waits for its own approval (a leaf step of the approved plan runs).
+  await fx.client.query('UPDATE orgs SET trust_level = $1 WHERE id = $2', ['conservative', fx.orgId]);
+  const drive = await fx.insertDrive({ kind: 'private', name: 'M7 C4 literals' });
   const phrase = token('status');
   const doc = await fx.insertDocument({ driveId: drive, title: `Status source ${token('stitle')}`,
     json: { type: 'doc', content: [paragraph(`c4s-${run}`, `Source says ${phrase}`)] } });
   await fx.share(doc, { user: member }, 'view');
   const literal = token('literal');
   const skipped = token('skipped');
+  const smuggled = token('smuggled');
   const dm = (await ensureDeftyDm(fx.orgId, member))!;
-  const leaks = [phrase, literal, skipped, token('stitle')];
   const { plan_id: planId } = await createPlanRow({
-    org_id: fx.orgId, user_id: member, conversation_id: dm, title: 'Every status',
+    org_id: fx.orgId, user_id: member, conversation_id: dm, title: 'Literal plan',
     steps: [
-      { id: 'read', description: 'Read', tool: 'read_document', params: { document_id: doc, smuggled: literal } },
+      { id: 'read', description: 'Read', tool: 'read_document', params: { document_id: doc, smuggled } },
       { id: 'never', description: 'Skipped', tool: 'create_note', params: { title: 'Never', content: `<p>${skipped}</p>` },
         condition: { field: '$step.read.result.withheld', operator: 'eq', value: true } },
+      // A dependency: it waits for its own approval, so the plan pauses and resumes in a new run.
       { id: 'copy', description: 'Copy', tool: 'create_document', params: { title: `Copy ${literal}`, markdown: `# ${literal}` } },
+      // In the next run: a literal title, and the read's text read again as the creator.
+      { id: 'note', description: 'Note', tool: 'create_note', depends_on: ['copy'],
+        params: { title: `Note ${literal}`, content: '$step.read.result.markdown' } },
+      { id: 'final', description: 'Final', tool: 'create_document', params: { title: `Final ${literal}`, markdown: `Closing ${literal}` } },
     ],
   });
-  // Draft: stored without the text the model wrote.
   const stored = async () => (await fx.client.query('SELECT status, error, steps, context FROM agent_plans WHERE id = $1', [planId])).rows[0];
+  const docText = [phrase, token('stitle')];
+  // The draft keeps the literals written for it (like a pending draft) and nothing else.
   const draft = await stored();
-  for (const leaked of leaks) assert.ok(!text(draft).includes(leaked), `the draft keeps no ${leaked}`);
-  const draftCopy = draft.steps.find((step: any) => step.id === 'copy');
-  assert.equal(draftCopy.params.title.content_omitted, true);
-  assert.equal(draftCopy.params.markdown.content_omitted, true);
-  assert.deepEqual(draft.steps.find((step: any) => step.id === 'read').params, { document_id: doc });
+  const draftSteps = new Map(draft.steps.map((step: any) => [step.id, step]));
+  assert.equal((draftSteps.get('copy') as any).params.title, `Copy ${literal}`);
+  assert.equal((draftSteps.get('note') as any).params.content, '$step.read.result.markdown');
+  assert.deepEqual((draftSteps.get('read') as any).params, { document_id: doc });
+  for (const leaked of [...docText, smuggled]) assert.ok(!text(draft).includes(leaked), `the draft keeps no ${leaked}`);
+  // Shown to its creator; to nobody else in the room.
+  const mine = await fx.request(member, 'GET', `/api/agent-plans/${planId}`);
+  assert.ok((await mine.text()).includes(literal), 'its creator sees the literal');
+  assert.equal((await fx.request(member2, 'GET', `/api/agent-plans/${planId}`)).status, 404);
+  assert.ok(!(await (await fx.request(member2, 'GET', '/api/agent-plans')).text()).includes(literal));
 
-  // Run: the read completes, the conditional step is skipped, and the step whose
-  // text the plan doesn't keep fails without writing anything.
+  // Run 1: the read completes, the conditional step is skipped, the copy waits for approval.
   await fx.client.query(`UPDATE agent_plans SET status = 'approved' WHERE id = $1`, [planId]);
   await executePlan(planId, fx.orgId, member);
-  const after = await stored();
-  assert.equal(after.status, 'paused');
-  assert.equal(after.error, 'A plan doesn\'t keep document text, so this step can\'t run. Ask Defty to make the document from chat.');
-  const byId = new Map(after.steps.map((step: any) => [step.id, step.status]));
-  assert.deepEqual(Object.fromEntries(byId), { read: 'completed', never: 'skipped', copy: 'failed' });
-  for (const leaked of leaks) assert.ok(!text(after).includes(leaked), `the run keeps no ${leaked}`);
-  const { rows: copies } = await fx.client.query('SELECT id FROM documents WHERE org_id = $1 AND title LIKE $2', [fx.orgId, `%${literal}%`]);
-  assert.deepEqual(copies, [], 'nothing was written');
+  const paused = await stored();
+  assert.equal(paused.status, 'paused', text(paused));
+  assert.deepEqual(Object.fromEntries(paused.steps.map((step: any) => [step.id, step.status])),
+    { read: 'completed', never: 'skipped', copy: 'waiting_approval', note: 'pending', final: 'pending' });
+  for (const leaked of docText) assert.ok(!text(paused).includes(leaked), `the paused plan keeps no ${leaked}`);
+  const { rows: [copyAction] } = await fx.client.query(`SELECT id, approval_status FROM agent_actions WHERE org_id = $1 AND plan_id = $2 AND plan_step_id = 'copy'`,
+    [fx.orgId, planId]);
+  assert.equal(copyAction.approval_status, 'pending');
 
-  // An edit through the plan route stores no text either.
-  await fx.client.query(`UPDATE agent_plans SET status = 'draft' WHERE id = $1`, [planId]);
-  const edited = await fx.request(member, 'PUT', `/api/agent-plans/${planId}`, {
-    steps: [{ id: 'later', description: 'Later', tool: 'write_canvas', params: { space_name: 'team', content: `<p>${literal}</p>` } }],
-  });
-  assert.equal(edited.status, 200, await edited.clone().text());
-  assert.ok(!text(await stored()).includes(literal), 'PUT keeps no text');
+  // Approved, then resumed: a new run.
+  const approved = await fx.request(member, 'POST', `/api/agent/actions/${copyAction.id}/approve`, {});
+  assert.ok(approved.status < 300, await approved.clone().text());
+  const resumed = await fx.request(member, 'POST', `/api/agent-plans/${planId}/resume`, {});
+  assert.equal(resumed.status, 200, await resumed.clone().text());
+  await executePlan(planId, fx.orgId, member);
 
-  // A plan stored before the rule, with steps in every other status, shows none.
-  const { rows: [old] } = await fx.client.query(`INSERT INTO agent_plans (id, org_id, user_id, conversation_id, title, steps, status, context)
-    VALUES ($1, $2, $3, $4, 'Old statuses', $5::jsonb, 'paused', '{}'::jsonb) RETURNING id`, [randomUUID(), fx.orgId, member, dm,
-    JSON.stringify(['pending', 'running', 'waiting_approval', 'failed', 'skipped'].map((status) => ({
-      id: status, description: status, tool: 'create_note', status, params: { title: `Old ${literal}`, content: `<p>${phrase}</p>` },
-    })))]);
-  const shown = await (await fx.request(member, 'GET', `/api/agent-plans/${old.id}`)).text();
-  assert.ok(shown.includes(old.id));
-  for (const leaked of [phrase, literal]) assert.ok(!shown.includes(leaked), `an old plan shows no ${leaked}`);
+  const done = await stored();
+  assert.equal(done.status, 'completed', text(done));
+  for (const leaked of [literal, skipped, ...docText]) assert.ok(!text(done).includes(leaked), `the completed plan keeps no ${leaked}`);
+  const byId = new Map(done.steps.map((step: any) => [step.id, step]));
+  for (const id of ['copy', 'note', 'final']) {
+    const step = byId.get(id) as any;
+    assert.equal(step.status, 'completed', id);
+    assert.equal(typeof step.result.document_id, 'string', `${id} names what it made`);
+  }
+  const made = async (id: string) => (await fx.client.query('SELECT title, created_by, content_text FROM documents WHERE id = $1',
+    [(byId.get(id) as any).result.document_id])).rows[0];
+  assert.equal((await made('copy')).title, `Copy ${literal}`);
+  assert.equal((await made('final')).title, `Final ${literal}`);
+  const note = await made('note');
+  assert.equal(note.created_by, member);
+  assert.ok(note.content_text.includes(phrase), 'the note was made from the read, read again as the creator');
+  const shown = await (await fx.request(member, 'GET', `/api/agent-plans/${planId}`)).text();
+  for (const leaked of [literal, ...docText]) assert.ok(!shown.includes(leaked), `the creator sees no ${leaked} once it ran`);
+  await fx.client.query('UPDATE orgs SET trust_level = $1 WHERE id = $2', ['standard', fx.orgId]);
+});
+
+test('fix round 2 (I2): every step and the plan\'s context are shown from the allowlist, whatever the status or the marks, legacy rows included', { skip }, async () => {
+  const { member } = fx.people;
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const doc = randomUUID();
+  const title = `Legacy ${token('ltitle')}`;
+  const markdown = `Legacy body ${token('lbody')}`;
+  const leaks = [token('ltitle'), token('lbody')];
+  const insert = async (status: string, steps: unknown[], context: unknown) => (await fx.client.query(`INSERT INTO agent_plans
+    (id, org_id, user_id, conversation_id, title, steps, status, context) VALUES ($1, $2, $3, $4, 'Legacy plan', $5::jsonb, $6, $7::jsonb) RETURNING id`,
+  [randomUUID(), fx.orgId, member, dm, JSON.stringify(steps), status, JSON.stringify(context)])).rows[0].id as string;
+
+  // The tester's case: a read in running, failed or skipped, its text kept in the plan's context.
+  for (const stepStatus of ['running', 'failed', 'skipped']) {
+    const id = await insert('paused', [{ id: 'r', description: 'Read', tool: 'read_document', status: stepStatus, params: { document_id: doc } }],
+      { r: { result: { document_id: doc, title, markdown } } });
+    const response = await fx.request(member, 'GET', `/api/agent-plans/${id}`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    for (const leaked of leaks) assert.ok(!text(body).includes(leaked), `${stepStatus}: the payload shows no ${leaked}`);
+    assert.equal(body.context.r.result.document_id, doc, `${stepStatus}: the context keeps the reference`);
+  }
+
+  // A completed step marked as kept that still held its text (rows written before the rule): rebuilt anyway.
+  const marked = await insert('completed', [
+    { id: 'n', description: 'Note', tool: 'create_note', status: 'completed', content_omitted: true,
+      params: { title, content: markdown }, result: { note_id: doc, document_id: doc, title } },
+    { id: 'r', description: 'Read', tool: 'read_document', status: 'completed', content_omitted: true,
+      params: { document_id: doc }, result: { document_id: doc, title, markdown, withheld: false } },
+  ], { n: { result: { document_id: doc, title } }, r: { result: { document_id: doc, title, markdown } } });
+  const shown = await (await fx.request(member, 'GET', `/api/agent-plans/${marked}`)).json() as any;
+  for (const leaked of leaks) assert.ok(!text(shown).includes(leaked), `a marked step shows no ${leaked}: ${text(shown)}`);
+  assert.equal(shown.steps[0].result.document_id, doc);
+  assert.equal(shown.steps[1].result.document_id, doc);
+
+  // A plan that ended shows no literal, even to its creator.
+  const ended = await insert('failed', ['pending', 'running', 'waiting_approval', 'failed', 'skipped'].map((status) => ({
+    id: status, description: status, tool: 'create_note', status, params: { title, content: markdown },
+  })), {});
+  const endedText = await (await fx.request(member, 'GET', `/api/agent-plans/${ended}`)).text();
+  assert.ok(endedText.includes(ended));
+  for (const leaked of leaks) assert.ok(!endedText.includes(leaked), `an ended plan shows no ${leaked}`);
 });
 
 test('an MCP note tool\'s replay never serves stored content: it reads the note again with the caller\'s access now', { skip }, async () => {

@@ -79,6 +79,7 @@ const { createPlanRow } = await import('../src/lib/agent-plans.js');
 const { ensureDeftyDm, ensureDeftyMembership } = await import('../src/lib/ensure-defty-membership.js');
 const { handleAgentReply } = await import('../src/workers/handlers/agent-reply.js');
 const { agentRoutes } = await import('../src/routes/agent.js');
+const { agentPlanRoutes } = await import('../src/routes/agent-plans.js');
 const { documentRoutes } = await import('../src/routes/documents.js');
 const { closeDb } = await import('../src/lib/db.js');
 const { documentToolCallForStorage } = await import('../src/lib/document-audience.js');
@@ -101,7 +102,7 @@ type JSONContent = Parameters<typeof jsonToText>[0];
 before(async () => {
   if (skip) return;
   fx = await setupDrivesFixture('m7', {
-    routes: [{ path: '/api/agent', app: agentRoutes }, { path: '/api/documents', app: documentRoutes }],
+    routes: [{ path: '/api/agent', app: agentRoutes }, { path: '/api/documents', app: documentRoutes }, { path: '/api/agent-plans', app: agentPlanRoutes }],
   });
   srv = await startCollabTestServer(fx);
   deftyId = await ensureDeftyMembership(fx.orgId);
@@ -112,7 +113,7 @@ after(async () => {
   await srv?.close();
   if (fx) {
     const q = (text: string) => fx.client.query(text, [[fx.orgId, fx.otherOrgId]]);
-    for (const table of ['document_suggestions', 'document_user_settings', 'action_receipts', 'agent_action_approvers', 'agent_actions',
+    for (const table of ['attention_events', 'attention_items', 'document_suggestions', 'document_user_settings', 'action_receipts', 'agent_action_approvers', 'agent_actions',
       'agent_plans', 'job_queue', 'messages']) {
       await q(`DELETE FROM ${table} WHERE org_id = ANY($1::text[])`);
     }
@@ -775,4 +776,219 @@ test('fix round 1 (I5): a job redelivered after a direct edit committed makes on
   const { rows: versions } = await fx.client.query(`SELECT id FROM document_versions WHERE document_id = $1 AND kind = 'agent'`, [doc.id]);
   assert.equal(versions.length, 1, 'one version');
   assert.equal((await blocks(doc.id)).filter(([, body]) => body === appended).length, 1, 'appended once');
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 2
+
+/**
+ * The job dies after the edit committed and before its action settled (its
+ * outcome never recorded, the reply never written); the queue delivers it
+ * again and the model makes the same call. Returns what the model was told.
+ */
+async function redeliverAfterCrash(i: { asker: string; spaceId: string; triggerId: string; content: string; call: Call; actionId: string;
+  beforeRedelivery?: () => Promise<void> }) {
+  await fx.client.query('UPDATE agent_actions SET executed_at = NULL, result = NULL, after_state = NULL WHERE id = $1', [i.actionId]);
+  await fx.client.query(`DELETE FROM messages WHERE org_id = $1 AND space_id = $2 AND user_id = $3 AND metadata->>'reply_to_message_id' = $4`,
+    [fx.orgId, i.spaceId, deftyId, i.triggerId]);
+  await i.beforeRedelivery?.();
+  providerCalls.length = 0;
+  nextResponses = [
+    { content: [{ type: 'tool_use', id: i.call.id, name: i.call.name, input: i.call.input }], stop_reason: 'tool_use' },
+    { content: [{ type: 'text', text: 'Done.' }], stop_reason: 'end_turn' },
+  ];
+  await handleAgentReply({ id: randomUUID(), name: 'agent-reply', attempts: 2,
+    data: { orgId: fx.orgId, spaceId: i.spaceId, messageId: i.triggerId, userId: i.asker, orgName: 'M7 org', content: i.content } } as any, { io: null } as any);
+  return toolResults().get(i.call.id!);
+}
+
+test('fix round 2 (I5): a delete that committed before its action settled is answered from its version on redelivery, not previewed again', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('crashdel'), 'Crash delete plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const call: Call = { id: `toolu_m7_crashdel_${run}`, name: 'edit_document',
+    input: { document_id: doc.id, ops: [{ op: 'delete', block_id: doc.b }], summary: 'Drop the second paragraph' } };
+  const content = 'Please drop the second paragraph';
+  const first = await askDefty({ asker: member, spaceId: dm, content, turns: [[call]] });
+  assert.equal(first.results.get(call.id!)?.content.landing, 'direct', text(first.results.get(call.id!)));
+  const [action] = await editActions(doc.id);
+
+  const again = await redeliverAfterCrash({ asker: member, spaceId: dm, triggerId: first.triggerId, content, call, actionId: action.id });
+  assert.notEqual(again?.isError, true, text(again));
+  assert.equal(again?.content.landing, 'direct');
+  assert.equal(again?.content.reason, 'already_applied');
+  assert.deepEqual(again?.content.undo, { action_id: action.id });
+
+  const actions = await editActions(doc.id);
+  assert.equal(actions.length, 1, 'one action');
+  const { rows: versions } = await fx.client.query(`SELECT id FROM document_versions WHERE document_id = $1 AND kind = 'agent'`, [doc.id]);
+  assert.equal(versions.length, 1, 'one version');
+  assert.ok(actions[0].executed_at, 'the action is settled');
+  assert.equal(actions[0].result?.version_id, versions[0].id, 'with the outcome it had');
+  assert.deepEqual(await suggestionsOf(doc.id), [], 'no suggestion');
+  assert.deepEqual(await blocks(doc.id), [[doc.a, 'Alpha intro']]);
+});
+
+test('fix round 2 (I5): a trust lowered before a redelivery queues no second suggestion for an edit already written', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('crashtrust'), 'Crash trust plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const appended = `Gamma ${token('crashappend')}`;
+  const call: Call = { id: `toolu_m7_crashtrust_${run}`, name: 'edit_document',
+    input: { document_id: doc.id, ops: [{ op: 'append', markdown: appended }], summary: 'Add Gamma' } };
+  const content = 'Please add a closing line';
+  const first = await askDefty({ asker: member, spaceId: dm, content, turns: [[call]] });
+  assert.equal(first.results.get(call.id!)?.content.landing, 'direct');
+  const [action] = await editActions(doc.id);
+
+  const again = await redeliverAfterCrash({ asker: member, spaceId: dm, triggerId: first.triggerId, content, call, actionId: action.id,
+    beforeRedelivery: () => setTrust('conservative') });
+  await setTrust('standard');
+  assert.equal(again?.content.landing, 'direct', text(again));
+  assert.equal(again?.content.reason, 'already_applied');
+  assert.deepEqual(again?.content.undo, { action_id: action.id });
+  assert.deepEqual(await suggestionsOf(doc.id), [], 'no second suggestion');
+  const actions = await editActions(doc.id);
+  assert.equal(actions.length, 1, 'one action');
+  assert.equal(actions[0].approval_status, 'approved');
+  assert.ok(actions[0].executed_at);
+  const { rows: versions } = await fx.client.query(`SELECT id FROM document_versions WHERE document_id = $1 AND kind = 'agent'`, [doc.id]);
+  assert.equal(versions.length, 1, 'one version');
+  assert.equal((await blocks(doc.id)).filter(([, body]) => body === appended).length, 1, 'appended once');
+});
+
+test('fix round 2 (I4): a drive switched to suggestions only between the decision and the write leaves the edit a suggestion', { skip }, async (t) => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const drive = await fx.insertDrive({ kind: 'open', defaultRole: 'edit', name: 'M7 R2 switched drive' });
+  const doc = await twoBlocks(drive, token('switch'), 'Switched plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const call = { ...edit(doc.id, doc.b, `Beta ${token('switched')}`), id: `toolu_m7_switch_${run}` };
+  t.after(() => writeTools._setBeforeDirectEditWriteHookForTest?.(null));
+  writeTools._setBeforeDirectEditWriteHookForTest?.(async (documentId: string) => {
+    if (documentId === doc.id) await fx.client.query('UPDATE drives SET agent_suggest_only = true WHERE id = $1', [drive]);
+  });
+  const { triggerId, results } = await askDefty({ asker: member, spaceId: dm, content: 'Please tighten the second paragraph', turns: [[call]] });
+  writeTools._setBeforeDirectEditWriteHookForTest?.(null);
+
+  const reply = results.get(call.id);
+  assert.notEqual(reply?.isError, true, text(reply));
+  assert.equal(reply?.content.landing, 'suggest', text(reply));
+  assert.equal(reply?.content.reason, 'drive_suggest_only');
+  assert.deepEqual(await blocks(doc.id), [[doc.a, 'Alpha intro'], [doc.b, 'Beta body']], 'nothing was written');
+  const [action, ...more] = await editActions(doc.id);
+  assert.equal(more.length, 0, 'the same action, not a second one');
+  assert.equal(action.approval_status, 'pending');
+  assert.equal(action.executed_at, null);
+  assert.equal(action.error, null);
+  const [suggestion] = await suggestionsOf(doc.id);
+  assert.equal(suggestion?.action_id, action.id, 'a suggestion for that action');
+  const { rows: versions } = await fx.client.query(`SELECT id FROM document_versions WHERE document_id = $1 AND kind = 'agent'`, [doc.id]);
+  assert.deepEqual(versions, []);
+  const [message] = (await deftyMessages(dm)).filter((m) => m.metadata?.reply_to_message_id === triggerId);
+  assert.deepEqual(message.metadata.pending_actions?.map((p: any) => p.id), [action.id], 'its card is on the reply');
+});
+
+test('fix round 2: an agent employee\'s edit_document on Defty\'s chat path is refused, and nothing is written or queued', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const employeeId = randomUUID();
+  await fx.addPerson({ kind: 'agent', agentEmployeeId: employeeId });
+  await fx.client.query(`UPDATE agent_employees SET trust_level = 'standard' WHERE id = $1`, [employeeId]);
+  const doc = await twoBlocks(fx.workspaceDriveId, token('byoa'), 'Employee plan');
+  const callId = `toolu_m7_byoa_${run}`;
+  providerCalls.length = 0;
+  nextResponses = [
+    { content: [{ type: 'tool_use', id: callId, name: 'edit_document', input: {
+      document_id: doc.id, summary: 'Tighten', mode: 'direct', ops: [{ op: 'replace', block_id: doc.b, markdown: `Beta ${token('byoaop')}` }],
+    } }], stop_reason: 'tool_use' },
+    { content: [{ type: 'text', text: 'Done.' }], stop_reason: 'end_turn' },
+  ];
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const triggerId = await postMessage(dm, member, 'Please tighten the second paragraph, just do it');
+  const result = await runAgentQuery({
+    content: 'Please tighten the second paragraph, just do it', orgId: fx.orgId, userId: member, orgName: 'M7 org', conversationId: dm,
+    sourceMessageId: triggerId, askerMessageText: 'Please tighten the second paragraph, just do it', agentEmployeeId: employeeId,
+    spaceContext: { type: 'dm', name: 'dm' }, skipVerification: true, durableNotes: false, maxIterations: 2,
+  } as any);
+  const reply = toolResults().get(callId);
+  assert.equal(reply?.isError, true, text(reply));
+  assert.deepEqual(reply?.content, {
+    error: 'This agent edits documents through its own connection, not on someone\'s behalf.', code: 'EMPLOYEE_EDITS_VIA_MCP',
+  });
+  assert.deepEqual(result.pendingActions, []);
+  assert.deepEqual(await editActions(doc.id), []);
+  assert.deepEqual(await suggestionsOf(doc.id), []);
+  assert.deepEqual(await blocks(doc.id), [[doc.a, 'Alpha intro'], [doc.b, 'Beta body']]);
+});
+
+test('fix round 2 (I3): a document draft\'s approval item names nothing, pending or settled, whenever it was made', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  const title = `Item ${token('ititle')}`;
+  const room = await insertChat([member]);
+  const callId = `toolu_m7_item_${run}`;
+  await askDefty({ asker: member, spaceId: room, content: 'Create a document with the agenda',
+    turns: [[{ id: callId, name: 'create_document', input: { title, markdown: `# ${token('ibody')}` } }]] });
+  const { rows: [action] } = await fx.client.query('SELECT id, approval_status FROM agent_actions WHERE org_id = $1 AND tool_use_id = $2', [fx.orgId, callId]);
+  assert.equal(action.approval_status, 'pending');
+  const items = async () => (await fx.client.query(`SELECT body, title, state FROM attention_items
+    WHERE org_id = $1 AND source_type = 'agent_action' AND source_id = $2`, [fx.orgId, action.id])).rows;
+  await pollUntil(async () => (await items()).length > 0, 'the draft has its approval item');
+  for (const item of await items()) {
+    assert.equal(item.body, 'Document draft', 'a waiting draft\'s item names nothing');
+    assert.ok(!text(item).includes(token('ititle')) && !text(item).includes(token('ibody')), text(item));
+  }
+
+  // An item made before this rule named the draft; once the draft settles, it names nothing.
+  await fx.client.query(`UPDATE attention_items SET body = $3 WHERE org_id = $1 AND source_type = 'agent_action' AND source_id = $2`,
+    [fx.orgId, action.id, title]);
+  const response = await fx.request(member, 'POST', `/api/agent/actions/${action.id}/reject`, {});
+  assert.equal(response.status, 200, await response.clone().text());
+  const settled = await items();
+  assert.ok(settled.length > 0);
+  for (const item of settled) {
+    assert.notEqual(item.state, 'open_unseen');
+    assert.equal(item.body, 'Document draft', 'a settled draft\'s item names nothing');
+    assert.ok(!text(item).includes(token('ititle')), text(item));
+  }
+});
+
+test('fix round 2: a plan Defty drafts in a shared room keeps its literal text in the plan, for its creator alone', { skip }, async () => {
+  const { member, member2 } = fx.people;
+  await setTrust('standard');
+  const room = await insertChat([member, member2]);
+  const literal = token('planlit');
+  const callId = `toolu_m7_plan_${run}`;
+  const planTitle = `Agenda plan ${run}`;
+  const { results } = await askDefty({ asker: member, spaceId: room, content: 'Plan the agenda document', turns: [[{ id: callId, name: 'create_plan', input: {
+    title: planTitle,
+    steps: [{ id: 'doc', description: 'Write the agenda', tool: 'create_document', params: { title: `Agenda ${literal}`, markdown: `# ${literal}` } }],
+  } }]] });
+  assert.notEqual(results.get(callId)?.isError, true, text(results.get(callId)));
+
+  // The plan keeps the text written for it, for its creator.
+  const { rows: [plan] } = await fx.client.query('SELECT id, steps FROM agent_plans WHERE org_id = $1 AND user_id = $2 AND title = $3',
+    [fx.orgId, member, planTitle]);
+  assert.ok(plan, 'the plan was made');
+  const planId = plan.id;
+  assert.equal(plan.steps[0].params.title, `Agenda ${literal}`);
+  const mine = await fx.request(member, 'GET', `/api/agent-plans/${planId}`);
+  assert.equal(mine.status, 200);
+  assert.ok((await mine.text()).includes(literal), 'its creator sees it');
+
+  // Nobody else in the room: not in the room's messages, not through the plan routes.
+  const { rows: roomRows } = await fx.client.query('SELECT content, metadata FROM messages WHERE org_id = $1 AND space_id = $2', [fx.orgId, room]);
+  assert.ok(roomRows.length > 0);
+  assert.ok(!text(roomRows).includes(literal), `the room keeps no literal: ${text(roomRows)}`);
+  const theirs = await fx.request(member2, 'GET', `/api/agent-plans/${planId}`);
+  assert.equal(theirs.status, 404);
+  const listed = await fx.request(member2, 'GET', '/api/agent-plans');
+  assert.ok(!(await listed.text()).includes(literal));
 });

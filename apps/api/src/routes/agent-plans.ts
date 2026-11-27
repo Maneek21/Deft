@@ -46,12 +46,26 @@ function withPlanApprover(steps: PlanStep[], userId: string): PlanStep[] {
  * a plan whose creator lost one of its rooms is answered with its id and
  * status only (check 13: nothing of the room is shown).
  */
-async function stopReply(plan: typeof agentPlans.$inferSelect | undefined) {
+async function stopReply(plan: typeof agentPlans.$inferSelect | undefined, viewerId: string) {
   if (!plan) return plan;
   const [kept] = await db.select({ id: agentPlans.id }).from(agentPlans)
     .where(and(eq(agentPlans.id, plan.id), eq(agentPlans.org_id, plan.org_id), planCreatorKeepsRoomsSql()))
     .limit(1);
-  return kept ? withDestructiveMarks(plan) : { id: plan.id, status: plan.status };
+  return kept ? withDestructiveMarks(plan, viewerId) : { id: plan.id, status: plan.status };
+}
+
+/**
+ * M7 fix round 2: whether `viewerId` sees the literal document text written
+ * for a plan's steps (kept like a pending draft until the step completes):
+ * only its creator, who asked for it, and its approvers (an owner or admin
+ * of its workspace, planManagerScope). Anyone else, and everyone once the
+ * plan has ended, sees each text as its size.
+ */
+async function readsPlanLiterals(plan: { user_id?: string; org_id?: string }, viewerId: string): Promise<boolean> {
+  if (plan.user_id === viewerId) return true;
+  if (!plan.org_id) return false;
+  const membership = await getActiveOrgMembership(plan.org_id, viewerId);
+  return membership?.role === 'owner' || membership?.role === 'admin';
 }
 
 function planAccessRefusal(err: unknown) {
@@ -70,12 +84,15 @@ function planAccessRefusal(err: unknown) {
  * replaced. A destructive step waits for its own approval when the plan runs.
  */
 async function withDestructiveMarks<T extends {
-  steps: unknown; org_id?: string; agent_employee_id?: string | null;
-} | undefined>(stored: T): Promise<T> {
+  steps: unknown; org_id?: string; user_id?: string; status?: string; agent_employee_id?: string | null;
+} | undefined>(stored: T, viewerId: string): Promise<T> {
   if (!stored || !Array.isArray(stored.steps)) return stored;
-  // M7 (rule C4): a completed document step is shown as references only,
-  // whenever it was stored (lib/agent-plans.ts planWithDocumentReferences).
-  const plan = planWithDocumentReferences(stored as NonNullable<T> & { steps: unknown[] });
+  // M7 (rule C4, fix round 2): every document step and its context entry is
+  // shown as references, whenever it was stored; a literal written for a step
+  // not yet run only to the plan's creator and approvers
+  // (lib/agent-plans.ts planWithDocumentReferences).
+  const plan = planWithDocumentReferences(stored as NonNullable<T> & { steps: unknown[] },
+    { literals: await readsPlanLiterals(stored, viewerId) });
   const hasMcpStep = plan.steps.some((step: any) => String(step?.tool ?? '').startsWith('mcp__'));
   const liveTools = hasMcpStep && plan.org_id
     ? await getMCPToolsForAgent(plan.org_id, plan.agent_employee_id ?? undefined).catch(() => [])
@@ -113,7 +130,7 @@ agentPlanRoutes.get('/', async (c) => {
       .orderBy(desc(agentPlans.created_at))
       .limit(50);
 
-    return c.json(await Promise.all(plans.map((plan) => withDestructiveMarks(plan))));
+    return c.json(await Promise.all(plans.map((plan) => withDestructiveMarks(plan, user.id))));
   } catch (err) {
     console.error('Failed to list plans:');
     return c.json({ error: 'Failed to list plans', code: 'INTERNAL_ERROR' }, 500);
@@ -136,7 +153,7 @@ agentPlanRoutes.get('/:id', async (c) => {
       return c.json({ error: 'Plan not found', code: 'NOT_FOUND' }, 404);
     }
 
-    return c.json(await withDestructiveMarks(plan));
+    return c.json(await withDestructiveMarks(plan, user.id));
   } catch (err) {
     console.error('Failed to get plan:');
     return c.json({ error: 'Failed to get plan', code: 'INTERNAL_ERROR' }, 500);
@@ -194,7 +211,7 @@ agentPlanRoutes.post('/', async (c) => {
       .where(eq(agentPlans.id, plan_id))
       .limit(1);
 
-    return c.json(await withDestructiveMarks(plan), 201);
+    return c.json(await withDestructiveMarks(plan, user.id), 201);
   } catch (err) {
     const refusal = planAccessRefusal(err);
     if (refusal) return c.json(refusal.body, refusal.status);
@@ -253,7 +270,7 @@ agentPlanRoutes.put('/:id', async (c) => {
     });
     if (!updated) return c.json({ error: 'Plan not found', code: 'NOT_FOUND' }, 404);
 
-    return c.json(await withDestructiveMarks(updated));
+    return c.json(await withDestructiveMarks(updated, user.id));
   } catch (err) {
     const refusal = planAccessRefusal(err);
     if (refusal) return c.json(refusal.body, refusal.status);
@@ -298,7 +315,7 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
     });
     if (!updated) return c.json({ error: 'Plan not found', code: 'NOT_FOUND' }, 404);
 
-    return c.json(await withDestructiveMarks(updated));
+    return c.json(await withDestructiveMarks(updated, user.id));
   } catch (err) {
     const refusal = planAccessRefusal(err);
     if (refusal) return c.json(refusal.body, refusal.status);
@@ -372,7 +389,7 @@ agentPlanRoutes.post('/:id/pause', async (c) => {
       .where(eq(agentPlans.id, planId))
       .returning();
 
-    return c.json(await stopReply(updated));
+    return c.json(await stopReply(updated, user.id));
   } catch (err) {
     console.error('Failed to pause plan:');
     return c.json({ error: 'Failed to pause plan', code: 'INTERNAL_ERROR' }, 500);
@@ -457,13 +474,15 @@ agentPlanRoutes.post('/:id/abort', async (c) => {
       );
     }
 
+    // M7 fix round 2: an ended plan keeps no literal document text in its steps.
+    const settled = planWithDocumentReferences({ steps: plan.steps, context: plan.context });
     const [updated] = await db
       .update(agentPlans)
-      .set({ status: 'failed', error: 'Aborted by user', updated_at: new Date() })
+      .set({ status: 'failed', error: 'Aborted by user', steps: settled.steps, context: settled.context, updated_at: new Date() })
       .where(eq(agentPlans.id, planId))
       .returning();
 
-    return c.json(await stopReply(updated));
+    return c.json(await stopReply(updated, user.id));
   } catch (err) {
     console.error('Failed to abort plan:');
     return c.json({ error: 'Failed to abort plan', code: 'INTERNAL_ERROR' }, 500);

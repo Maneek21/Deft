@@ -611,28 +611,45 @@ async function executeDirectDocumentEdit(orgId: string, actionId: string, direct
   } catch (error) {
     if (error instanceof NoLongerDirect) {
       if (error.landing.landing === 'refuse') return failed('You can only comment on this document');
-      // Nothing was written: the same action waits as a suggestion only its asker reviews.
-      try {
-        const suggestionId = await db.transaction(async (tx) => {
-          const [back] = await tx.update(agentActions)
-            .set({ approval_status: 'pending', approved_at: null, approved_by_user_id: null, updated_at: new Date() })
-            .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId), eq(agentActions.approval_status, 'approved'),
-              sql`${agentActions.executed_at} IS NULL`))
-            .returning({ id: agentActions.id });
-          if (!back) throw new DocumentRefusal(409, 'INVALID_STATE', 'This edit is no longer waiting to be written');
-          return (await proposeDocumentEdit(tx, { orgId, documentId, actionId, askerId: action.user_id, agentUserId, ops })).suggestionId;
-        });
-        return { success: false, result: { landing: 'suggest', reason: error.landing.reason, suggestion_id: suggestionId }, error: DIRECT_EDIT_SUGGESTED };
-      } catch (proposeError) {
-        if (proposeError instanceof DocumentEditRefused) return failed('Some blocks this edit names are not in the document');
-        if (proposeError instanceof DocumentRefusal || proposeError instanceof DocumentWriteRefused) return failed(proposeError.message);
-        throw proposeError;
-      }
+      return asSuggestion(error.landing);
     }
     if (error instanceof DocumentEditRefused) return failed('Some blocks this edit names are not in the document');
-    if (error instanceof DocumentWriteRefused && error.code === 'FORBIDDEN') return failed('You can only comment on this document');
+    // The writer refuses a drive set to suggestions only (and an asker who
+    // lost their edit role) before `recheck` runs. Decided again, a landing
+    // that is now a suggestion becomes one, as a trust downgrade does (fix
+    // round 2, I4); one that refuses keeps the refusal.
+    if (error instanceof DocumentWriteRefused && error.code === 'FORBIDDEN') return asSuggestion(null);
     if (error instanceof DocumentWriteRefused || error instanceof DocumentRefusal) return failed(error.message);
     throw error;
+  }
+
+  /**
+   * Nothing was written: the same action waits as a suggestion only its asker
+   * reviews, in one transaction with the action set back to pending. With no
+   * `known` landing (the writer refused), it is decided again in that
+   * transaction first, and anything but a suggestion is the refusal.
+   */
+  async function asSuggestion(known: DirectEditLanding | null): Promise<ExecutorOutcome> {
+    try {
+      const queued = await db.transaction(async (tx) => {
+        const landing = known ?? await direct.recheck(tx);
+        if (landing.landing !== 'suggest') return null;
+        const [back] = await tx.update(agentActions)
+          .set({ approval_status: 'pending', approved_at: null, approved_by_user_id: null, updated_at: new Date() })
+          .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId), eq(agentActions.approval_status, 'approved'),
+            sql`${agentActions.executed_at} IS NULL`))
+          .returning({ id: agentActions.id });
+        if (!back) throw new DocumentRefusal(409, 'INVALID_STATE', 'This edit is no longer waiting to be written');
+        const { suggestionId } = await proposeDocumentEdit(tx, { orgId, documentId, actionId, askerId: action!.user_id, agentUserId: agentUserId!, ops });
+        return { reason: landing.reason, suggestionId };
+      });
+      if (!queued) return failed('You can only comment on this document');
+      return { success: false, result: { landing: 'suggest', reason: queued.reason, suggestion_id: queued.suggestionId }, error: DIRECT_EDIT_SUGGESTED };
+    } catch (proposeError) {
+      if (proposeError instanceof DocumentEditRefused) return failed('Some blocks this edit names are not in the document');
+      if (proposeError instanceof DocumentRefusal || proposeError instanceof DocumentWriteRefused) return failed(proposeError.message);
+      throw proposeError;
+    }
   }
 }
 

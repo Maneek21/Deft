@@ -20,6 +20,14 @@ export const DOCUMENT_DRAFT_ACTION = 'create_document';
 /** What a settled draft says in place of its title. */
 export const SETTLED_DOCUMENT_DRAFT_SUMMARY = 'Document draft';
 
+/**
+ * What a draft's approval item says (fix round 2, I3): never its title,
+ * pending or settled. The approval card shows the draft to its reviewer while
+ * it waits; the item (and any push of it) outlives the draft, so it names
+ * nothing, and an item that settles is set to this text again.
+ */
+export const DOCUMENT_DRAFT_ITEM_BODY = 'Document draft';
+
 const ID_PATTERN = '^[A-Za-z0-9_.:-]{1,128}$';
 
 /**

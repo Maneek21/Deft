@@ -22,6 +22,7 @@ import { nativeDeliveryAccessSql, nativeNotificationAccessSql } from './native-m
 import { taskHiddenFromGuestSql } from './task-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import { visibleDocumentIdSql } from './document-access.js';
+import { DOCUMENT_DRAFT_ACTION, DOCUMENT_DRAFT_ITEM_BODY } from './document-draft-params.js';
 import type { AnyNotificationType } from './notification-types.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
 import {
@@ -456,6 +457,8 @@ export function notificationToAttentionDraft(notification: LegacyNotification): 
 
 function approvalActionLabel(action: AgentAction): string {
   if (isModuleGovernedWriteActionName(action.action)) return action.action.replaceAll('_', ' ');
+  // M7 fix round 2 (I3): a document draft's item never carries its title.
+  if (action.action === DOCUMENT_DRAFT_ACTION) return DOCUMENT_DRAFT_ITEM_BODY;
   const params = objectMetadata(action.params);
   return metadataString(params, 'summary', 'title', 'task_title', 'page_title', 'content')
     ?? action.action.replaceAll('_', ' ');
@@ -1114,6 +1117,11 @@ export async function transitionAttentionItem(params: {
       snoozed_until: params.state === 'snoozed' ? params.snoozedUntil ?? null : null,
       resolved_at: terminal ? now : null,
       resolution: terminal ? params.resolution ?? null : null,
+      // M7 fix round 2 (I3): a document draft's approval item that settles names nothing, whenever it was made.
+      body: terminal
+        ? sql`CASE WHEN ${attentionItems.kind} = 'approval' AND ${attentionItems.metadata} ->> 'action' = ${DOCUMENT_DRAFT_ACTION}
+          THEN ${DOCUMENT_DRAFT_ITEM_BODY}::text ELSE ${attentionItems.body} END`
+        : undefined,
       version: sql`${attentionItems.version} + 1`,
       updated_at: now,
     })
