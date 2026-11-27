@@ -563,6 +563,14 @@ export type DirectDocumentEdit = {
 /** The marker a direct edit's outcome carries when it was queued as a suggestion instead. */
 export const DIRECT_EDIT_SUGGESTED = 'Queued as a suggestion: where this edit lands changed before it was written';
 
+/** A direct edit whose request ended before its write (M7 consult O-F2: the recheck's `cancelled` landing): nothing was written. */
+export const DIRECT_EDIT_CANCELLED = 'Cancelled: the request ended before this edit was written';
+
+/** The error a landing decided again inside the write gives when it refuses. */
+function recheckRefusal(landing: DirectEditLanding): string {
+  return landing.reason === 'cancelled' ? DIRECT_EDIT_CANCELLED : 'You can only comment on this document';
+}
+
 /** Thrown inside the write when the landing decided again is no longer direct: the write rolls back. */
 class NoLongerDirect extends Error {
   constructor(readonly landing: DirectEditLanding) { super('the edit no longer lands direct'); }
@@ -610,7 +618,7 @@ async function executeDirectDocumentEdit(orgId: string, actionId: string, direct
     return settle({ success: true, result: { document_id: documentId, landing: 'direct', changed_block_ids: applied.changedBlockIds, version_id: applied.versionId } });
   } catch (error) {
     if (error instanceof NoLongerDirect) {
-      if (error.landing.landing === 'refuse') return failed('You can only comment on this document');
+      if (error.landing.landing === 'refuse') return failed(recheckRefusal(error.landing));
       return asSuggestion(error.landing);
     }
     if (error instanceof DocumentEditRefused) return failed('Some blocks this edit names are not in the document');
@@ -630,10 +638,11 @@ async function executeDirectDocumentEdit(orgId: string, actionId: string, direct
    * transaction first, and anything but a suggestion is the refusal.
    */
   async function asSuggestion(known: DirectEditLanding | null): Promise<ExecutorOutcome> {
+    const refused: { landing: DirectEditLanding | null } = { landing: null };
     try {
       const queued = await db.transaction(async (tx) => {
         const landing = known ?? await direct.recheck(tx);
-        if (landing.landing !== 'suggest') return null;
+        if (landing.landing !== 'suggest') { refused.landing = landing; return null; }
         const [back] = await tx.update(agentActions)
           .set({ approval_status: 'pending', approved_at: null, approved_by_user_id: null, updated_at: new Date() })
           .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId), eq(agentActions.approval_status, 'approved'),
@@ -643,7 +652,7 @@ async function executeDirectDocumentEdit(orgId: string, actionId: string, direct
         const { suggestionId } = await proposeDocumentEdit(tx, { orgId, documentId, actionId, askerId: action!.user_id, agentUserId: agentUserId!, ops });
         return { reason: landing.reason, suggestionId };
       });
-      if (!queued) return failed('You can only comment on this document');
+      if (!queued) return failed(refused.landing ? recheckRefusal(refused.landing) : 'You can only comment on this document');
       return { success: false, result: { landing: 'suggest', reason: queued.reason, suggestion_id: queued.suggestionId }, error: DIRECT_EDIT_SUGGESTED };
     } catch (proposeError) {
       if (proposeError instanceof DocumentEditRefused) return failed('Some blocks this edit names are not in the document');

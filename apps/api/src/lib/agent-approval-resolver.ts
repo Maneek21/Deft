@@ -1200,14 +1200,21 @@ export async function approveAction(
 ): Promise<ApprovalResolverResult> {
   const seen: { suggestionToken?: string } = {};
   const locked = async (lease: DbAdvisoryLease) => {
-    const outcome = await approveActionLocked(actionId, approverUserId, { ...options, seen }, lease);
-    // An edit suggestion this request claimed, for an approval that didn't
-    // start, goes back to pending before the lease is released: only its own
-    // claim (the token), and not once the lease is lost (fix rounds 1 and 2, I1).
-    if (seen.suggestionToken && outcome.status === 'error' && outcome.code !== 'LEASE_LOST' && !lease.lost) {
-      await releaseSuggestionClaimInTx(db, actionId, seen.suggestionToken);
+    let outcome: ApprovalResolverResult | undefined;
+    try {
+      outcome = await approveActionLocked(actionId, approverUserId, { ...options, seen }, lease);
+      return outcome;
+    } finally {
+      // An edit suggestion this request claimed, for an approval that didn't
+      // start, goes back to pending before the lease is released: only its own
+      // claim (the token), and not once the lease is lost (fix rounds 1 and 2,
+      // I1). Also when the approval threw (M7 consult O-F9): the release only
+      // touches a claim whose action is still pending.
+      const released = outcome === undefined || (outcome.status === 'error' && outcome.code !== 'LEASE_LOST');
+      if (seen.suggestionToken && released && !lease.lost) {
+        await releaseSuggestionClaimInTx(db, actionId, seen.suggestionToken);
+      }
     }
-    return outcome;
   };
   // The execution lease is held for the whole approval so a recovery can
   // tell a live executor from one that is gone. An apply from the document

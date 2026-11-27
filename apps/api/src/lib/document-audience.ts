@@ -536,7 +536,9 @@ export function editDocumentInputForStorage(input: unknown): unknown {
   const ops = Array.isArray(record.ops) ? record.ops : null;
   return {
     ...refField(record, 'document_id'),
-    ...(typeof record.summary === 'string' ? { summary: record.summary.trim().slice(0, 300) } : {}),
+    // M7 consult O-F4: the summary is the model's words and may quote the
+    // document, so a run keeps its size only (its text is on the action, for its asker).
+    ...(record.summary !== undefined && record.summary !== null ? { summary: omittedText(record.summary, storableRef(record.document_id)) } : {}),
     ...(record.mode === 'direct' || record.mode === 'suggest' ? { mode: record.mode } : {}),
     ops_omitted: true,
     op_count: ops ? ops.length : storableCount(record.op_count),

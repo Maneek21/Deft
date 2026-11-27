@@ -29,7 +29,7 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { agentActions, attentionItems } from '@deft/db/schema';
 import type { db as Db } from './db.js';
-import { createDocumentInputForStorage, omittedText, storableRef } from './document-audience.js';
+import { createDocumentInputForStorage, editDocumentInputForStorage, omittedText, storableRef } from './document-audience.js';
 
 /** The action whose settled params lose their text. */
 export const DOCUMENT_DRAFT_ACTION = 'create_document';
@@ -155,6 +155,14 @@ export function documentTextHiddenFrom(row: { action: string; user_id?: string |
  * through their own access to it.
  */
 export function documentTextParamsForViewer<T extends { action: string; params?: unknown; user_id?: string | null }>(row: T, viewerId: string): T {
+  // M7 consult O-F4: an edit's summary is the model's words and may quote the
+  // document: its asker reads it; anyone else "Document edit" and its size.
+  if (row.action === EDIT_DOCUMENT_ACTION) {
+    if (!Object.hasOwn(row, 'params') || (typeof row.user_id === 'string' && row.user_id === viewerId)) return row;
+    const sized = editParamsWithSummarySize(row.params);
+    const bytes = isRecord(sized.summary) && typeof sized.summary.content_bytes === 'number' ? sized.summary.content_bytes : 0;
+    return { ...row, params: { ...sized, summary: EDIT_SUMMARY_HIDDEN, summary_bytes: bytes } };
+  }
   if (!isDraftTextAction(row.action)) return row;
   const outcomes: Record<string, unknown> = {};
   for (const key of ['result', 'after_state', 'before_state'] as const) {
@@ -187,6 +195,29 @@ export function documentTextParamsForViewer<T extends { action: string; params?:
 }
 
 const DOCUMENT_URL = /^\/d\/[A-Za-z0-9_.:-]{1,128}$/;
+
+/** The agent action that edits a document (M7). */
+const EDIT_DOCUMENT_ACTION = 'edit_document';
+
+/** What anyone but its asker reads in place of an edit's summary (M7 consult O-F4). */
+export const EDIT_SUMMARY_HIDDEN = 'Document edit';
+
+/**
+ * An edit_document action's params with the summary as its size (M7 consult
+ * O-F4): what receipts and run details keep, rebuilt every time (fix round
+ * 1, I1): the document, the suggestion, and `summary` as
+ * `{ document_id, content_omitted, content_bytes }`.
+ */
+export function editParamsWithSummarySize(params: unknown): Record<string, unknown> {
+  const record = isRecord(params) ? params : {};
+  const documentId = storableRef(record.document_id);
+  const suggestionId = storableRef(record.suggestion_id);
+  return {
+    ...(documentId ? { document_id: documentId } : {}),
+    ...(record.summary !== undefined && record.summary !== null ? { summary: omittedText(record.summary, documentId) } : {}),
+    ...(suggestionId ? { suggestion_id: suggestionId } : {}),
+  };
+}
 
 /** The document a draft tool's result names, when it names one. */
 function outcomeDocumentId(value: unknown): string | null {
@@ -251,6 +282,8 @@ export function draftOutcomeReferences(action: string, value: unknown): unknown 
  * the stored row before this projection); signing never authorizes showing.
  */
 export function receiptForViewer<T extends { action_name?: unknown; action_params_json?: unknown; result_json?: unknown }>(receipt: T): T {
+  // M7 consult O-F4: an edit's receipt shows its summary's size, whenever it was signed.
+  if (receipt.action_name === EDIT_DOCUMENT_ACTION) return { ...receipt, action_params_json: editParamsWithSummarySize(receipt.action_params_json) };
   if (!isDraftTextAction(receipt.action_name)) return receipt;
   const action = receipt.action_name as string;
   const result = draftOutcomeReferences(action, receipt.result_json ?? null);
@@ -267,10 +300,17 @@ export function receiptForViewer<T extends { action_name?: unknown; action_param
 // the tool_calls list, the action graph, a clarification draft). The person
 // who asked sees their draft on its card, which reads the action.
 
-/** The tool name of a tool_calls entry or graph node, when it is a draft tool. */
+/** The tool name of a tool_calls entry or graph node, when it is a draft tool or edit_document (consult O-F4). */
 function draftToolName(value: Record<string, unknown>, ...keys: string[]): string | null {
-  for (const key of keys) if (isDraftTextAction(value[key])) return value[key] as string;
+  for (const key of keys) if (isDraftTextAction(value[key]) || value[key] === EDIT_DOCUMENT_ACTION) return value[key] as string;
   return null;
+}
+
+/** A draft tool's or an edit's input as a message keeps it: draft text and an edit's summary as their sizes. */
+function inputWithoutDraftText(name: string, input: unknown): unknown {
+  if (name !== EDIT_DOCUMENT_ACTION) return draftToolInputForStorage(name, input);
+  // A run's call (with its operations) as editDocumentInputForStorage keeps it; an action's params as their envelope.
+  return isRecord(input) && ('ops' in input || 'ops_omitted' in input) ? editDocumentInputForStorage(input) : editParamsWithSummarySize(input);
 }
 
 /** A draft tool's tool_result content, rebuilt to its status, ids and error. */
@@ -310,8 +350,8 @@ function paramsWithoutDraftText(entry: unknown, ...nameKeys: string[]): unknown 
   if (!name) return entry;
   return {
     ...entry,
-    ...(Object.hasOwn(entry, 'params') ? { params: draftToolInputForStorage(name, entry.params) } : {}),
-    ...(Object.hasOwn(entry, 'input') ? { input: draftToolInputForStorage(name, entry.input) } : {}),
+    ...(Object.hasOwn(entry, 'params') ? { params: inputWithoutDraftText(name, entry.params) } : {}),
+    ...(Object.hasOwn(entry, 'input') ? { input: inputWithoutDraftText(name, entry.input) } : {}),
   };
 }
 
@@ -333,6 +373,8 @@ export function draftTextOmittedFromMetadata<T>(metadata: T): T {
     out.agent_blocks = metadata.agent_blocks.map((block: unknown) => {
       if (!isRecord(block)) return block;
       if (block.type === 'tool_use' && isDraftTextAction(block.name)) return { ...block, input: draftToolInputForStorage(block.name as string, block.input) };
+      // Consult O-F4: an edit call's summary as its size too (editDocumentInputForStorage).
+      if (block.type === 'tool_use' && block.name === EDIT_DOCUMENT_ACTION) return { ...block, input: editDocumentInputForStorage(block.input) };
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
         // Its call is in this message, or it is the hidden result an approval
         // stored for an approved create_note (routes/agent.ts), whose result

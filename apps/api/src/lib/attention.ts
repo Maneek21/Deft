@@ -22,7 +22,7 @@ import { nativeDeliveryAccessSql, nativeNotificationAccessSql } from './native-m
 import { taskHiddenFromGuestSql } from './task-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import { visibleDocumentIdSql } from './document-access.js';
-import { DOCUMENT_DRAFT_ACTION, DOCUMENT_DRAFT_ITEM_BODY, documentTextHiddenFrom, draftItemBodySql, isDraftTextAction } from './document-draft-params.js';
+import { DOCUMENT_DRAFT_ACTION, DOCUMENT_DRAFT_ITEM_BODY, documentTextHiddenFrom, draftItemBodySql, EDIT_SUMMARY_HIDDEN, isDraftTextAction } from './document-draft-params.js';
 import type { AnyNotificationType } from './notification-types.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
 import {
@@ -317,6 +317,8 @@ export async function withReaderDraftItemBodies<T extends ReaderItem>(items: rea
     const action = byId.get(item.source_id);
     const named = objectMetadata(item.metadata).action;
     if (!action || action.org_id !== item.org_id) return isDraftTextAction(named) ? { ...item, body: DOCUMENT_DRAFT_ITEM_BODY } : item;
+    // M7 consult O-F4: an edit's summary only for its asker.
+    if (action.action === 'edit_document') return action.user_id === item.user_id ? item : { ...item, body: EDIT_SUMMARY_HIDDEN };
     if (!isDraftTextAction(action.action)) return item;
     const hidden = action.action === DOCUMENT_DRAFT_ACTION || documentTextHiddenFrom(action, item.user_id);
     return hidden ? { ...item, body: DOCUMENT_DRAFT_ITEM_BODY } : item;
@@ -501,6 +503,8 @@ function approvalActionLabel(action: AgentAction, userId: string): string {
   // M7 fix round 4: a note or canvas draft's title or text only on the item of
   // the person who asked; a fallback reviewer's item names nothing.
   if (documentTextHiddenFrom(action, userId)) return DOCUMENT_DRAFT_ITEM_BODY;
+  // M7 consult O-F4: an edit's summary only on its asker's item.
+  if (action.action === 'edit_document' && action.user_id !== userId) return EDIT_SUMMARY_HIDDEN;
   const params = objectMetadata(action.params);
   return metadataString(params, 'summary', 'title', 'task_title', 'page_title', 'content')
     ?? action.action.replaceAll('_', ' ');

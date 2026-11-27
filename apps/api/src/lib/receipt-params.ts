@@ -12,7 +12,7 @@ import {
 } from '@deft/shared/modules';
 import { sanitizeModuleActionParamsForHistory } from './module-service.js';
 import { createDocumentInputForStorage, storableRef } from './document-audience.js';
-import { draftOutcomeReferences, draftToolInputForStorage, isDraftTextAction } from './document-draft-params.js';
+import { draftOutcomeReferences, draftToolInputForStorage, editParamsWithSummarySize, isDraftTextAction } from './document-draft-params.js';
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
   MODULE_OPERATION_NAMES.filter(
@@ -140,21 +140,15 @@ function redactSensitiveReceiptValue(value: unknown): unknown {
 const DOCUMENT_CONTENT_ACTIONS: ReadonlySet<string> = new Set(['create_note', 'write_canvas']);
 
 /**
- * M7's document tools: an edit's receipt names the document and the summary,
+ * M7's document tools: an edit's receipt names the document and the summary's size,
  * never its operations; a created document's names where it went and the
  * sizes, never the title or the Markdown (rule C4).
  */
 function withoutDocumentToolText(action: string, params: Record<string, unknown>, resultValue: unknown): Record<string, unknown> {
   const result = resultValue && typeof resultValue === 'object' ? resultValue as Record<string, unknown> : {};
   const documentId = storableRef(result.document_id) ?? storableRef(params.document_id);
-  if (action === 'edit_document') {
-    // Rebuilt every time (fix round 1, I1): the document, the summary, the suggestion.
-    return {
-      ...(storableRef(params.document_id) ? { document_id: params.document_id } : {}),
-      ...(typeof params.summary === 'string' ? { summary: params.summary.trim().slice(0, 300) } : {}),
-      ...(storableRef(params.suggestion_id) ? { suggestion_id: params.suggestion_id } : {}),
-    };
-  }
+  // M7 consult O-F4: the document and the suggestion, and the summary's size (rebuilt every time, fix round 1, I1).
+  if (action === 'edit_document') return editParamsWithSummarySize(params);
   return createDocumentInputForStorage(params, documentId) as Record<string, unknown>;
 }
 

@@ -37,6 +37,8 @@ mock.module(new URL('../src/lib/agent-llm.ts', import.meta.url).href, { namedExp
   createAgentMessage: async (params: { messages: unknown }) => {
     providerCalls.push(JSON.stringify(params.messages));
     const next = nextResponses.shift() ?? { content: [{ type: 'text', text: 'Done.' }], stop_reason: 'end_turn' };
+    // A response marked `fails` stands for the provider failing on that call (consult O-F3).
+    if ((next as { fails?: boolean }).fails) throw new Error('provider unavailable in this test');
     return { ...next, usage: { input_tokens: 5, output_tokens: 5 } };
   },
 } });
@@ -99,6 +101,9 @@ const { humanFetch, humanAttentionGet } = await import('../src/lib/mcp-tools/hum
 const { formatApprovalConfirmation } = await import('../src/lib/agent-action-confirmation.js');
 const { emitMessageToSpaceViewers } = await import('../src/lib/agent-message-run-details.js');
 const { sanitizeAgentReplyActionMetadata } = await import('../src/lib/agent-action-proposals.js');
+const { _setReviewerRecheckHookForTest } = await import('../src/lib/agent-approval-resolver.js');
+const { executeAction, executeActionDirect } = await import('../src/lib/agent-actions.js');
+const { createPlanInputForStorage } = await import('../src/lib/agent-plans.js');
 /** The module itself, for test seams that may not exist yet (RED runs against older code). */
 const writeTools = await import('../src/lib/agent-document-write-tools.js') as Record<string, any>;
 
@@ -1494,4 +1499,350 @@ test('fix round 5 (5): a note draft\'s approval item made before this round name
   const items = await note.items();
   assert.ok(items.length >= 2);
   for (const item of items) assert.equal(item.body, 'Document draft', text(item));
+});
+
+// ---------------------------------------------------------------------------
+// The M5–M7 consult (27 Nov): the caller's settlement, row by row
+
+/** The live document as JSON (pending live edits included). */
+async function documentJson(documentId: string): Promise<JSONContent> {
+  const state = await readCurrentDocument(documentId, fx.orgId);
+  assert.ok(state, 'the document has a state');
+  const doc = new Y.Doc();
+  try {
+    Y.applyUpdate(doc, state);
+    return yDocToJson(doc);
+  } finally {
+    doc.destroy();
+  }
+}
+
+/** Defty's reply to `triggerId` in `spaceId`. */
+async function replyTo(spaceId: string, triggerId: string) {
+  return (await deftyMessages(spaceId)).find((message) => message.metadata?.reply_to_message_id === triggerId);
+}
+
+/** The edit call that appends `markdown`, with `id`. */
+const appendCall = (id: string, documentId: string, markdown: string, summary = 'Add a closing line'): Call => ({
+  id, name: 'edit_document', input: { document_id: documentId, ops: [{ op: 'append', markdown }], summary },
+});
+
+/** The job delivered again for `triggerId` (its reply deleted first: the job died before writing it). */
+async function redeliver(spaceId: string, asker: string, triggerId: string, content: string, call: Call) {
+  await fx.client.query(`DELETE FROM messages WHERE org_id = $1 AND space_id = $2 AND user_id = $3 AND metadata->>'reply_to_message_id' = $4`,
+    [fx.orgId, spaceId, deftyId, triggerId]);
+  providerCalls.length = 0;
+  nextResponses = [
+    { content: [{ type: 'tool_use', id: call.id, name: 'edit_document', input: call.input }], stop_reason: 'tool_use' },
+    { content: [{ type: 'text', text: 'Done.' }], stop_reason: 'end_turn' },
+  ];
+  await handleAgentReply({ id: randomUUID(), name: 'agent-reply', attempts: 2,
+    data: { orgId: fx.orgId, spaceId, messageId: triggerId, userId: asker, orgName: 'M7 org', content } } as any, { io: null } as any);
+  return toolResults().get(call.id!);
+}
+
+test('consult O-F2: a request that has ended writes nothing, before the decision and inside the write', { skip }, async (t) => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('f2doc'), 'Cancelled plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const runWith = async (label: string, signal: AbortSignal) => {
+    const triggerId = await postMessage(dm, member, 'Please add a closing line');
+    const call = appendCall(`toolu_m7_${label}_${run}`, doc.id, `Gamma ${token(label)}`);
+    providerCalls.length = 0;
+    nextResponses = [
+      { content: [{ type: 'tool_use', id: call.id, name: 'edit_document', input: call.input }], stop_reason: 'tool_use' },
+      { content: [{ type: 'text', text: 'Done.' }], stop_reason: 'end_turn' },
+    ];
+    await runAgentQuery({
+      content: 'Please add a closing line', orgId: fx.orgId, userId: member, orgName: 'M7 org', conversationId: dm, sourceMessageId: triggerId,
+      askerMessageText: 'Please add a closing line', spaceContext: { type: 'dm', name: 'dm' }, skipVerification: true, durableNotes: false,
+      maxIterations: 2, abortSignal: signal,
+    } as any);
+    return toolResults().get(call.id!);
+  };
+
+  // The timeout fired (or the job lost its lease) before the call was decided: refused, nothing queued.
+  const early = new AbortController();
+  early.abort(new Error('agent-reply: runAgentQuery timeout after 60s'));
+  const before = await runWith('f2early', early.signal);
+  assert.equal(before?.content.code, 'CANCELLED', text(before));
+  assert.deepEqual(await editActions(doc.id), [], 'nothing queued or written before the decision');
+
+  // It fires after the decision, before the write: the write writes nothing.
+  const late = new AbortController();
+  t.after(() => writeTools._setBeforeDirectEditWriteHookForTest(null));
+  writeTools._setBeforeDirectEditWriteHookForTest(async () => { late.abort(new Error('lease lost')); });
+  const inside = await runWith('f2late', late.signal);
+  writeTools._setBeforeDirectEditWriteHookForTest(null);
+  assert.equal(inside?.content.code, 'CANCELLED', text(inside));
+  assert.deepEqual(await blocks(doc.id), [[doc.a, 'Alpha intro'], [doc.b, 'Beta body']], 'the document is unchanged');
+  const { rows: versions } = await fx.client.query(`SELECT id FROM document_versions WHERE document_id = $1 AND kind = 'agent'`, [doc.id]);
+  assert.equal(versions.length, 0, 'no agent version');
+  for (const action of await editActions(doc.id)) assert.notEqual(action.result?.landing, 'direct', text(action));
+});
+
+test('consult O-F3: a run that fails after a direct edit went in still says so in the room, with its undo id and no document text', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(await memberMyDrive(), token('f3doc'), `Failing ${token('f3title')}`);
+  const room = await insertChat([member], 'private');
+  const appended = `Gamma ${token('f3body')}`;
+  const triggerId = await postMessage(room, member, 'Please add a closing line');
+  const call = appendCall(`toolu_m7_f3_${run}`, doc.id, appended);
+  providerCalls.length = 0;
+  nextResponses = [
+    { content: [{ type: 'tool_use', id: call.id, name: 'edit_document', input: call.input }], stop_reason: 'tool_use' },
+    { content: [], stop_reason: 'error', fails: true } as never,
+  ];
+  await handleAgentReply({ id: randomUUID(), name: 'agent-reply', attempts: 1,
+    data: { orgId: fx.orgId, spaceId: room, messageId: triggerId, userId: member, orgName: 'M7 org', content: 'Please add a closing line' } } as any, { io: null } as any);
+
+  const [action, ...more] = await editActions(doc.id);
+  assert.equal(more.length, 0, 'one edit, and no second write drafted for the request');
+  assert.equal(action?.approval_status, 'approved');
+  assert.ok(action?.executed_at, 'the edit went in before the run failed');
+  assert.equal((await blocks(doc.id)).filter(([, body]) => body === appended).length, 1);
+  const reply = await replyTo(room, triggerId);
+  assert.ok(reply, 'Defty replied');
+  assert.match(reply.content, /went straight in/, reply.content);
+  assert.ok(reply.content.includes(action.id), 'the reply carries the undo id');
+  for (const leaked of [token('f3title'), token('f3body')]) assert.ok(!text(reply).includes(leaked), `the reply names no ${leaked}`);
+});
+
+test('consult O-F3: when the room changes under a run, the reply still links an edit left as a suggestion: its card and Inbox item', { skip }, async (t) => {
+  const { member, member2 } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(await memberMyDrive(), token('f3adoc'), `Changed ${token('f3atitle')}`);
+  const room = await insertChat([member], 'private');
+  // Inside the write: someone who can't open the document joins the room, and the workspace is lowered to Conservative.
+  t.after(async () => { writeTools._setDirectEditRecheckHookForTest(null); await setTrust('standard'); });
+  writeTools._setDirectEditRecheckHookForTest(async () => {
+    writeTools._setDirectEditRecheckHookForTest(null);
+    await fx.client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), room, member2]);
+    await setTrust('conservative');
+  });
+  const readId = `toolu_m7_f3aread_${run}`;
+  const { triggerId } = await askDefty({ asker: member, spaceId: room, content: 'Please add a closing line',
+    turns: [[{ id: readId, name: 'read_document', input: { document_id: doc.id } }], [appendCall(`toolu_m7_f3aedit_${run}`, doc.id, `Gamma ${token('f3abody')}`)]] });
+  writeTools._setDirectEditRecheckHookForTest(null);
+  await setTrust('standard');
+
+  const reply = await replyTo(room, triggerId);
+  assert.ok(reply, 'Defty replied');
+  assert.match(reply.content, /couldn't answer here because who can see this changed/, reply.content);
+  assert.match(reply.content, /waiting as a suggestion/, reply.content);
+  for (const leaked of [token('f3atitle'), token('f3abody')]) assert.ok(!text(reply).includes(leaked), `the reply names no ${leaked}`);
+  const [action] = await editActions(doc.id);
+  assert.equal(action?.approval_status, 'pending', 'the edit was left as a suggestion');
+  assert.equal(action.message_id, reply.id, 'linked to the reply: its card');
+  assert.ok((await suggestionsOf(doc.id)).some((s) => s.action_id === action.id));
+  await pollUntil(async () => (await fx.client.query(`SELECT id FROM attention_items WHERE org_id = $1 AND source_type = 'agent_action'
+    AND source_id = $2 AND user_id = $3`, [fx.orgId, action.id, member])).rows.length > 0, 'its Inbox item');
+});
+
+test('consult O-F4: an edit\'s summary reaches only its asker; an admin who can\'t open the document sees "Document edit" everywhere', { skip }, async () => {
+  const { member, admin } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(await memberMyDrive(), token('f4doc'), 'Private plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const summary = `Quote ${token('f4summary')}`;
+  const leak = token('f4summary');
+  await askDefty({ asker: member, spaceId: dm, content: 'Please add a closing line',
+    turns: [[appendCall(`toolu_m7_f4_${run}`, doc.id, `Gamma ${token('f4body')}`, summary)]] });
+  const [action] = await editActions(doc.id);
+  assert.equal(action?.approval_status, 'approved');
+  assert.equal(action.params.summary, summary, 'the action keeps its summary, for its asker');
+
+  // The admin reads the action everywhere it is listed, and its receipt.
+  for (const path of ['/api/agent/actions', '/api/agent/actions/recent?limit=50', `/api/agent/actions/${action.id}/receipt`]) {
+    const response = await fx.request(admin, 'GET', path);
+    assert.equal(response.status, 200, `${path}: ${await response.clone().text()}`);
+    const shown = await response.text();
+    assert.ok(shown.includes(action.id), `${path} names the action`);
+    assert.ok(!shown.includes(leak), `${path} shows the admin no summary`);
+  }
+  const activity = await executeToolCall('get_agent_activity', { limit: 100 }, fx.orgId, admin);
+  const entry = ((activity.result?.actions ?? []) as any[]).find((row) => row.id === action.id);
+  assert.equal(entry?.params?.summary, 'Document edit', text(entry));
+  assert.ok(!text(activity.result).includes(leak), 'get_agent_activity gives the admin no summary');
+  // Receipts and run details keep its size.
+  const { rows: receipts } = await fx.client.query('SELECT action_params_json FROM action_receipts WHERE action_id = $1', [action.id]);
+  assert.ok(receipts.length > 0, 'the direct edit has its receipt');
+  assert.ok(!text(receipts).includes(leak), 'the receipt keeps no summary');
+  assert.ok(!text(documentToolCallForStorage('edit_document', { document_id: doc.id, summary, ops: [{ op: 'append', markdown: 'x' }] }, null)).includes(leak),
+    'a run keeps the summary\'s size');
+  // The asker reads it.
+  assert.ok((await (await fx.request(member, 'GET', '/api/agent/actions')).text()).includes(leak), 'the asker reads their summary');
+});
+
+test('consult S-F2: a plan keeps only its fixed keys, and a document-touching plan\'s free text reaches only its creator', { skip }, async () => {
+  const { member, admin } = fx.people;
+  const doc = await twoBlocks(fx.workspaceDriveId, token('s2doc'), 'Plan source');
+  const leaks = ['s2title', 's2desc', 's2step', 's2step2', 's2smug', 's2smug2'].map(token);
+  const { plan_id: planId } = await createPlanRow({
+    org_id: fx.orgId, user_id: member, created_via: 'api',
+    title: `Plan ${token('s2title')}`, description: `About ${token('s2desc')}`,
+    steps: [
+      { id: 'read', description: `Read ${token('s2step')}`, tool: 'read_document', params: { document_id: doc.id }, smuggled: token('s2smug') },
+      { id: 'list', description: `List ${token('s2step2')}`, tool: 'list_projects', params: {}, note: { deep: token('s2smug2') } },
+    ] as never,
+  });
+  const { rows: [stored] } = await fx.client.query('SELECT steps FROM agent_plans WHERE id = $1', [planId]);
+  for (const leaked of [token('s2smug'), token('s2smug2')]) assert.ok(!text(stored.steps).includes(leaked), `the plan stores no ${leaked}`);
+  assert.equal(stored.steps[0].description, `Read ${token('s2step')}`, 'the creator\'s description is kept');
+
+  // Its creator reads the free text.
+  const mine = await fx.request(member, 'GET', `/api/agent-plans/${planId}`);
+  assert.equal(mine.status, 200, await mine.clone().text());
+  assert.ok((await mine.text()).includes(token('s2title')));
+
+  // A manager who approves it reads neutral text and no extra key.
+  const approved = await fx.request(admin, 'POST', `/api/agent-plans/${planId}/approve`);
+  assert.equal(approved.status, 200, await approved.clone().text());
+  const body = await approved.json() as any;
+  assert.equal(body.title, 'Plan: 2 steps');
+  assert.equal(body.description, null);
+  assert.deepEqual(body.steps.map((step: any) => step.description), ['Step 1: read_document', 'Step 2: list_projects']);
+  for (const leaked of leaks) assert.ok(!text(body).includes(leaked), `the admin sees no ${leaked}`);
+
+  // A plan that touches no document keeps its free text for everyone.
+  const { plan_id: plainId } = await createPlanRow({ org_id: fx.orgId, user_id: member, created_via: 'api', title: `Tasks ${token('s2plain')}`,
+    steps: [{ id: 'list', description: 'List the projects', tool: 'list_projects', params: {} }] });
+  const plain = await fx.request(admin, 'POST', `/api/agent-plans/${plainId}/approve`);
+  assert.equal(plain.status, 200);
+  assert.equal(((await plain.json()) as any).title, `Tasks ${token('s2plain')}`);
+
+  // A create_plan call as a run keeps it: its fixed keys, and no free text for a document plan.
+  const kept = createPlanInputForStorage({ title: `Plan ${token('s2title')}`, description: token('s2desc'), extra: token('s2smug'),
+    steps: [{ id: 'read', description: `Read ${token('s2step')}`, tool: 'read_document', params: { document_id: doc.id }, smuggled: token('s2smug2') }] });
+  for (const leaked of leaks) assert.ok(!text(kept).includes(leaked), `the run keeps no ${leaked}`);
+});
+
+test('consult O-F5: a redelivery that runs the model again (new tool_use ids) makes one edit, one action, one version', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('f5doc'), 'Redelivered again');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const appended = `Gamma ${token('f5body')}`;
+  const first = await askDefty({ asker: member, spaceId: dm, content: 'Please add a closing line', turns: [[appendCall(`toolu_m7_f5a_${run}`, doc.id, appended)]] });
+  const [action] = await editActions(doc.id);
+  assert.equal(first.results.get(`toolu_m7_f5a_${run}`)?.content.landing, 'direct');
+
+  const again = await redeliver(dm, member, first.triggerId, 'Please add a closing line', appendCall(`toolu_m7_f5b_${run}`, doc.id, appended));
+  assert.equal(again?.content.landing, 'direct', text(again));
+  assert.deepEqual(again?.content.undo, { action_id: action.id }, 'the same action answers');
+  assert.equal((await editActions(doc.id)).length, 1, 'one action');
+  const { rows: versions } = await fx.client.query(`SELECT id FROM document_versions WHERE document_id = $1 AND kind = 'agent'`, [doc.id]);
+  assert.equal(versions.length, 1, 'one version');
+  assert.equal((await blocks(doc.id)).filter(([, body]) => body === appended).length, 1, 'appended once');
+});
+
+test('consult O-F6: an edit\'s suggestion a person approved is never set back or told as direct on a redelivery', { skip }, async (t) => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('f6doc'), 'Accepted plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const call = appendCall(`toolu_m7_f6_${run}`, doc.id, `Gamma ${token('f6body')}`);
+  // Lowered inside the write: the action waits as a suggestion, with the request's key.
+  t.after(async () => { writeTools._setDirectEditRecheckHookForTest(null); await setTrust('standard'); });
+  writeTools._setDirectEditRecheckHookForTest(async () => { writeTools._setDirectEditRecheckHookForTest(null); await setTrust('conservative'); });
+  const first = await askDefty({ asker: member, spaceId: dm, content: 'Please add a closing line', turns: [[call]] });
+  await setTrust('standard');
+  const [pending] = await editActions(doc.id);
+  assert.equal(pending?.approval_status, 'pending');
+  // The asker accepted it: the resolver is applying it now (approved by them, not yet executed).
+  await fx.client.query(`UPDATE agent_actions SET approval_status = 'approved', approved_by_user_id = $2, approved_at = now() WHERE id = $1`, [pending.id, member]);
+
+  const again = await redeliver(dm, member, first.triggerId, 'Please add a closing line', call);
+  assert.equal(again?.content.landing, 'suggest', text(again));
+  assert.equal(again?.content.reason, 'already_suggested');
+  const { rows: [now] } = await fx.client.query('SELECT approval_status, approved_by_user_id, executed_at, result FROM agent_actions WHERE id = $1', [pending.id]);
+  assert.equal(now.approval_status, 'approved', 'not set back to pending');
+  assert.equal(now.approved_by_user_id, member, 'still the asker\'s approval');
+  assert.equal(now.executed_at, null, 'not recorded as written');
+  const { rows: receipts } = await fx.client.query(`SELECT id FROM action_receipts WHERE action_id = $1 AND decision = 'auto_executed'`, [pending.id]);
+  assert.deepEqual(receipts, [], 'no direct-action receipt');
+  assert.equal((await editActions(doc.id)).length, 1);
+});
+
+test('consult O-F8: one request\'s edits are serialized without the advisory pool: two at once make one edit', { skip }, async () => {
+  const source = readFileSync(new URL('../src/lib/agent-document-write-tools.ts', import.meta.url), 'utf8');
+  assert.ok(!source.includes('withDbAdvisoryLock'), 'the edit path holds no advisory-pool connection');
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('f8doc'), 'Concurrent plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const triggerId = await postMessage(dm, member, 'Please add a closing line');
+  const appended = `Gamma ${token('f8body')}`;
+  const once = (toolUseId: string) => writeTools.runDocumentEditCall({
+    orgId: fx.orgId, askerId: member, background: false, input: appendCall(toolUseId, doc.id, appended).input,
+    askerMessageText: 'Please add a closing line', conversationId: dm, sourceMessageId: triggerId, toolUseId,
+    executeDirect: executeActionDirect, executeExisting: executeAction,
+  });
+  const [a, b] = await Promise.all([once(`toolu_m7_f8a_${run}`), once(`toolu_m7_f8b_${run}`)]);
+  assert.equal(a.reply.landing, 'direct', text(a));
+  assert.equal(b.reply.landing, 'direct', text(b));
+  assert.equal((await editActions(doc.id)).length, 1, 'one action');
+  assert.equal((await blocks(doc.id)).filter(([, body]) => body === appended).length, 1, 'appended once');
+});
+
+test('consult O-F9: an approval that throws after claiming the suggestion gives the claim back', { skip }, async (t) => {
+  const { member } = fx.people;
+  await setTrust('conservative');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('f9doc'), 'Claimed plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  await askDefty({ asker: member, spaceId: dm, content: 'Please add a closing line', turns: [[appendCall(`toolu_m7_f9_${run}`, doc.id, `Gamma ${token('f9body')}`)]] });
+  const [suggestion] = await suggestionsOf(doc.id);
+  assert.ok(suggestion, 'the edit is a suggestion');
+  const review = await fx.request(member, 'GET', `/api/documents/${doc.id}/suggestions/${suggestion.id}`);
+  assert.equal(review.status, 200, await review.clone().text());
+  const revision = ((await review.json()) as any).suggestion.revision;
+  t.after(() => _setReviewerRecheckHookForTest(null));
+  _setReviewerRecheckHookForTest(async (point) => { if (point === 'before_decision') throw new Error('the database connection went away'); });
+  const applied = await fx.request(member, 'POST', `/api/documents/${doc.id}/suggestions/${suggestion.id}/apply`, { block_ids: 'all', revision });
+  _setReviewerRecheckHookForTest(null);
+  assert.notEqual(applied.status, 200, await applied.clone().text());
+  const [after] = await suggestionsOf(doc.id);
+  assert.equal(after.status, 'pending', 'the claim went back: the suggestion is listed and can be applied again');
+  assert.equal(after.claim_token, null);
+  await setTrust('standard');
+});
+
+test('consult O-F10: an edit\'s images follow the tool-image rule: the asker\'s own upload is linked, anyone else\'s is the placeholder', { skip }, async (t) => {
+  const { member, member2 } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('f10doc'), 'Images plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const makeFile = async (uploader: string) => {
+    const id = randomUUID();
+    await fx.client.query(`INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, attachment_kind)
+      VALUES ($1, $2, $3, 'x.png', 'image/png', 10, $4, 'image')`, [id, fx.orgId, uploader, `test/${id}`]);
+    return id;
+  };
+  const own = await makeFile(member);
+  const other = await makeFile(member2);
+  t.after(async () => {
+    await fx.client.query('DELETE FROM document_attachments WHERE file_id = ANY($1::text[])', [[own, other]]);
+    await fx.client.query('DELETE FROM files WHERE id = ANY($1::text[])', [[own, other]]);
+  });
+  await askDefty({ asker: member, spaceId: dm, content: 'Please add the two pictures',
+    turns: [[appendCall(`toolu_m7_f10_${run}`, doc.id, `![mine](/api/files/${own})\n\n![theirs](/api/files/${other})`)]] });
+  const [action] = await editActions(doc.id);
+  assert.equal(action?.approval_status, 'approved');
+  assert.ok(action.executed_at && !action.error, text(action));
+  const { rows: links } = await fx.client.query('SELECT file_id FROM document_attachments WHERE org_id = $1 AND document_id = $2', [fx.orgId, doc.id]);
+  assert.deepEqual(links.map((row) => row.file_id), [own], 'the asker\'s own upload is linked to the document');
+  const json = text(await documentJson(doc.id));
+  assert.ok(json.includes(own), 'its image is shown');
+  assert.ok(!json.includes(other), 'someone else\'s upload is not stored');
+  assert.ok(json.includes('Image not available: theirs'), `it is the placeholder: ${json}`);
 });

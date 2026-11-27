@@ -48,7 +48,7 @@ import {
 } from './document-send.js';
 import { isTaskPriority } from './task-priority.js';
 import { DOCUMENT_EDIT_ACTION, documentEditActionParams } from './agent-document-write-tools.js';
-import { draftTextOmittedFromMetadata, draftToolInputForStorage, isDraftTextAction } from './document-draft-params.js';
+import { draftTextOmittedFromMetadata, draftToolInputForStorage, editParamsWithSummarySize, isDraftTextAction } from './document-draft-params.js';
 import { DocumentEditRefused } from './document-edit.js';
 import { proposeDocumentEdit } from './document-suggestions.js';
 import { DocumentRefusal } from './documents.js';
@@ -107,7 +107,8 @@ function safeActionParamsForMessage(action: string, actionParams: unknown): unkn
   // M7 (rule C4): an edit's operations and a new document's title and Markdown
   // never reach a message; nor, since fix round 5, a note's or canvas's title
   // and content (draft text: the card reads the action, for its requester).
-  if (action === DOCUMENT_EDIT_ACTION) return documentEditActionParams(actionParams);
+  // Consult O-F4: an edit's summary as its size (its text is on the action, for its asker).
+  if (action === DOCUMENT_EDIT_ACTION) return editParamsWithSummarySize(actionParams);
   if (isDraftTextAction(action)) return draftToolInputForStorage(action, actionParams);
   if(action==='email_send')return {account_id:actionParams.account_id,draft_id:actionParams.draft_id,draft_revision:actionParams.draft_revision,content_digest:actionParams.content_digest,review_url:actionParams.review_url};
   return actionParams;

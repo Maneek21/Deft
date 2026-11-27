@@ -366,6 +366,8 @@ export async function runAgentQuery(params: {
    * only. Absent when no document tool named anything.
    */
   documents?: { shown: DocumentRef[]; withheld: WithheldRef[] };
+  /** M7 consult O-F3: the provider failed mid-run, so the text is the failure notice, not the model's account of what it did. */
+  providerFailed?: boolean;
   pendingActions: any[];
   executedActions: any[];
   // Phase 2 — last assistant API response, exposed so agent-reply can
@@ -630,6 +632,7 @@ export async function runAgentQuery(params: {
     },
   });
   let finalText = '';
+  let providerFailed = false;
   let intermediateText = ''; // Text from iterations with tool calls (preamble — usually discarded)
   // Phase 2 — capture metadata from the final API response so agent-reply
   // can populate metadata.agent_blocks / model / tokens_* parity with
@@ -695,6 +698,7 @@ export async function runAgentQuery(params: {
     } catch (err) {
       // A no-tools caller owns its fallback, so the failure reaches it.
       if (noTools) throw err;
+      providerFailed = true;
       finalText = 'I could not complete this lookup because the AI provider did not return a usable response. Please retry. This failure does not mean the requested records are missing.';
       break;
     }
@@ -856,6 +860,8 @@ export async function runAgentQuery(params: {
             askerMessageText: mode === 'chat_mention' && typeof params.askerMessageText === 'string' ? params.askerMessageText : null,
             conversationId: params.conversationId ?? null, sourceMessageId: params.sourceMessageId, toolUseId: tool.id,
             executeDirect: executeActionDirect, executeExisting: executeAction,
+            // Consult O-F2: a request that has ended (agent-reply's timeout, a lost job lease) writes nothing.
+            abortSignal: params.abortSignal,
           });
           if (outcome.pending) {
             // persistAgentReplyWithActions stores { document_id, summary } and makes the
@@ -1114,6 +1120,7 @@ export async function runAgentQuery(params: {
     citations: allCitations,
     ...(shownDocuments.size > 0 || withheldDocuments.length > 0
       ? { documents: { shown: [...shownDocuments.values()], withheld: withheldDocuments } } : {}),
+    ...(providerFailed ? { providerFailed: true } : {}),
     pendingActions,
     executedActions,
     model: reasonModel,

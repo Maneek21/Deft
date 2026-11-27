@@ -87,6 +87,8 @@ import { documentRoleFor, roleAtLeast } from './document-access.js';
 import { createVersionInTx, withAutomaticVersionsPaused } from './document-versions.js';
 import { DocumentRefusal } from './documents.js';
 import { DocumentWriteRefused, writeDocument } from './document-writer.js';
+import { imageFileIds, replaceImagesExcept } from './document-images.js';
+import { linkToolImagesInTx, toolImages, withInferredImageFileIds } from './note-tool-images.js';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Executor = typeof db | Tx;
@@ -422,18 +424,57 @@ function updateHighlights(doc: Y.Doc, change: (current: AgentHighlight[]) => Age
   });
 }
 
+/**
+ * The changed blocks with F15's tool-image rule (M7 consult O-F10): each
+ * image names the file the editor would read it as, and one the edit may
+ * not show (`keep`) becomes the "Image not available" placeholder.
+ */
+function withEditImages<R extends { json: JSONContent; changedBlockIds: string[] }>(result: R, keep: ReadonlySet<string>): R {
+  const changed = new Set(result.changedBlockIds);
+  const content = (result.json.content ?? []).map((node) => {
+    const id = idOf(node);
+    if (id === null || !changed.has(id)) return node;
+    const shown = replaceImagesExcept(withInferredImageFileIds(node), keep) as JSONContent;
+    // A block that was an image becomes the placeholder paragraph, keeping the block's id.
+    return idOf(shown) === id ? shown : { ...shown, attrs: { ...(shown.attrs ?? {}), id } };
+  });
+  return { ...result, json: { ...result.json, content } };
+}
+
+/**
+ * The images an edit may show (M7 consult O-F10, F15's rule as create_document
+ * applies it): of the images the operations' Markdown (or the accepted
+ * proposal's chosen blocks) name, the files the document already links and
+ * the asker's own unlinked uploads, which are linked to the document here, in
+ * the write's transaction. Every other image is shown as the placeholder.
+ */
+async function editImagesInTx(tx: Tx, i: { orgId: string; documentId: string; askerId: string; ops: DocumentEditOp[];
+  fromProposal?: JSONContent; selectedBlockIds?: string[] }): Promise<Set<string>> {
+  const chosen = i.selectedBlockIds ? new Set(i.selectedBlockIds) : null;
+  const blocks = i.fromProposal
+    ? (i.fromProposal.content ?? []).filter((node) => chosen === null || chosen.has(idOf(node) ?? ''))
+    : i.ops.flatMap((op) => ('markdown' in op ? blocksOf(op.markdown) : []));
+  if (blocks.length === 0) return new Set();
+  const images = await toolImages(tx, { orgId: i.orgId, uploaderId: i.askerId, documentId: i.documentId, json: { type: 'doc', content: blocks } as never });
+  await linkToolImagesInTx(tx, { orgId: i.orgId, uploaderId: i.askerId, documentId: i.documentId, fileIds: images.link });
+  return new Set(imageFileIds(images.json as JSONContent));
+}
+
 /** Runs the edit on the live document `doc` (the header); returns its edit_details. */
 function editInDoc(doc: Y.Doc, i: {
   actionId: string; agentUserId: string; askerId: string; summary: string; ops: DocumentEditOp[]; selectedBlockIds?: string[];
   fromProposal?: JSONContent;
+  /** The images the edit may show (editImagesInTx); every other image in a changed block becomes the placeholder. */
+  keepImages?: ReadonlySet<string>;
 }): EditDetails {
   const current = contentOf(doc);
   // An accepted suggestion applies its reviewed result block by block; a direct edit runs the operations.
-  const result = i.fromProposal
+  const applied = i.fromProposal
     ? applyProposalToJson(current, i.fromProposal, i.selectedBlockIds ?? [])
     : applyOpsToJson(current, i.ops, { idSeed: i.actionId, selectedBlockIds: i.selectedBlockIds });
-  if (result.missingBlockIds.length > 0) throw new DocumentEditRefused('BLOCK_NOT_FOUND', result.missingBlockIds);
-  if (result.changedBlockIds.length === 0 && i.fromProposal) throw new DocumentEditRefused('BLOCK_NOT_FOUND', []);
+  if (applied.missingBlockIds.length > 0) throw new DocumentEditRefused('BLOCK_NOT_FOUND', applied.missingBlockIds);
+  if (applied.changedBlockIds.length === 0 && i.fromProposal) throw new DocumentEditRefused('BLOCK_NOT_FOUND', []);
+  const result = i.keepImages ? withEditImages(applied, i.keepImages) : applied;
   applyToFragment(doc, result.json, result.changedBlockIds);
 
   const after = hashesOf(contentOf(doc));
@@ -515,7 +556,7 @@ export async function applyDocumentEditDirect(i: { orgId: string; documentId: st
   actionId: string; ops: DocumentEditOp[]; summary: string; selectedBlockIds?: string[] },
 opts: AgentEditWriteOptions = {}): Promise<{ versionId: string; changedBlockIds: string[] }> {
   const summary = i.summary.trim();
-  const outcome: { details: EditDetails | null; versionId: string | null } = { details: null, versionId: null };
+  const outcome: { details: EditDetails | null; versionId: string | null; keepImages: Set<string> } = { details: null, versionId: null, keepImages: new Set() };
   try {
     await withAutomaticVersionsPaused(i.orgId, i.documentId, () => writeDocument({
       orgId: i.orgId,
@@ -528,11 +569,15 @@ opts: AgentEditWriteOptions = {}): Promise<{ versionId: string; changedBlockIds:
         const already = await appliedEdit(tx, i.orgId, i.documentId, i.actionId);
         if (already) throw new AlreadyApplied(already);
         await opts.beforeWrite?.(tx);
+        // M7 consult O-F10: the images the edit may show, linked in this transaction.
+        outcome.keepImages = await editImagesInTx(tx, {
+          orgId: i.orgId, documentId: i.documentId, askerId: i.askerId, ops: i.ops, fromProposal: opts.fromProposal, selectedBlockIds: i.selectedBlockIds,
+        });
       },
       mutate: (doc) => {
         outcome.details = editInDoc(doc, {
           actionId: i.actionId, agentUserId: i.agentUserId, askerId: i.askerId, summary, ops: i.ops, selectedBlockIds: i.selectedBlockIds,
-          fromProposal: opts.fromProposal,
+          fromProposal: opts.fromProposal, keepImages: outcome.keepImages,
         });
       },
       // The credit commits with the content, or neither does.

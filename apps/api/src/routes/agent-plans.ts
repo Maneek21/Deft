@@ -94,7 +94,8 @@ async function withDestructiveMarks<T extends {
   // for a step not yet run only to the plan's creator
   // (lib/agent-plans.ts planWithDocumentReferences).
   const plan = planWithDocumentReferences(stored as NonNullable<T> & { steps: unknown[] },
-    { literals: readsPlanLiterals(stored, viewerId) });
+    // Consult S-F2: a document-touching plan's free text, like its literals, for its creator only.
+    { literals: readsPlanLiterals(stored, viewerId), freeText: readsPlanLiterals(stored, viewerId) });
   const hasMcpStep = plan.steps.some((step: any) => String(step?.tool ?? '').startsWith('mcp__'));
   const liveTools = hasMcpStep && plan.org_id
     ? await getMCPToolsForAgent(plan.org_id, plan.agent_employee_id ?? undefined).catch(() => [])
@@ -477,7 +478,7 @@ agentPlanRoutes.post('/:id/abort', async (c) => {
     }
 
     // M7 fix round 2: an ended plan keeps no literal document text in its steps.
-    const settled = planWithDocumentReferences({ steps: plan.steps, context: plan.context });
+    const settled = planWithDocumentReferences({ steps: plan.steps, context: plan.context }, { freeText: true });
     const [updated] = await db
       .update(agentPlans)
       .set({ status: 'failed', error: 'Aborted by user', steps: settled.steps, context: settled.context, updated_at: new Date() })

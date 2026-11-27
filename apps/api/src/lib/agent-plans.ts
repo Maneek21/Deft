@@ -317,32 +317,93 @@ export function documentStepParamsForStorage(tool: string, params: unknown, opti
   }
 }
 
+// ─── The keys a plan and its steps keep (M5–M7 consult S-F2) ───
+
+const STEP_STATUSES: ReadonlySet<string> = new Set(['pending', 'running', 'completed', 'failed', 'skipped', 'waiting_approval', 'skipped_due_to_failure']);
+const CONDITION_OPERATORS: ReadonlySet<string> = new Set(['eq', 'neq', 'gt', 'lt', 'contains', 'empty', 'not_empty']);
+
 /**
- * Steps as a plan stores them (createPlanRow, PUT /api/agent-plans/:id): each
- * document tool step's params through documentStepParamsForStorage, keeping
- * the literals written for the plan (fix round 2), with no result and no
- * stored mark of its own (only the executor sets those).
+ * A step rebuilt from a fixed key list (consult S-F2): the caller's `id`,
+ * `description`, `tool`, `params`, `depends_on` and `condition`, each only in
+ * its own type, and with `system`, the fields the executor and the routes
+ * write (`status`, `result`, `error`, `content_omitted`,
+ * `approved_by_user_id`). Every other key is dropped, so no text survives in
+ * a field nothing reviews. A step that isn't an object is returned as it is.
+ */
+function allowlistedStep(step: unknown, system: 'caller' | 'stored'): unknown {
+  if (!isPlainRecord(step)) return step;
+  const out: Record<string, unknown> = {};
+  if (typeof step.id === 'string') out.id = step.id;
+  if (typeof step.description === 'string') out.description = step.description;
+  if (typeof step.tool === 'string') out.tool = step.tool;
+  out.params = isPlainRecord(step.params) ? step.params : {};
+  if (Array.isArray(step.depends_on)) out.depends_on = step.depends_on.filter((id): id is string => typeof id === 'string');
+  if (isPlainRecord(step.condition) && typeof step.condition.field === 'string' && CONDITION_OPERATORS.has(step.condition.operator as string)) {
+    out.condition = { field: step.condition.field, operator: step.condition.operator, ...('value' in step.condition ? { value: step.condition.value } : {}) };
+  }
+  if (typeof step.status === 'string' && STEP_STATUSES.has(step.status)) out.status = step.status;
+  if (typeof step.error === 'string') out.error = step.error;
+  if (system === 'stored') {
+    if ('result' in step && step.result !== undefined) out.result = step.result;
+    if (step.content_omitted === true) out.content_omitted = true;
+    if (typeof step.approved_by_user_id === 'string') out.approved_by_user_id = step.approved_by_user_id;
+  }
+  return out;
+}
+
+/** True for a plan with a step that reads, searches, creates or edits a document, a note or a canvas (consult S-F2). */
+export function planTouchesDocuments(steps: unknown): boolean {
+  return Array.isArray(steps) && steps.some((step) => isPlainRecord(step) && typeof step.tool === 'string' && DOCUMENT_STEP_TOOLS.has(step.tool));
+}
+
+/** What anyone but its creator reads for a document-touching plan's title (consult S-F2). */
+export function neutralPlanTitle(steps: unknown[]): string {
+  return `Plan: ${steps.length} step${steps.length === 1 ? '' : 's'}`;
+}
+
+/** What anyone but its creator reads for a document-touching plan's step description (consult S-F2). */
+export function neutralStepDescription(index: number, tool: unknown): string {
+  return `Step ${index + 1}: ${typeof tool === 'string' ? tool : 'step'}`;
+}
+
+/**
+ * Steps as a plan stores them (createPlanRow, PUT /api/agent-plans/:id):
+ * each rebuilt from the fixed key list (consult S-F2; no result, no stored
+ * mark, no approver of the caller's: only the executor and the routes set
+ * those), and each document tool step's params through
+ * documentStepParamsForStorage, keeping the literals written for the plan
+ * (fix round 2).
  */
 export function planStepsForStorage<S>(steps: S[]): S[] {
-  return steps.map((step) => {
-    if (!isPlainRecord(step) || typeof step.tool !== 'string' || !DOCUMENT_STEP_TOOLS.has(step.tool)) return step;
-    const { result: _result, content_omitted: _omitted, ...rest } = step;
-    return { ...rest, params: documentStepParamsForStorage(step.tool, step.params, { literals: true }) } as S;
+  return steps.map((raw) => {
+    const step = allowlistedStep(raw, 'caller');
+    if (!isPlainRecord(step) || typeof step.tool !== 'string' || !DOCUMENT_STEP_TOOLS.has(step.tool)) return step as S;
+    return { ...step, params: documentStepParamsForStorage(step.tool, step.params, { literals: true }) } as S;
   });
 }
 
 /**
  * A create_plan call as a run keeps it (agent_blocks, the run's executed
- * actions: fix round 2): its document steps without their literal text,
- * which only the plan itself keeps, for its creator alone.
+ * actions: fix round 2): its title, description and steps only (consult
+ * S-F2), each step from the fixed key list, its document steps without
+ * their literal text, which only the plan itself keeps, for its creator
+ * alone. A plan with a document step keeps no free text either: its title,
+ * description and step descriptions are model-written and may be copied
+ * from a document, and run details reach more people than its creator.
  */
 export function createPlanInputForStorage(input: unknown): unknown {
   if (!isPlainRecord(input) || !Array.isArray(input.steps)) return input;
+  const touches = planTouchesDocuments(input.steps);
+  const steps = input.steps.map((raw: unknown, index: number) => {
+    const step = allowlistedStep(raw, 'caller');
+    if (!isPlainRecord(step)) return step;
+    const params = typeof step.tool === 'string' && DOCUMENT_STEP_TOOLS.has(step.tool) ? documentStepParamsForStorage(step.tool, step.params) : step.params;
+    return { ...step, params, ...(touches ? { description: neutralStepDescription(index, step.tool) } : {}) };
+  });
   return {
-    ...input,
-    steps: input.steps.map((step: unknown) => (isPlainRecord(step) && typeof step.tool === 'string' && DOCUMENT_STEP_TOOLS.has(step.tool)
-      ? { ...step, params: documentStepParamsForStorage(step.tool, step.params) }
-      : step)),
+    title: touches ? neutralPlanTitle(input.steps) : (typeof input.title === 'string' ? input.title : ''),
+    ...(!touches && typeof input.description === 'string' ? { description: input.description } : {}),
+    steps,
   };
 }
 
@@ -408,13 +469,21 @@ function documentStepResultForStorage(tool: string, params: unknown, result: unk
  *   the executor) and only while the plan hasn't ended;
  * - each context entry of a document tool step: its result as references.
  */
-export function planWithDocumentReferences<T extends { steps: unknown; context?: unknown; status?: unknown }>(
-  plan: T, options: { literals?: boolean } = {},
+export function planWithDocumentReferences<T extends { steps: unknown; context?: unknown; status?: unknown; title?: unknown; description?: unknown }>(
+  plan: T, options: { literals?: boolean; freeText?: boolean } = {},
 ): T {
   if (!Array.isArray(plan.steps)) return plan;
   const literals = options.literals === true && !SETTLED_PLAN_STATUSES.has(String(plan.status));
+  // Consult S-F2: a plan with a document step shows its title, description
+  // and step descriptions only to its creator (`freeText`, which the executor
+  // and the creator's payloads pass); anyone else, a fallback admin included,
+  // reads "Plan: N steps" and "Step N: {tool}".
+  const neutral = options.freeText !== true && planTouchesDocuments(plan.steps);
   const context = isPlainRecord(plan.context) ? { ...plan.context } : plan.context;
-  const steps = plan.steps.map((step: unknown) => {
+  const steps = plan.steps.map((raw: unknown, index: number) => {
+    // Consult S-F2: every step from the fixed key list, whatever was stored.
+    const allowed = allowlistedStep(raw, 'stored');
+    const step = neutral && isPlainRecord(allowed) ? { ...allowed, description: neutralStepDescription(index, allowed.tool) } : allowed;
     if (!isPlainRecord(step) || typeof step.tool !== 'string' || !DOCUMENT_STEP_TOOLS.has(step.tool)) return step;
     const tool = step.tool;
     const { content_omitted: marked, result, params, ...rest } = step;
@@ -432,7 +501,10 @@ export function planWithDocumentReferences<T extends { steps: unknown; context?:
       ...(completed ? { content_omitted: true } : {}),
     };
   });
-  return { ...plan, steps, context };
+  return {
+    ...plan, steps, context,
+    ...(neutral ? { title: neutralPlanTitle(plan.steps), description: null } : {}),
+  };
 }
 
 /** Plans with connected steps are created and approved for workspace members. */
@@ -837,7 +909,7 @@ async function executePlanUnlocked(
   // Every document step and its context entry rebuilt from the allowlist,
   // whenever the plan was stored (I2); a step not yet run keeps the literals
   // written for it (fix round 2). The first progress write below stores it so.
-  const rebuilt = planWithDocumentReferences({ steps: plan.steps, context: plan.context, status: plan.status }, { literals: true });
+  const rebuilt = planWithDocumentReferences({ steps: plan.steps, context: plan.context, status: plan.status }, { literals: true, freeText: true });
   const steps = rebuilt.steps as PlanStep[];
   const context: PlanContext = (rebuilt.context as PlanContext) ?? {};
   const planStepIds: ReadonlySet<string> = new Set(steps.map((candidate) => candidate.id));
@@ -865,7 +937,8 @@ async function executePlanUnlocked(
     }
   };
   // A plan that ends keeps no literal either (fix round 2).
-  const settledPlan = () => planWithDocumentReferences({ steps, context });
+  // Stored: the creator's free text is kept (consult S-F2 projects it per viewer).
+  const settledPlan = () => planWithDocumentReferences({ steps, context }, { freeText: true });
   const completeStep = (step: PlanStep, ranWith: Record<string, any>, result: unknown) => {
     step.status = 'completed';
     liveResults[step.id] = { result };
