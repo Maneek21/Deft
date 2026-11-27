@@ -960,3 +960,50 @@ test('fix round 2 (N2): an apply that cannot get the approval lease in time answ
   assert.equal((await action(s.actionId)).approval_status, 'pending');
   assert.deepEqual(await blocks(d.id), before);
 });
+
+// ---------------------------------------------------------------------------
+// Fix round 3 (re-review: residual I1)
+
+test('fix round 3 (I1): a request that loses its lease inside preparation never takes over the claim of the request now holding the lease', { skip: !url && SKIP }, async () => {
+  const d = await threeBlocks();
+  const before = await blocks(d.id);
+  const s = await suggest(d, { ops: [{ op: 'replace', block_id: d.a, markdown: 'Alpha, tightened' }, { op: 'replace', block_id: d.b, markdown: 'Beta, tightened' }] });
+  const at = await revision(d.id);
+  const key = `agent-approval:${s.actionId}`;
+  let bHoldsLease = false;
+  suggestionsModule._setSuggestionClaimPauseForTest(async (id) => {
+    if (id !== s.actionId) return;
+    // 1. Request A has passed its lease check and is inside preparation: it loses its lease and pauses.
+    const pid = await leaseHolderPid(s.actionId);
+    assert.ok(pid, 'request A holds the lease');
+    await fx!.client.query('SELECT pg_terminate_backend($1)', [pid]);
+    await pollUntil(async () => (await leaseHolderPid(s.actionId)) === null, "A's lease is gone");
+    // 2. Request B takes the lease and claims, block B only.
+    await fx!.client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
+    bHoldsLease = true;
+    const claimedByB = await fx!.client.query(`UPDATE document_suggestions
+      SET status = 'applying', claim_token = 'request-b', selected_block_ids = ARRAY[$2], reviewed_revision = $3, updated_at = now()
+      WHERE id = $1 AND status = 'pending'`, [s.suggestionId, d.b, at]);
+    assert.equal(claimedByB.rowCount, 1, 'request B claimed');
+    // 3. B is delayed before deciding the action, and its claim ages past two minutes.
+    await fx!.client.query("UPDATE document_suggestions SET updated_at = now() - interval '3 minutes' WHERE id = $1", [s.suggestionId]);
+    // 4. A resumes.
+  });
+  let answer: { status: number; body: any };
+  try {
+    answer = await call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: [d.a], revision: at });
+  } finally {
+    suggestionsModule._setSuggestionClaimPauseForTest(null);
+    if (bHoldsLease) await fx!.client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+  }
+  assert.ok(bHoldsLease, 'request B took the lease while A was paused');
+  // B's claim is exactly as B left it: A changed nothing.
+  const { rows: [claim] } = await fx!.client.query(`SELECT status, claim_token, selected_block_ids, reviewed_revision::int AS reviewed_revision,
+      updated_at < now() - interval '2 minutes' AS still_aged
+    FROM document_suggestions WHERE id = $1`, [s.suggestionId]);
+  assert.deepEqual(claim, { status: 'applying', claim_token: 'request-b', selected_block_ids: [d.b], reviewed_revision: at, still_aged: true });
+  assert.equal(answer!.status, 409, JSON.stringify(answer!.body));
+  assert.equal(answer!.body.code, 'SUGGESTION_ALREADY_RESOLVING');
+  assert.equal((await action(s.actionId)).approval_status, 'pending');
+  assert.deepEqual(await blocks(d.id), before);
+});

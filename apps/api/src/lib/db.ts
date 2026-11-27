@@ -1,5 +1,6 @@
 import { handleDatabaseConnectionErrors, connectionFailure } from './database-connection-errors.js';
-import { drizzle } from 'drizzle-orm/node-postgres';
+import { sql } from 'drizzle-orm';
+import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import * as schema from '@deft/db/schema';
 import { env } from './env.js';
@@ -84,6 +85,12 @@ export async function withDbAdvisoryLock<T>(
 
 export type DbAdvisoryLease = { readonly lost: boolean };
 
+/** A transaction on `db` (or on a lease's own connection: the same type). */
+export type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Each live lease's own connection, the session holding its lock, while its run lasts. */
+const leaseConnections = new WeakMap<DbAdvisoryLease, { client: pg.PoolClient; db?: NodePgDatabase<typeof schema> }>();
+
 /**
  * How long a non-waiting lease may wait for an advisory-pool connection.
  * The pool is small (two connections) and plans hold one for a whole plan,
@@ -147,6 +154,7 @@ export async function withDbAdvisoryLease<T>(
   const onEnd = () => { lostError ??= new Error('advisory lease connection ended'); };
   client.on('error', onError);
   client.on('end', onEnd);
+  const lease: DbAdvisoryLease = { get lost() { return lostError !== null; } };
   let acquired = false;
   try {
     if (options.wait && deadline !== undefined) {
@@ -174,12 +182,13 @@ export async function withDbAdvisoryLease<T>(
       acquired = locked.rows[0]?.acquired === true;
     }
     if (!acquired) return { acquired: false, reason: 'held' };
-    const lease: DbAdvisoryLease = { get lost() { return lostError !== null; } };
+    leaseConnections.set(lease, { client });
     return { acquired: true, value: await run(lease) };
   } catch (error) {
     lostError = error instanceof Error ? error : new Error(String(error));
     throw error;
   } finally {
+    leaseConnections.delete(lease);
     let releaseError: Error | undefined = lostError ?? undefined;
     if (acquired && !releaseError) {
       try {
@@ -191,6 +200,48 @@ export async function withDbAdvisoryLease<T>(
     client.off('error', onError);
     client.off('end', onEnd);
     client.release(releaseError);
+  }
+}
+
+/** A driver or server error saying the connection itself is gone, not that the statement failed. */
+function connectionGone(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  while (error instanceof Error && !seen.has(error)) {
+    seen.add(error);
+    const code = (error as Error & { code?: unknown }).code;
+    if (typeof code === 'string' && /^(57P0[1-3]|08|ECONNRESET|EPIPE)/.test(code)) return true;
+    if (/connection terminated|client (?:has encountered a connection error and is|was closed and is) not queryable/i.test(error.message)) return true;
+    error = error.cause;
+  }
+  return false;
+}
+
+/**
+ * Runs `write` in a transaction on the lease's own connection, the session
+ * that holds the advisory lock. PostgreSQL keeps the lock exactly as long as
+ * that session, so the write commits only while its writer really holds the
+ * lease. A writer whose lease was lost, even one that hasn't noticed yet,
+ * writes nothing: its statement fails on the dead session, and the answer is
+ * `{ held: false }`. So is a lease not made by withDbAdvisoryLease (it has no
+ * connection), or one whose run has ended. Statements keep the ordinary pool's
+ * 30 s statement timeout. Any other failure is thrown.
+ */
+export async function writeUnderDbAdvisoryLease<T>(
+  lease: DbAdvisoryLease,
+  write: (tx: DbTransaction) => Promise<T>,
+): Promise<{ held: true; value: T } | { held: false }> {
+  const connection = leaseConnections.get(lease);
+  if (!connection) return { held: false };
+  connection.db ??= drizzle(connection.client, { schema });
+  try {
+    const value = await connection.db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL statement_timeout = '30s'`);
+      return write(tx);
+    });
+    return { held: true, value };
+  } catch (error) {
+    if (lease.lost || connectionGone(error)) return { held: false };
+    throw error;
   }
 }
 

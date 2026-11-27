@@ -45,11 +45,13 @@
 // and every later write by that request (putting the claim back, the
 // executor's outcome, a failure's cancellation) matches it, so a request
 // whose claim was taken over, or whose lease was lost, changes nothing (409
-// SUGGESTION_ALREADY_RESOLVING). Only the lease holder claims, and a request
-// that loses the race waits for the lease (at most 10 s on the apply path)
-// and then finds the action decided. A claim is taken over only once it is
-// older than two minutes with its action still pending, which no live
-// request's is. A moved document is 409 REVISION_CHANGED from the review, or
+// SUGGESTION_ALREADY_RESOLVING). Only the lease holder claims: the claim is
+// written on the lease's own connection, the session holding the lock, so it
+// commits only while that lock is held (fix round 3). A request that loses
+// the race waits for the lease (at most 10 s on the apply path) and then
+// finds the action decided. A claim is taken over only once it is older than
+// two minutes with its action still pending, and only by a request holding
+// the lease. A moved document is 409 REVISION_CHANGED from the review, or
 // REVIEW_IN_DOCUMENT from the card, which sends the asker to the review. A
 // claim whose approval stops short goes back to pending before the lease is
 // released.
@@ -95,7 +97,7 @@ import { blockHash, topLevelBlocks } from '@deft/doc-schema';
 import { deriveContent, type JSONContent } from '../collab/persistence.js';
 import { readCurrentDocument } from '../collab/server.js';
 import { resolveAttentionBySource } from './attention.js';
-import { db } from './db.js';
+import { db, writeUnderDbAdvisoryLease, type DbAdvisoryLease } from './db.js';
 import { DEFTY_EMAIL } from './defty-identity.js';
 import { documentRoleFor, roleAtLeast } from './document-access.js';
 import { DOCUMENT_ACCESS_LOST_RESOLUTION, onAccessLossInTx, type DocumentAccessChange } from './document-access-change.js';
@@ -122,8 +124,9 @@ export const SUGGESTION_ACCESS_LOST_REASON = 'Cancelled: the person who asked ca
 /**
  * A claim older than this whose approval never started was left by a request
  * that ended: the next approval of the action may take it over, and the daily
- * repair puts it back. A live claim is seconds old, so a request whose lease
- * was lost without its knowing can never take over a live holder's claim.
+ * repair puts it back. Both write on their lease's own connection (fix round
+ * 3), so only a writer that really holds the lease takes a claim over; age
+ * alone never lets a request that lost its lease overwrite the holder's claim.
  */
 const STALE_CLAIM_MS = 2 * 60 * 1000;
 /** How long an apply from the document review waits for the action's approval lease. */
@@ -131,6 +134,9 @@ let applyLeaseWaitMs = 10_000;
 export function suggestionApplyLeaseWaitMs(): number { return applyLeaseWaitMs; }
 /** Test seam: the apply path's lease deadline. */
 export function _setSuggestionApplyLeaseWaitForTest(ms: number): void { applyLeaseWaitMs = ms; }
+/** Test seam: awaited inside preparation, after the lease check and just before the claim's write. */
+let claimPauseForTest: ((actionId: string) => Promise<void>) | null = null;
+export function _setSuggestionClaimPauseForTest(hook: ((actionId: string) => Promise<void>) | null): void { claimPauseForTest = hook; }
 /** Rows handled per transaction by the daily passes; the next day takes the rest. */
 const BATCH = 500;
 
@@ -326,8 +332,8 @@ export async function releaseSuggestionClaimInTx(x: Executor, actionId: string, 
 
 /**
  * A claim left by a request that ended (older than STALE_CLAIM_MS, its
- * action still pending) back to pending: the daily repair, under the
- * action's approval lease.
+ * action still pending) back to pending: the daily repair, on the action's
+ * approval lease's own connection (writeUnderDbAdvisoryLease, fix round 3).
  */
 async function releaseStaleClaimInTx(x: Executor, actionId: string): Promise<void> {
   await x.execute(sql`UPDATE document_suggestions stale
@@ -353,10 +359,13 @@ export type SuggestionClaimResult = { claimToken: string | null; refusal?: undef
  * Claims an `edit_document` action's suggestion for this approval, with a
  * new claim token that every later write by this request must match
  * (releaseSuggestionClaimInTx, syncSuggestionWithAction, the executor). The
- * approval resolver runs it while it holds the action's approval lease,
- * after the reviewer rule and as late as it can before claiming the action
- * (fix rounds 1 and 2, I1): so only the lease holder claims, and a request
- * that loses the race, or its lease, never changes the row.
+ * approval resolver runs it under the action's approval `lease`, after the
+ * reviewer rule and as late as it can before claiming the action (fix rounds
+ * 1 and 2, I1). The claim is written on the lease's own connection
+ * (writeUnderDbAdvisoryLease, fix round 3), so it commits only while this
+ * request really holds the lease: a request that loses the race, or loses
+ * its lease at any point before the write commits, never changes the row
+ * and gets SUGGESTION_ALREADY_RESOLVING.
  *
  * With `request` (the document review) the claim takes the asker's blocks
  * and the revision they reviewed; without (the chat card, the Inbox, MCP) it
@@ -369,7 +378,8 @@ export type SuggestionClaimResult = { claimToken: string | null; refusal?: undef
  * while another request holds a live claim or once it is settled. An action
  * with no suggestion goes on unclaimed, and the executor answers it.
  */
-export async function prepareSuggestionForApproval(orgId: string, actionId: string, request: SuggestionClaim | null): Promise<SuggestionClaimResult> {
+export async function prepareSuggestionForApproval(orgId: string, actionId: string, request: SuggestionClaim | null,
+  lease: DbAdvisoryLease): Promise<SuggestionClaimResult> {
   const [s] = await db.select({
     id: documentSuggestions.id, changed: documentSuggestions.changed_block_ids, baseRevision: documentSuggestions.base_revision,
   }).from(documentSuggestions).where(and(eq(documentSuggestions.action_id, actionId), eq(documentSuggestions.org_id, orgId))).limit(1);
@@ -380,7 +390,11 @@ export async function prepareSuggestionForApproval(orgId: string, actionId: stri
   }
   const revision = request ? request.reviewedRevision : s.baseRevision;
   const claimToken = randomUUID();
-  const claimed = await db.update(documentSuggestions)
+  if (claimPauseForTest) await claimPauseForTest(actionId);
+  // Written on the lease's own connection (fix round 3): it commits only while
+  // this request's session, and so its lock, is alive. A request whose lease
+  // was lost at any point before the commit claims nothing, whatever it checked earlier.
+  const written = await writeUnderDbAdvisoryLease(lease, (tx) => tx.update(documentSuggestions)
     .set({ status: 'applying', claim_token: claimToken, selected_block_ids: selected, reviewed_revision: revision, updated_at: new Date() })
     .where(and(
       eq(documentSuggestions.id, s.id),
@@ -391,8 +405,9 @@ export async function prepareSuggestionForApproval(orgId: string, actionId: stri
       sql`EXISTS (SELECT 1 FROM ${documents} WHERE ${documents.org_id} = ${documentSuggestions.org_id}
         AND ${documents.id} = ${documentSuggestions.document_id} AND NOT ${documents.is_deleted} AND ${documents.revision} = ${revision})`,
     ))
-    .returning({ id: documentSuggestions.id });
-  if (claimed.length > 0) return { claimToken };
+    .returning({ id: documentSuggestions.id }));
+  if (!written.held) return { claimToken: null, refusal: { code: 'SUGGESTION_ALREADY_RESOLVING', message: RESOLVING_MESSAGE } };
+  if (written.value.length > 0) return { claimToken };
   const [after] = await db.select({ status: documentSuggestions.status }).from(documentSuggestions)
     .where(eq(documentSuggestions.id, s.id)).limit(1);
   return {
@@ -894,9 +909,10 @@ export async function repairSuggestions(now: Date): Promise<void> {
   // Loaded when needed: the lease module imports the executor's module, which imports this one.
   const { tryWithApprovalLease } = await import('./agent-action-execution-lease.js');
   for (const row of rows) {
-    await tryWithApprovalLease(row.actionId, { acquireTimeoutMs: 250 }, async () => {
+    await tryWithApprovalLease(row.actionId, { acquireTimeoutMs: 250 }, async (lease) => {
       if (row.actionStatus === 'pending') {
-        await releaseStaleClaimInTx(db, row.actionId);
+        // On the lease's own connection, as a claim is: a repair that lost its lease releases nothing.
+        await writeUnderDbAdvisoryLease(lease, (tx) => releaseStaleClaimInTx(tx, row.actionId));
         return;
       }
       const outcome = row.actionStatus === 'rejected' ? 'rejected' : 'cancelled';

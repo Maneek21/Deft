@@ -1544,7 +1544,7 @@ async function approveActionLocked(
   // still be at the revision the asker saw, or nothing changes.
   if (row.action === DOCUMENT_EDIT_ACTION && !resumesApprovedModule) {
     if (lease.lost) return leaseLost(actionId);
-    const claim = await prepareSuggestionForApproval(row.org_id, row.id, options.suggestionClaim ?? null);
+    const claim = await prepareSuggestionForApproval(row.org_id, row.id, options.suggestionClaim ?? null, lease);
     if (claim.refusal) return { status: 'error', code: claim.refusal.code, message: claim.refusal.message };
     if (claim.claimToken && options.seen) options.seen.suggestionToken = claim.claimToken;
   }
