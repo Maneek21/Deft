@@ -124,6 +124,25 @@ describe('heartbeat loop detector', { skip: !url }, () => {
     assert.equal(after.turns[0], 'queued');
   });
 
+  test('after an owner clears the breaker, the old loop does not trip it again; a new one does', async (t) => {
+    if (!ready) { t.skip(unavailable); return; }
+    const emp = await employee();
+    for (let i = 0; i < 5; i += 1) await action(emp, 'message_post', { content: 'Same text' }, 600 - i);
+    await handleAgentEmployeeHeartbeat({} as any);
+    assert.equal((await state(emp.id)).unhealthy, true, 'tripped');
+    // An owner clears it (PATCH /api/agent-employees/:id { mark_healthy: true }), and the next tick is due.
+    await q('UPDATE agent_employees SET unhealthy = false, unhealthy_reason = null, last_heartbeat_at = null WHERE id = $1', [emp.id]);
+    await handleAgentEmployeeHeartbeat({} as any);
+    const recovered = await state(emp.id);
+    assert.equal(recovered.unhealthy, false, 'the writes before the trip are not counted again');
+    assert.equal(recovered.ticks, 1, 'the recovered employee gets its tick');
+    // Five new identical writes after recovery trip it again.
+    for (let i = 0; i < 5; i += 1) await action(emp, 'message_post', { content: 'Again' }, -1 - i);
+    await q('UPDATE agent_employees SET last_heartbeat_at = null WHERE id = $1', [emp.id]);
+    await handleAgentEmployeeHeartbeat({} as any);
+    assert.equal((await state(emp.id)).unhealthy, true, 'a new loop trips it');
+  });
+
   test('fewer than five writes never trip it, whatever else the employee queued', async (t) => {
     if (!ready) { t.skip(unavailable); return; }
     const emp = await employee();

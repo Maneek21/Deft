@@ -17,7 +17,7 @@ import {
   agentEmployees,
   agentHeartbeatTurns,
 } from '@deft/db/schema';
-import { eq, and, desc, inArray, sql } from 'drizzle-orm';
+import { eq, and, desc, gt, inArray, sql } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { HEARTBEAT_PROMPT_FORMAT } from '../../lib/heartbeat-tick-scrub.js';
 
@@ -113,12 +113,23 @@ const LOOP_WRITES = [...LOOP_TASK_WRITES, ...LOOP_MESSAGE_WRITES];
  * a human has to unwedge it. Only writes are read: the work rows Deft
  * queues for the employee (`heartbeat_tick`, `chat_mention`,
  * `trigger_dispatch`, `task_assigned`) are not the employee's own
- * actions, and used to hide every loop (RC13B on 157).
+ * actions, and used to hide every loop (RC13B on 157). Writes before the
+ * employee's latest skipped_unhealthy turn are not read: once an owner or
+ * admin clears the breaker, the loop that tripped it does not trip it again.
  */
 async function detectActionLoop(
   employeeId: string,
 ): Promise<{ loop: true; reason: string } | { loop: false }> {
   try {
+    const [lastBreak] = await db
+      .select({ at: agentHeartbeatTurns.fired_at })
+      .from(agentHeartbeatTurns)
+      .where(and(
+        eq(agentHeartbeatTurns.agent_employee_id, employeeId),
+        eq(agentHeartbeatTurns.outcome, 'skipped_unhealthy'),
+      ))
+      .orderBy(desc(agentHeartbeatTurns.fired_at))
+      .limit(1);
     const rows = await db
       .select({
         action: agentActions.action,
@@ -128,6 +139,7 @@ async function detectActionLoop(
       .where(and(
         eq(agentActions.agent_employee_id, employeeId),
         inArray(agentActions.action, LOOP_WRITES),
+        lastBreak?.at ? gt(agentActions.created_at, lastBreak.at) : undefined,
       ))
       .orderBy(desc(agentActions.created_at))
       .limit(5);
