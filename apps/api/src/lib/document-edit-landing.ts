@@ -14,15 +14,21 @@
 //  3. The workspace trust level is Conservative: suggest. A level that is
 //     neither Standard nor Autonomous counts as Conservative.
 //  4. The drive requires suggestions (`agent_suggest_only`): suggest.
-//  5. The request. The model's `mode` argument (`requestOverride`) can only
-//     lower a landing: 'suggest' gives a suggestion (`request_suggest`).
-//     'direct' goes straight in (`request_direct`) only when the asker's own
-//     triggering message holds one of DIRECT_EDIT_PHRASES
-//     (askerRequestedDirect, owner, 25 Nov). Without the phrase, 'direct'
-//     counts for nothing and rule 6 decides, and the phrase without the
-//     model's 'direct' raises nothing either. The message is the asker's own
-//     words, passed by the caller: never document text, a tool result or the
-//     model's arguments, so nothing the agent read can make an edit direct.
+//  5. The request (owner, 25 Nov; controller ruling on M5, 27 Nov). The
+//     model's `mode` argument (`requestOverride`) can only lower a landing:
+//     - the model asks 'suggest': a suggestion (`request_suggest`), even when
+//       the asker said "just do it";
+//     - otherwise, the asker's own triggering message holds one of
+//       DIRECT_EDIT_PHRASES (askerRequestedDirect): straight in
+//       (`request_direct`). The asker's words are the request; the model
+//       needn't ask as well;
+//     - the model asks 'direct' without the phrase: a suggestion
+//       (`request_suggest`: a direct request nobody confirmed counts as a
+//       request to suggest), whatever the setting;
+//     - neither: rule 6 decides.
+//     The message is the asker's own words, passed by the caller: never
+//     document text, a tool result or the model's arguments, so nothing the
+//     agent read can make an edit direct.
 //  6. The asker's setting (agentEditModeFor; `suggest_when_open` when they
 //     have saved none): `direct` goes straight in; `suggest` suggests;
 //     `suggest_when_open` suggests while another person has the document open
@@ -72,7 +78,7 @@ export type EditLandingInput = {
   drive: { kind: DriveKind; ownerUserId: string | null; agentSuggestOnly: boolean };
   /** The asker's setting (agentEditModeFor). */
   mode: AgentEditMode;
-  /** The model's `mode` argument: 'suggest' lowers the landing; 'direct' counts only with the phrase (rule 5). */
+  /** The model's `mode` argument: 'suggest' lowers the landing; 'direct' without the asker's phrase is a suggestion (rule 5). */
   requestOverride: 'direct' | 'suggest' | null;
   /**
    * The asker's own triggering message, as they wrote it, and nothing else:
@@ -84,7 +90,7 @@ export type EditLandingInput = {
   otherHumansOpen: boolean;
 };
 
-/** The words in the asker's own message that let the model's `mode: 'direct'` put an edit straight in (owner, 25 Nov). */
+/** The words in the asker's own message that put an edit straight in (owner, 25 Nov), unless the model lowers it. */
 export const DIRECT_EDIT_PHRASES = ['just do it', 'go ahead and edit', 'apply it', 'apply directly', 'make the change', 'edit it directly', "don't suggest"];
 
 /** A letter, digit or underscore in any script: a phrase must not run into one on either side. */
@@ -124,7 +130,8 @@ export function decideEditLanding(i: EditLandingInput): EditLanding {
   if (i.trustLevel !== 'standard' && i.trustLevel !== 'autonomous') return { landing: 'suggest', reason: 'conservative_trust' };
   if (i.drive.agentSuggestOnly !== false) return { landing: 'suggest', reason: 'drive_suggest_only' };
   if (i.requestOverride === 'suggest') return { landing: 'suggest', reason: 'request_suggest' };
-  if (i.requestOverride === 'direct' && askerRequestedDirect(i.askerMessageText ?? '')) return { landing: 'direct', reason: 'request_direct' };
+  if (askerRequestedDirect(i.askerMessageText ?? '')) return { landing: 'direct', reason: 'request_direct' };
+  if (i.requestOverride !== null && i.requestOverride !== undefined) return { landing: 'suggest', reason: 'request_suggest' };
   switch (i.mode) {
     case 'direct':
       return { landing: 'direct', reason: 'mode_direct' };

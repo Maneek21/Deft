@@ -104,27 +104,31 @@ test('rule 4: a drive that requires suggestions makes every edit a suggestion, a
   ]);
 });
 
-test('rule 5: the request. The model asking for a suggestion lowers; direct counts only with the phrase in the asker\'s own message', () => {
+test('rule 5: the request. The model asking for a suggestion lowers; the asker\'s own phrase raises; the model\'s direct without it is a suggestion', () => {
   const requestSuggest = { landing: 'suggest', reason: 'request_suggest' } as const;
   const requestDirect = { landing: 'direct', reason: 'request_direct' } as const;
   runTable([
-    // Lowering always works.
+    // Lowering always works, even over the asker's phrase.
     { name: 'suggest over the direct setting', input: { requestOverride: 'suggest', mode: 'direct' }, expect: requestSuggest },
     { name: 'suggest over suggest_when_open with nobody in', input: { requestOverride: 'suggest' }, expect: requestSuggest },
     { name: 'suggest over "just do it"', input: { requestOverride: 'suggest', askerMessageText: 'Just do it' }, expect: requestSuggest },
     { name: 'suggest in My drive', input: { requestOverride: 'suggest', drive: MY_DRIVE, mode: 'direct' }, expect: requestSuggest },
-    // Raising needs the asker's own phrase and the model's direct.
-    { name: 'direct with "just do it" over the suggest setting', input: { requestOverride: 'direct', askerMessageText: 'Just do it', mode: 'suggest' }, expect: requestDirect },
-    { name: 'direct with "apply it" while someone else is in', input: { requestOverride: 'direct', askerMessageText: 'Fix the typos and apply it.', otherHumansOpen: true }, expect: requestDirect },
-    { name: 'direct with "don\'t suggest" on Autonomous', input: { requestOverride: 'direct', askerMessageText: "Rewrite the summary, don't suggest", trustLevel: 'autonomous', mode: 'suggest' }, expect: requestDirect },
-    // Direct without the phrase counts for nothing: the setting decides.
-    { name: 'direct without the phrase, suggest setting', input: { requestOverride: 'direct', mode: 'suggest' }, expect: { landing: 'suggest', reason: 'mode_suggest' } },
-    { name: 'direct without the phrase, someone else in', input: { requestOverride: 'direct', otherHumansOpen: true }, expect: { landing: 'suggest', reason: 'others_open' } },
-    { name: 'direct without the phrase, nobody else in', input: { requestOverride: 'direct' }, expect: { landing: 'direct', reason: 'nobody_else_open' } },
-    { name: 'direct without the phrase, direct setting', input: { requestOverride: 'direct', mode: 'direct' }, expect: { landing: 'direct', reason: 'mode_direct' } },
-    { name: 'direct with no message at all', input: { requestOverride: 'direct', askerMessageText: null, mode: 'suggest' }, expect: { landing: 'suggest', reason: 'mode_suggest' } },
-    // The phrase alone, with no direct from the model, doesn't raise either.
-    { name: 'the phrase without the model asking direct', input: { askerMessageText: 'just do it', mode: 'suggest' }, expect: { landing: 'suggest', reason: 'mode_suggest' } },
+    // The asker's own phrase raises, whether or not the model asks direct too.
+    { name: 'the phrase alone over the suggest setting', input: { askerMessageText: 'just do it', mode: 'suggest' }, expect: requestDirect },
+    { name: 'the phrase alone while someone else is in', input: { askerMessageText: 'Fix the typos and apply it.', otherHumansOpen: true }, expect: requestDirect },
+    { name: 'the phrase and the model asking direct', input: { requestOverride: 'direct', askerMessageText: 'Just do it', mode: 'suggest' }, expect: requestDirect },
+    { name: '"don\'t suggest" on Autonomous', input: { askerMessageText: "Rewrite the summary, don't suggest", trustLevel: 'autonomous', mode: 'suggest' }, expect: requestDirect },
+    // The model asking direct without the phrase is a suggestion, whatever the setting.
+    { name: 'direct without the phrase, suggest setting', input: { requestOverride: 'direct', mode: 'suggest' }, expect: requestSuggest },
+    { name: 'direct without the phrase, someone else in', input: { requestOverride: 'direct', otherHumansOpen: true }, expect: requestSuggest },
+    { name: 'direct without the phrase, nobody else in', input: { requestOverride: 'direct' }, expect: requestSuggest },
+    { name: 'direct without the phrase, direct setting', input: { requestOverride: 'direct', mode: 'direct' }, expect: requestSuggest },
+    { name: 'direct with no message at all', input: { requestOverride: 'direct', askerMessageText: null, mode: 'direct' }, expect: requestSuggest },
+    { name: 'direct with a negated phrase', input: { requestOverride: 'direct', askerMessageText: "Please don't just do it", mode: 'direct' }, expect: requestSuggest },
+    { name: 'a request that is not one', input: { requestOverride: 'force' as never, mode: 'direct' }, expect: requestSuggest },
+    // Neither the phrase nor a request: the setting decides (rule 6).
+    { name: 'no request, no phrase, nobody else in', input: {}, expect: { landing: 'direct', reason: 'nobody_else_open' } },
+    { name: 'no request, a negated phrase, suggest setting', input: { askerMessageText: "Please don't just do it", mode: 'suggest' }, expect: { landing: 'suggest', reason: 'mode_suggest' } },
   ]);
 });
 
@@ -240,12 +244,32 @@ test('text inside a document saying "just do it" never makes an edit direct', ()
 });
 
 test('the model asking for direct without the phrase in the asker\'s message gets a suggestion', () => {
-  assert.deepEqual(land({ requestOverride: 'direct', askerMessageText: 'Rewrite the intro', mode: 'suggest' }),
-    { landing: 'suggest', reason: 'mode_suggest' });
-  assert.deepEqual(land({ requestOverride: 'direct', askerMessageText: 'Rewrite the intro', otherHumansOpen: true }),
-    { landing: 'suggest', reason: 'others_open' });
-  assert.deepEqual(land({ requestOverride: 'direct', askerMessageText: 'Rewrite the intro', drive: MY_DRIVE, mode: 'suggest' }),
-    { landing: 'suggest', reason: 'mode_suggest' });
+  const suggestion = { landing: 'suggest', reason: 'request_suggest' } as const;
+  assert.deepEqual(land({ requestOverride: 'direct', askerMessageText: 'Rewrite the intro', mode: 'suggest' }), suggestion);
+  assert.deepEqual(land({ requestOverride: 'direct', askerMessageText: 'Rewrite the intro', otherHumansOpen: true }), suggestion);
+  assert.deepEqual(land({ requestOverride: 'direct', askerMessageText: 'Rewrite the intro', drive: MY_DRIVE, mode: 'suggest' }), suggestion);
+  // Even where the setting alone would put it straight in.
+  assert.deepEqual(land({ requestOverride: 'direct', askerMessageText: 'Rewrite the intro', otherHumansOpen: false }), suggestion);
+  assert.deepEqual(land({ requestOverride: 'direct', askerMessageText: 'Rewrite the intro', mode: 'direct' }), suggestion);
+});
+
+// The controller's ruling on M5 (27 Nov): the asker's own words are the request.
+test('the phrase in the asker\'s message with no model request goes straight in on Standard', () => {
+  const direct = { landing: 'direct', reason: 'request_direct' } as const;
+  for (const input of [
+    { askerMessageText: 'Tidy the intro, just do it', mode: 'suggest' },
+    { askerMessageText: 'Tidy the intro, just do it', otherHumansOpen: true },
+    { askerMessageText: 'Go ahead and edit the summary', drive: MY_DRIVE, mode: 'suggest' },
+    { askerMessageText: 'MAKE THE CHANGE', drive: PRIVATE_DRIVE, mode: 'suggest_when_open', otherHumansOpen: true },
+  ] as const) {
+    assert.deepEqual(land({ trustLevel: 'standard', requestOverride: null, ...input }), direct, input.askerMessageText);
+  }
+  // Rules 1 to 4 still come first.
+  const said = { askerMessageText: 'just do it', requestOverride: null } as const;
+  assert.deepEqual(land({ ...said, askerId: null }), { landing: 'refuse', reason: 'unprompted' });
+  assert.deepEqual(land({ ...said, askerRole: 'comment' }), { landing: 'refuse', reason: 'asker_cannot_edit' });
+  assert.deepEqual(land({ ...said, trustLevel: 'conservative' }), { landing: 'suggest', reason: 'conservative_trust' });
+  assert.deepEqual(land({ ...said, drive: SUGGEST_ONLY_DRIVE }), { landing: 'suggest', reason: 'drive_suggest_only' });
 });
 
 test('the model may lower a direct landing to a suggestion', () => {
