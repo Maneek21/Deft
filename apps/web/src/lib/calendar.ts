@@ -10,6 +10,8 @@ export type CalTask = {
 export type CalEvent = {
   id: string; title: string; body?: string | null; event_type: string; url: string | null;
   timestamp: string; metadata: any; source: string;
+  /** False when the viewer is an attendee of someone else's event: read-only. */
+  viewer_is_owner?: boolean;
 };
 
 export type CalNote = { id: string; title: string; icon: string | null; created_at: string };

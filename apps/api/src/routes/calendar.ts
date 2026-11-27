@@ -4,6 +4,7 @@ import { db } from '../lib/db.js';
 import { tasks, events, notes, projects, meetingBriefs, reminders, automationRuns, orgMembers } from '@deft/db/schema';
 import { getOrgTimezone, getDayBoundaries } from '../lib/task-dates.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
+import { liveHumanCalendarEventCondition } from '../lib/calendar-event-visibility.js';
 
 export const calendarRoutes = new Hono();
 
@@ -72,10 +73,11 @@ calendarRoutes.get('/', async (c) => {
       timestamp: events.timestamp,
       metadata: events.metadata,
       source: events.source,
+      // An attendee sees someone else's event read-only (calendar-event-visibility.ts).
+      viewer_is_owner: sql<boolean>`${events.user_id} = ${user.id}`,
     }).from(events)
       .where(and(
-        eq(events.org_id, user.org_id),
-        eq(events.user_id, user.id),
+        liveHumanCalendarEventCondition(user.org_id, user.id),
         between(events.timestamp, from, to),
         sql`${events.metadata}->'email_invitation'->>'schema_version' IS DISTINCT FROM 'deft.email_calendar_event.v1'`,
       ))
