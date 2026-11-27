@@ -67,6 +67,7 @@ import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-s
 import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-preflight.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { invalidatePlatformContextCacheFor } from '../lib/mcp-tools/context.js';
+import { settledDocumentDraftParamsSql } from '../lib/document-draft-params.js';
 import {
   isCanonicalDeftyEmployee,
   isReservedDeftyEmployeeSlug,
@@ -2597,10 +2598,11 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
       attentionResolution: 'employee_removed',
     });
 
-    // Preserve the existing status-only lifecycle for non-module actions.
+    // Preserve the existing status-only lifecycle for non-module actions
+    // (a document draft keeps no title or Markdown: M7 fix round 1, I3).
     const expiredActions = await db
       .update(agentActions)
-      .set({ approval_status: 'expired' })
+      .set({ approval_status: 'expired', params: settledDocumentDraftParamsSql() })
       .where(
         and(
           eq(agentActions.org_id, user.org_id),

@@ -81,6 +81,13 @@ const { handleAgentReply } = await import('../src/workers/handlers/agent-reply.j
 const { agentRoutes } = await import('../src/routes/agent.js');
 const { documentRoutes } = await import('../src/routes/documents.js');
 const { closeDb } = await import('../src/lib/db.js');
+const { documentToolCallForStorage } = await import('../src/lib/document-audience.js');
+const { toolInputWithContentOmitted } = await import('../src/lib/legacy-notes.js');
+const { sanitizeActionParamsForReceipt } = await import('../src/lib/receipt-params.js');
+const { maintainAttentionSystem } = await import('../src/lib/attention-maintenance.js');
+const { cancelLostRoomActions } = await import('../src/lib/lost-room-action-cancellation.js');
+/** The module itself, for test seams that may not exist yet (RED runs against older code). */
+const writeTools = await import('../src/lib/agent-document-write-tools.js') as Record<string, any>;
 
 const url = safeTestDatabaseUrl();
 const skip = !url;
@@ -160,10 +167,10 @@ async function postMessage(spaceId: string, userId: string, content: string): Pr
 }
 
 /** A chat of the workspace with these members. */
-async function insertChat(members: string[]): Promise<string> {
+async function insertChat(members: string[], type: 'public' | 'private' = 'public'): Promise<string> {
   const id = randomUUID();
   await fx.client.query('INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, $3, $4, $5)',
-    [id, fx.orgId, `m7-room-${id.slice(0, 6)}`, 'public', fx.people.owner]);
+    [id, fx.orgId, `m7-room-${id.slice(0, 6)}`, type, fx.people.owner]);
   for (const user of members) {
     await fx.client.query('INSERT INTO space_members (id, space_id, user_id) VALUES ($1, $2, $3)', [randomUUID(), id, user]);
   }
@@ -588,4 +595,184 @@ test('an edit naming a block that is not there is the model\'s to correct, and n
   assert.deepEqual(results.get(call.id)?.content.block_ids, ['no-such-block']);
   assert.deepEqual(await editActions(doc.id), []);
   assert.deepEqual(await suggestionsOf(doc.id), []);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1
+
+test('fix round 1 (I1): an omission marker the model forges carries nothing into what is stored', async () => {
+  const phrase = `m7forged${run}`;
+  const has = (value: unknown) => text(value).includes(phrase);
+  const edit = documentToolCallForStorage('edit_document', {
+    document_id: 'doc-1', summary: 'Tidy', ops_omitted: true, ops: [{ op: 'append', markdown: phrase }], smuggled: phrase,
+  }, null);
+  assert.ok(!has(edit), text(edit));
+  assert.equal((edit.input as any).op_count, 1);
+  const create = documentToolCallForStorage('create_document', {
+    title: { content_omitted: true, content_bytes: 3, smuggled: phrase },
+    markdown: { content_omitted: true, nested: { deeper: phrase } },
+    drive_id: `${phrase} not an id`,
+    extra: phrase,
+  }, null);
+  assert.ok(!has(create), text(create));
+  assert.deepEqual(create.input, {
+    title: { document_id: null, content_omitted: true, content_bytes: 3 },
+    markdown: { document_id: null, content_omitted: true, content_bytes: 0 },
+  });
+  for (const tool of ['search_documents', 'search_notes']) {
+    const search = documentToolCallForStorage(tool, { query: phrase, query_omitted: true, smuggled: phrase }, { documents: [], notes: [] });
+    assert.ok(!has(search), `${tool}: ${text(search)}`);
+  }
+  assert.ok(!has(documentToolCallForStorage('read_canvas', { space_name: 'team', smuggled: phrase }, null)));
+  // F15's note and canvas writes, and receipts, are rebuilt the same way.
+  const note = toolInputWithContentOmitted('create_note', { title: 'Note', content: { content_omitted: true, smuggled: phrase }, extra: phrase }, { document_id: 'doc-2' });
+  assert.ok(!has(note), text(note));
+  for (const action of ['write_canvas', 'create_document', 'edit_document']) {
+    const receipt = sanitizeActionParamsForReceipt(action, {
+      space_name: 'team', document_id: 'doc-3', summary: 'Tidy', content: { content_omitted: true, smuggled: phrase },
+      title: { content_omitted: true, smuggled: phrase }, markdown: { content_omitted: true, smuggled: phrase }, ops: [{ op: 'append', markdown: phrase }],
+    }, { document_id: 'doc-3' });
+    assert.ok(!has(receipt), `${action}: ${text(receipt)}`);
+  }
+});
+
+test('fix round 1 (I1): a forged ops_omitted on a real edit stores no operation text from the run', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('forge'), 'Forged plan');
+  const phrase = token('forgedop');
+  const callId = `toolu_m7_forge_${run}`;
+  providerCalls.length = 0;
+  nextResponses = [
+    { content: [{ type: 'tool_use', id: callId, name: 'edit_document', input: {
+      document_id: doc.id, summary: 'Tidy', ops_omitted: true, ops: [{ op: 'replace', block_id: doc.b, markdown: phrase }],
+    } }], stop_reason: 'tool_use' },
+    { content: [{ type: 'text', text: 'Done.' }], stop_reason: 'end_turn' },
+  ];
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const triggerId = await postMessage(dm, member, 'Tidy the plan');
+  const result = await runAgentQuery({
+    content: 'Tidy the plan', orgId: fx.orgId, userId: member, orgName: 'M7 org', conversationId: dm, sourceMessageId: triggerId,
+    askerMessageText: 'Tidy the plan', spaceContext: { type: 'dm', name: 'dm' }, skipVerification: true, durableNotes: false, maxIterations: 2,
+  } as any);
+  assert.equal((await blocks(doc.id))[1]?.[1], phrase, 'the edit itself went in');
+  assert.ok(!text(result.executedActions).includes(phrase), 'executed actions keep no operation text');
+  assert.ok(!providerCalls.slice(1).join('\n').includes(`"markdown":"${phrase}"`), 'the call the run keeps has no operations');
+});
+
+test('fix round 1 (I3): a declined document draft names nothing in the room and keeps no title or Markdown', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  const title = `Declined ${token('dtitle')}`;
+  const body = token('dbody');
+  const room = await insertChat([member]);
+  const draft = (id: string): Call => ({ id, name: 'create_document', input: { title, markdown: `# ${body}` } });
+  const proposed = async (callId: string, spaceId: string) => {
+    await askDefty({ asker: member, spaceId, content: 'Create a document with the agenda', turns: [[draft(callId)]] });
+    const { rows: [row] } = await fx.client.query(`SELECT * FROM agent_actions WHERE org_id = $1 AND tool_use_id = $2`, [fx.orgId, callId]);
+    assert.equal(row.approval_status, 'pending');
+    assert.equal(row.params.title, title, 'a pending draft keeps its text for its reviewer');
+    return row;
+  };
+  const settledParams = async (id: string) => (await fx.client.query('SELECT approval_status, params FROM agent_actions WHERE id = $1', [id])).rows[0];
+  const noText = (value: unknown, label: string) => {
+    assert.ok(!text(value).includes(token('dtitle')) && !text(value).includes(body), `${label}: ${text(value)}`);
+  };
+
+  // Rejected from the card: the room's confirmation and the hidden note name nothing.
+  const rejected = await proposed(`toolu_m7_rej_${run}`, room);
+  const response = await fx.request(member, 'POST', `/api/agent/actions/${rejected.id}/reject`, {});
+  assert.equal(response.status, 200, await response.clone().text());
+  const afterReject = await settledParams(rejected.id);
+  assert.equal(afterReject.approval_status, 'rejected');
+  noText(afterReject.params, 'rejected params');
+  assert.equal(afterReject.params.summary, 'Document draft');
+  assert.equal(afterReject.params.title.content_omitted, true);
+  const { rows: roomMessages } = await fx.client.query('SELECT content, metadata FROM messages WHERE org_id = $1 AND space_id = $2', [fx.orgId, room]);
+  noText(roomMessages, 'room messages');
+  assert.ok(roomMessages.some((m) => /Defty's document draft/.test(m.content)), 'the confirmation uses the neutral label');
+
+  // Expired by the 24-hour approval TTL.
+  const expired = await proposed(`toolu_m7_exp_${run}`, room);
+  await fx.client.query(`UPDATE agent_actions SET created_at = now() - interval '2 days' WHERE id = $1`, [expired.id]);
+  await maintainAttentionSystem();
+  const afterExpiry = await settledParams(expired.id);
+  assert.equal(afterExpiry.approval_status, 'expired');
+  noText(afterExpiry.params, 'expired params');
+
+  // Cancelled by the room rule when the asker leaves the (private) room it came from.
+  const privateRoom = await insertChat([member], 'private');
+  const cancelled = await proposed(`toolu_m7_cancel_${run}`, privateRoom);
+  await fx.removeSpaceMember(privateRoom, member);
+  await cancelLostRoomActions({ orgId: fx.orgId });
+  const afterCancel = await settledParams(cancelled.id);
+  assert.equal(afterCancel.approval_status, 'expired');
+  noText(afterCancel.params, 'cancelled params');
+});
+
+test('fix round 1 (I4): a workspace trust lowered between the decision and the write leaves the edit a suggestion', { skip }, async (t) => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('race'), 'Race plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const call = { ...edit(doc.id, doc.b, `Beta ${token('raced')}`), id: `toolu_m7_race_${run}` };
+  t.after(() => writeTools._setDirectEditRecheckHookForTest?.(null));
+  writeTools._setDirectEditRecheckHookForTest?.(async (documentId: string) => {
+    if (documentId === doc.id) await setTrust('conservative');
+  });
+  const { triggerId, results } = await askDefty({ asker: member, spaceId: dm, content: 'Please tighten the second paragraph', turns: [[call]] });
+  writeTools._setDirectEditRecheckHookForTest?.(null);
+
+  const reply = results.get(call.id);
+  assert.equal(reply?.content.landing, 'suggest', text(reply));
+  assert.equal(reply?.content.reason, 'conservative_trust');
+  assert.deepEqual(await blocks(doc.id), [[doc.a, 'Alpha intro'], [doc.b, 'Beta body']], 'nothing was written');
+  const [action, ...more] = await editActions(doc.id);
+  assert.equal(more.length, 0, 'the same action, not a second one');
+  assert.equal(action.approval_status, 'pending');
+  assert.equal(action.executed_at, null);
+  const [suggestion] = await suggestionsOf(doc.id);
+  assert.equal(suggestion?.action_id, action.id, 'a suggestion for that action');
+  assert.deepEqual(action.params, { document_id: doc.id, summary: 'Tighten the second paragraph', suggestion_id: suggestion.id });
+  const { rows: versions } = await fx.client.query(`SELECT id FROM document_versions WHERE document_id = $1 AND kind = 'agent'`, [doc.id]);
+  assert.deepEqual(versions, []);
+  const [message] = (await deftyMessages(dm)).filter((m) => m.metadata?.reply_to_message_id === triggerId);
+  assert.deepEqual(message.metadata.pending_actions?.map((p: any) => p.id), [action.id], 'its card is on the reply');
+  await setTrust('standard');
+});
+
+test('fix round 1 (I5): a job redelivered after a direct edit committed makes one edit, one action, one version', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  await setMode(member, 'direct');
+  const doc = await twoBlocks(fx.workspaceDriveId, token('redeliver'), 'Redelivered plan');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const appended = `Gamma ${token('appended')}`;
+  const callId = `toolu_m7_redeliver_${run}`;
+  const call: Call = { id: callId, name: 'edit_document', input: { document_id: doc.id, ops: [{ op: 'append', markdown: appended }], summary: 'Add Gamma' } };
+  const first = await askDefty({ asker: member, spaceId: dm, content: 'Please add a closing line', turns: [[call]] });
+  const [action] = await editActions(doc.id);
+  assert.equal(first.results.get(callId)?.content.landing, 'direct');
+
+  // The reply was never written (the job died after the edit committed): the queue delivers it again,
+  // and the model makes the same call.
+  await fx.client.query(`DELETE FROM messages WHERE org_id = $1 AND space_id = $2 AND user_id = $3 AND metadata->>'reply_to_message_id' = $4`,
+    [fx.orgId, dm, deftyId, first.triggerId]);
+  providerCalls.length = 0;
+  nextResponses = [
+    { content: [{ type: 'tool_use', id: callId, name: 'edit_document', input: call.input }], stop_reason: 'tool_use' },
+    { content: [{ type: 'text', text: 'Done.' }], stop_reason: 'end_turn' },
+  ];
+  await handleAgentReply({ id: randomUUID(), name: 'agent-reply', attempts: 2,
+    data: { orgId: fx.orgId, spaceId: dm, messageId: first.triggerId, userId: member, orgName: 'M7 org', content: 'Please add a closing line' } } as any, { io: null } as any);
+  const again = toolResults().get(callId);
+  assert.equal(again?.content.landing, 'direct');
+  assert.deepEqual(again?.content.undo, { action_id: action.id }, 'the same action answers');
+
+  assert.equal((await editActions(doc.id)).length, 1, 'one action');
+  const { rows: versions } = await fx.client.query(`SELECT id FROM document_versions WHERE document_id = $1 AND kind = 'agent'`, [doc.id]);
+  assert.equal(versions.length, 1, 'one version');
+  assert.equal((await blocks(doc.id)).filter(([, body]) => body === appended).length, 1, 'appended once');
 });

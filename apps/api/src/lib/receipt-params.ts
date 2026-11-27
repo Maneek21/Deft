@@ -11,6 +11,7 @@ import {
   MODULE_OPERATION_NAMES,
 } from '@deft/shared/modules';
 import { sanitizeModuleActionParamsForHistory } from './module-service.js';
+import { createDocumentInputForStorage, omittedText, storableRef } from './document-audience.js';
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
   MODULE_OPERATION_NAMES.filter(
@@ -144,20 +145,16 @@ const DOCUMENT_CONTENT_ACTIONS: ReadonlySet<string> = new Set(['create_note', 'w
  */
 function withoutDocumentToolText(action: string, params: Record<string, unknown>, resultValue: unknown): Record<string, unknown> {
   const result = resultValue && typeof resultValue === 'object' ? resultValue as Record<string, unknown> : {};
-  const documentId = typeof result.document_id === 'string' ? result.document_id
-    : typeof params.document_id === 'string' ? params.document_id : null;
+  const documentId = storableRef(result.document_id) ?? storableRef(params.document_id);
   if (action === 'edit_document') {
-    return Object.fromEntries(['document_id', 'summary', 'suggestion_id'].flatMap((key) => (typeof params[key] === 'string' ? [[key, params[key]]] : [])));
+    // Rebuilt every time (fix round 1, I1): the document, the summary, the suggestion.
+    return {
+      ...(storableRef(params.document_id) ? { document_id: params.document_id } : {}),
+      ...(typeof params.summary === 'string' ? { summary: params.summary.trim().slice(0, 300) } : {}),
+      ...(storableRef(params.suggestion_id) ? { suggestion_id: params.suggestion_id } : {}),
+    };
   }
-  const omitted = (value: unknown) => (value && typeof value === 'object' && (value as Record<string, unknown>).content_omitted === true
-    ? value
-    : { document_id: documentId, content_omitted: true, content_bytes: Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value ?? '')) });
-  return {
-    ...Object.fromEntries(['drive_id', 'folder_id', 'parent_document_id'].flatMap((key) => (typeof params[key] === 'string' ? [[key, params[key]]] : []))),
-    ...(documentId ? { document_id: documentId } : {}),
-    ...(params.title !== undefined ? { title: omitted(params.title) } : {}),
-    ...(params.markdown !== undefined ? { markdown: omitted(params.markdown) } : {}),
-  };
+  return createDocumentInputForStorage(params, documentId) as Record<string, unknown>;
 }
 
 function withoutDocumentContent(action: string, paramsValue: unknown, resultValue: unknown): unknown {
@@ -169,13 +166,21 @@ function withoutDocumentContent(action: string, paramsValue: unknown, resultValu
   }
   const params = paramsValue as Record<string, unknown>;
   const content = params.content;
-  if (content === undefined || content === null) return paramsValue;
-  if (typeof content === 'object' && (content as Record<string, unknown>).content_omitted === true) return paramsValue;
   const result = resultValue && typeof resultValue === 'object' ? resultValue as Record<string, unknown> : {};
   const documentId = typeof result.document_id === 'string' ? result.document_id
     : typeof result.canvas_document_id === 'string' ? result.canvas_document_id : null;
-  const text = typeof content === 'string' ? content : JSON.stringify(content);
-  return { ...params, content: { document_id: documentId, content_omitted: true, content_bytes: Buffer.byteLength(text) } };
+  // Rebuilt from F15's fields every time (M7 fix round 1, I1): the content as
+  // a new envelope, so neither a `content_omitted` marker nor any other field
+  // the model sent carries text through.
+  const text = (key: string, max: number) => (typeof params[key] === 'string' ? { [key]: (params[key] as string).slice(0, max) } : {});
+  const ref = (key: string) => (storableRef(params[key]) === null ? {} : { [key]: params[key] as string });
+  return {
+    ...(action === 'create_note'
+      ? { ...text('title', 500), ...(['private', 'org', 'space'].includes(params.visibility as string) ? { visibility: params.visibility } : {}), ...ref('visibility_space_id') }
+      : { ...text('space_name', 200), ...text('title', 500), ...ref('resolved_space_id') }),
+    ...ref('source_message_id'),
+    ...(content === undefined || content === null ? {} : { content: omittedText(content, documentId) }),
+  };
 }
 
 /**

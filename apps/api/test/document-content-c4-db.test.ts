@@ -66,7 +66,8 @@ test('a completed plan step keeps document references only: the creator who lost
     steps: [
       { id: 'read', description: 'Read the plan', tool: 'read_document', params: { document_id: doc } },
       { id: 'search', description: 'Search for it', tool: 'search_documents', params: { query: phrase } },
-      { id: 'note', description: 'Note it', tool: 'create_note', params: { title: 'Plan note', content: `<p>${notePhrase}</p>` } },
+      // Fix round 1 (I2): document text reaches a write step only by reference, resolved when it runs.
+      { id: 'note', description: 'Note it', tool: 'create_note', params: { title: '$step.read.result.title', content: '$step.read.result.markdown' } },
     ],
   });
   await fx.client.query(`UPDATE agent_plans SET status = 'approved' WHERE id = $1`, [planId]);
@@ -87,6 +88,10 @@ test('a completed plan step keeps document references only: the creator who lost
   assert.equal(note.status, 'completed');
   assert.equal(note.params.content.content_omitted, true);
   assert.equal(typeof note.result.document_id, 'string');
+  // The note was made from what the read returned in this run, as the creator.
+  const { rows: [made] } = await fx.client.query('SELECT created_by, content_text FROM documents WHERE id = $1', [note.result.document_id]);
+  assert.equal(made.created_by, member);
+  assert.ok(made.content_text.includes(phrase));
 
   // The creator loses the document; the plan shows no content.
   await fx.client.query('DELETE FROM document_shares WHERE document_id = $1', [doc]);
@@ -109,6 +114,68 @@ test('a completed plan step keeps document references only: the creator who lost
     assert.ok(shown.includes(old.id), path);
     assert.ok(!shown.includes(oldPhrase) && !shown.includes(token('title')), `${path} shows no content of the old plan`);
   }
+});
+
+test('fix round 1 (I2): no step of a plan keeps document text, in any status, from creation on', { skip }, async () => {
+  const { member } = fx.people;
+  await fx.client.query('UPDATE orgs SET trust_level = $1 WHERE id = $2', ['standard', fx.orgId]);
+  const drive = await fx.insertDrive({ kind: 'private', name: 'M7 C4 statuses' });
+  const phrase = token('status');
+  const doc = await fx.insertDocument({ driveId: drive, title: `Status source ${token('stitle')}`,
+    json: { type: 'doc', content: [paragraph(`c4s-${run}`, `Source says ${phrase}`)] } });
+  await fx.share(doc, { user: member }, 'view');
+  const literal = token('literal');
+  const skipped = token('skipped');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  const leaks = [phrase, literal, skipped, token('stitle')];
+  const { plan_id: planId } = await createPlanRow({
+    org_id: fx.orgId, user_id: member, conversation_id: dm, title: 'Every status',
+    steps: [
+      { id: 'read', description: 'Read', tool: 'read_document', params: { document_id: doc, smuggled: literal } },
+      { id: 'never', description: 'Skipped', tool: 'create_note', params: { title: 'Never', content: `<p>${skipped}</p>` },
+        condition: { field: '$step.read.result.withheld', operator: 'eq', value: true } },
+      { id: 'copy', description: 'Copy', tool: 'create_document', params: { title: `Copy ${literal}`, markdown: `# ${literal}` } },
+    ],
+  });
+  // Draft: stored without the text the model wrote.
+  const stored = async () => (await fx.client.query('SELECT status, error, steps, context FROM agent_plans WHERE id = $1', [planId])).rows[0];
+  const draft = await stored();
+  for (const leaked of leaks) assert.ok(!text(draft).includes(leaked), `the draft keeps no ${leaked}`);
+  const draftCopy = draft.steps.find((step: any) => step.id === 'copy');
+  assert.equal(draftCopy.params.title.content_omitted, true);
+  assert.equal(draftCopy.params.markdown.content_omitted, true);
+  assert.deepEqual(draft.steps.find((step: any) => step.id === 'read').params, { document_id: doc });
+
+  // Run: the read completes, the conditional step is skipped, and the step whose
+  // text the plan doesn't keep fails without writing anything.
+  await fx.client.query(`UPDATE agent_plans SET status = 'approved' WHERE id = $1`, [planId]);
+  await executePlan(planId, fx.orgId, member);
+  const after = await stored();
+  assert.equal(after.status, 'paused');
+  assert.equal(after.error, 'A plan doesn\'t keep document text, so this step can\'t run. Ask Defty to make the document from chat.');
+  const byId = new Map(after.steps.map((step: any) => [step.id, step.status]));
+  assert.deepEqual(Object.fromEntries(byId), { read: 'completed', never: 'skipped', copy: 'failed' });
+  for (const leaked of leaks) assert.ok(!text(after).includes(leaked), `the run keeps no ${leaked}`);
+  const { rows: copies } = await fx.client.query('SELECT id FROM documents WHERE org_id = $1 AND title LIKE $2', [fx.orgId, `%${literal}%`]);
+  assert.deepEqual(copies, [], 'nothing was written');
+
+  // An edit through the plan route stores no text either.
+  await fx.client.query(`UPDATE agent_plans SET status = 'draft' WHERE id = $1`, [planId]);
+  const edited = await fx.request(member, 'PUT', `/api/agent-plans/${planId}`, {
+    steps: [{ id: 'later', description: 'Later', tool: 'write_canvas', params: { space_name: 'team', content: `<p>${literal}</p>` } }],
+  });
+  assert.equal(edited.status, 200, await edited.clone().text());
+  assert.ok(!text(await stored()).includes(literal), 'PUT keeps no text');
+
+  // A plan stored before the rule, with steps in every other status, shows none.
+  const { rows: [old] } = await fx.client.query(`INSERT INTO agent_plans (id, org_id, user_id, conversation_id, title, steps, status, context)
+    VALUES ($1, $2, $3, $4, 'Old statuses', $5::jsonb, 'paused', '{}'::jsonb) RETURNING id`, [randomUUID(), fx.orgId, member, dm,
+    JSON.stringify(['pending', 'running', 'waiting_approval', 'failed', 'skipped'].map((status) => ({
+      id: status, description: status, tool: 'create_note', status, params: { title: `Old ${literal}`, content: `<p>${phrase}</p>` },
+    })))]);
+  const shown = await (await fx.request(member, 'GET', `/api/agent-plans/${old.id}`)).text();
+  assert.ok(shown.includes(old.id));
+  for (const leaked of [phrase, literal]) assert.ok(!shown.includes(leaked), `an old plan shows no ${leaked}`);
 });
 
 test('an MCP note tool\'s replay never serves stored content: it reads the note again with the caller\'s access now', { skip }, async () => {

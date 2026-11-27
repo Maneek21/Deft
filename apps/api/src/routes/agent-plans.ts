@@ -11,6 +11,7 @@ import {
   PLAN_EMPLOYEE_UNAVAILABLE_ERROR,
   planCreatorKeepsRoomsSql,
   PlanAccessError,
+  planStepsForStorage,
   planWithDocumentReferences,
   type PlanStep,
 } from '../lib/agent-plans.js';
@@ -231,7 +232,8 @@ agentPlanRoutes.put('/:id', async (c) => {
     if (body.description !== undefined) updates.description = body.description;
     if (body.steps) {
       await assertPlanStepsAllowedFor(user.org_id, user.id, body.steps);
-      updates.steps = body.steps.map((step: any) => ({
+      // M7 fix round 1 (I2): an edited plan stores no document text either.
+      updates.steps = planStepsForStorage(body.steps as any[]).map((step: any) => ({
         ...step,
         approved_by_user_id: (existing.steps as PlanStep[]).find((prior) => prior.id === step.id)?.approved_by_user_id,
         status: step.status ?? 'pending',

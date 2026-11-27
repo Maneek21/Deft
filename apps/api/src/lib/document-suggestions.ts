@@ -467,20 +467,21 @@ const retry = (code: RetryCode, error: string): ExecutorOutcome => ({ success: f
  * references only: the document, the suggestion, its outcome, the blocks
  * applied and the agent version.
  *
- * `directOps` (M7): the chat exception's direct edit (lib/agent-runner.ts,
+ * `direct` (M7): the chat exception's direct edit (lib/agent-runner.ts,
  * executeActionDirect with source `document_edit_exception`). Its operations
  * come only from that call, never from the action's params, which hold
- * { document_id, summary } (rule C4); an action that has a suggestion is
+ * { document_id, summary } (rule C4); `recheck` decides the landing again
+ * inside the write (fix round 1, I4). An action that has a suggestion is
  * never applied this way.
  */
-export async function executeDocumentEditAction(i: { orgId: string; actionId: string; claimToken?: string; directOps?: DocumentEditOp[] }): Promise<ExecutorOutcome> {
+export async function executeDocumentEditAction(i: { orgId: string; actionId: string; claimToken?: string; direct?: DirectDocumentEdit }): Promise<ExecutorOutcome> {
   const [s] = await db.select().from(documentSuggestions)
     .where(and(eq(documentSuggestions.action_id, i.actionId), eq(documentSuggestions.org_id, i.orgId))).limit(1);
   if (!s) {
-    if (i.directOps) return executeDirectDocumentEdit(i.orgId, i.actionId, i.directOps);
+    if (i.direct) return executeDirectDocumentEdit(i.orgId, i.actionId, i.direct);
     return { success: false, result: null, error: 'This edit has no suggestion to apply' };
   }
-  if (i.directOps) return { success: false, result: null, error: 'This edit is waiting as a suggestion' };
+  if (i.direct) return { success: false, result: null, error: 'This edit is waiting as a suggestion' };
   const token = i.claimToken;
   if (!token || s.status !== 'applying' || s.claim_token !== token || !s.selected_block_ids?.length || s.reviewed_revision === null) {
     return retry('SUGGESTION_ALREADY_RESOLVING', RESOLVING_MESSAGE);
@@ -549,16 +550,39 @@ async function editingAgentUserId(orgId: string, agentEmployeeId: string | null)
   return defty?.id ?? null;
 }
 
+/** Where a direct edit lands when it is decided again inside the write (M7's chatEditLandingInTx). */
+export type DirectEditLanding = { landing: 'direct' | 'suggest' | 'refuse'; reason: string };
+
+/** The chat exception's direct edit, as the runner hands it to the executor (never stored). */
+export type DirectDocumentEdit = {
+  ops: DocumentEditOp[];
+  /** Decides the landing again in the write's transaction, with the document row locked (fix round 1, I4). */
+  recheck: (tx: Tx) => Promise<DirectEditLanding>;
+};
+
+/** The marker a direct edit's outcome carries when it was queued as a suggestion instead. */
+export const DIRECT_EDIT_SUGGESTED = 'Queued as a suggestion: where this edit lands changed before it was written';
+
+/** Thrown inside the write when the landing decided again is no longer direct: the write rolls back. */
+class NoLongerDirect extends Error {
+  constructor(readonly landing: DirectEditLanding) { super('the edit no longer lands direct'); }
+}
+
 /**
  * The chat exception's direct edit (M7): M4's applyDocumentEditDirect with the
  * call's own operations, as the action's agent for the person who asked (the
  * writer checks their edit role again, and refuses a drive set to
  * suggestions only). Checked first, as an approved suggestion is: the asker
- * still keeps the chat the action came from. The outcome is stamped on the
- * action, references only; the version, credit, highlight, audit and undo
- * are M4's.
+ * still keeps the chat the action came from. Inside the write, with the
+ * document locked and after the writer's checks, the landing is decided
+ * again (`recheck`: the workspace's and the employee's trust read now, the
+ * asker's role, setting and the drive): when it is no longer direct nothing
+ * is written, and the same action becomes a pending suggestion (fix round 1,
+ * I4). The outcome is stamped on the action, references only; the version,
+ * credit, highlight, audit and undo are M4's.
  */
-async function executeDirectDocumentEdit(orgId: string, actionId: string, ops: DocumentEditOp[]): Promise<ExecutorOutcome> {
+async function executeDirectDocumentEdit(orgId: string, actionId: string, direct: DirectDocumentEdit): Promise<ExecutorOutcome> {
+  const ops = direct.ops;
   const settle = async (outcome: ExecutorOutcome): Promise<ExecutorOutcome> => {
     await db.update(agentActions).set(outcome.success
       ? { result: outcome.result, after_state: { document_id: outcome.result.document_id, version_id: outcome.result.version_id }, executed_at: new Date() }
@@ -577,9 +601,34 @@ async function executeDirectDocumentEdit(orgId: string, actionId: string, ops: D
   try {
     const applied = await applyDocumentEditDirect({
       orgId, documentId, agentUserId, askerId: action.user_id, actionId, ops: checkedOps(ops), summary: summaryOf(params),
+    }, {
+      beforeWrite: async (tx) => {
+        const landing = await direct.recheck(tx);
+        if (landing.landing !== 'direct') throw new NoLongerDirect(landing);
+      },
     });
     return settle({ success: true, result: { document_id: documentId, landing: 'direct', changed_block_ids: applied.changedBlockIds, version_id: applied.versionId } });
   } catch (error) {
+    if (error instanceof NoLongerDirect) {
+      if (error.landing.landing === 'refuse') return failed('You can only comment on this document');
+      // Nothing was written: the same action waits as a suggestion only its asker reviews.
+      try {
+        const suggestionId = await db.transaction(async (tx) => {
+          const [back] = await tx.update(agentActions)
+            .set({ approval_status: 'pending', approved_at: null, approved_by_user_id: null, updated_at: new Date() })
+            .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId), eq(agentActions.approval_status, 'approved'),
+              sql`${agentActions.executed_at} IS NULL`))
+            .returning({ id: agentActions.id });
+          if (!back) throw new DocumentRefusal(409, 'INVALID_STATE', 'This edit is no longer waiting to be written');
+          return (await proposeDocumentEdit(tx, { orgId, documentId, actionId, askerId: action.user_id, agentUserId, ops })).suggestionId;
+        });
+        return { success: false, result: { landing: 'suggest', reason: error.landing.reason, suggestion_id: suggestionId }, error: DIRECT_EDIT_SUGGESTED };
+      } catch (proposeError) {
+        if (proposeError instanceof DocumentEditRefused) return failed('Some blocks this edit names are not in the document');
+        if (proposeError instanceof DocumentRefusal || proposeError instanceof DocumentWriteRefused) return failed(proposeError.message);
+        throw proposeError;
+      }
+    }
     if (error instanceof DocumentEditRefused) return failed('Some blocks this edit names are not in the document');
     if (error instanceof DocumentWriteRefused && error.code === 'FORBIDDEN') return failed('You can only comment on this document');
     if (error instanceof DocumentWriteRefused || error instanceof DocumentRefusal) return failed(error.message);

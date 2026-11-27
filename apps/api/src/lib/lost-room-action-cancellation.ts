@@ -35,6 +35,7 @@ import { actionRequesterIdSql } from './agent-action-requester.js';
 import { closedPendingActionParams, finishClosedModuleAction } from './agent-approval-resolver.js';
 import { resolveAttentionBySource } from './attention.js';
 import { DOCUMENT_EDIT_ACTION, syncSuggestionWithAction } from './document-suggestions.js';
+import { DOCUMENT_DRAFT_ACTION, settledDocumentDraftParamsSql } from './document-draft-params.js';
 import { canonicalDeftyActionSql, MODULE_GOVERNED_WRITE_ACTION_NAMES, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
 import { markWorkIntentsExpiredForActions } from './work-intents.js';
 
@@ -108,6 +109,8 @@ async function closeOneBatch(tx: Tx, scope: { orgId: string; requesterId?: strin
         error: LOST_ROOM_CANCEL_REASON,
         updated_at: new Date(),
         ...(scrubbed ? { params: scrubbed, result: null, before_state: null, after_state: null, executed_at: new Date() } : {}),
+        // A cancelled document draft keeps no title or Markdown (M7 fix round 1, I3).
+        ...(row.action === DOCUMENT_DRAFT_ACTION ? { params: settledDocumentDraftParamsSql() } : {}),
       })
       .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id), eq(agentActions.approval_status, 'pending')))
       .returning({ id: agentActions.id });

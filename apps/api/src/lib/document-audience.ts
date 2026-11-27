@@ -441,22 +441,48 @@ function resultForStorage(toolName: string, result: unknown): unknown {
   }
 }
 
+// What is stored is always rebuilt from an allowlist (fix round 1, I1): an
+// id only when it looks like one, a count only when it is one, and never a
+// field the model sent, an omission marker included, passed through as it came.
+
+/** An id the model sent, kept only when it is id-shaped (no spaces, no text). */
+export function storableRef(value: unknown): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : null;
+}
+
+/** A count, kept only when it is a whole number in range. */
+function storableCount(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1e9 ? value : 0;
+}
+
+const refField = (record: Record<string, any>, key: string) => {
+  const ref = storableRef(record[key]);
+  return ref === null ? {} : { [key]: ref };
+};
+
 /** A tool's input as the run keeps it: its ids, never a search's words. */
 function inputForStorage(toolName: string, input: unknown): unknown {
-  if (!isRecord(input)) return input;
+  const record = isRecord(input) ? input : {};
   switch (toolName) {
     case 'read_document':
-      return stringField(input, 'document_id');
+      return refField(record, 'document_id');
     case 'read_note':
-      return stringField(input, 'note_id');
+      return refField(record, 'note_id');
+    case 'read_canvas':
+      return typeof record.space_name === 'string' ? { space_name: record.space_name.slice(0, 200) } : {};
     case 'list_drive':
-      return { ...stringField(input, 'drive_id'), ...stringField(input, 'folder_id') };
+      return { ...refField(record, 'drive_id'), ...refField(record, 'folder_id') };
     case 'search_documents':
     case 'search_notes': {
-      if (input.query_omitted === true) return input;
-      const query = typeof input.query === 'string' ? input.query : '';
-      const { query: _query, ...rest } = input;
-      return { ...rest, query_omitted: true, query_bytes: Buffer.byteLength(query) };
+      // Rebuilt every time: a `query_omitted` the model sent is never trusted.
+      const query = typeof record.query === 'string' ? record.query : null;
+      return {
+        query_omitted: true,
+        query_bytes: query === null ? storableCount(record.query_bytes) : Buffer.byteLength(query),
+        ...refField(record, 'drive_id'),
+        ...(typeof record.limit === 'number' && Number.isFinite(record.limit) ? { limit: record.limit } : {}),
+        ...(['mine', 'org', 'all'].includes(record.scope) ? { scope: record.scope } : {}),
+      };
     }
     default:
       return input;
@@ -482,42 +508,57 @@ export function documentToolCallForStorage(toolName: string, input: unknown, res
   return { input: inputForStorage(toolName, input), result: resultForStorage(toolName, result) };
 }
 
-/** A text field as a run keeps it: never the text, only that it was left out and its size. */
-function omittedText(value: unknown, documentId: string | null): { document_id: string | null; content_omitted: true; content_bytes: number } {
+export type OmittedText = { document_id: string | null; content_omitted: true; content_bytes: number };
+
+/**
+ * A text field as a run, a plan or a receipt keeps it: never the text, only
+ * that it was left out and its size. Always a new envelope (fix round 1,
+ * I1): a value already in this shape is rebuilt from its id and its count
+ * alone, so a marker the model sent carries nothing through.
+ */
+export function omittedText(value: unknown, documentId: string | null): OmittedText {
+  if (isRecord(value) && value.content_omitted === true) {
+    return { document_id: documentId ?? storableRef(value.document_id), content_omitted: true, content_bytes: storableCount(value.content_bytes) };
+  }
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
   return { document_id: documentId, content_omitted: true, content_bytes: Buffer.byteLength(text) };
 }
-
-const isOmitted = (value: unknown) => isRecord(value) && value.content_omitted === true;
 
 /**
  * An edit_document call as a run, a message or a plan keeps it (M7, rule C4):
  * the document, the summary and the model's `mode`, never the operations'
  * Markdown (they live in the suggestion, or in the agent version's
- * edit_details). Idempotent.
+ * edit_details). Rebuilt every time: an `ops_omitted` the model sent is
+ * never trusted (fix round 1, I1).
  */
 export function editDocumentInputForStorage(input: unknown): unknown {
-  if (!isRecord(input) || input.ops_omitted === true) return input;
-  const ops = Array.isArray(input.ops) ? input.ops : [];
+  const record = isRecord(input) ? input : {};
+  const ops = Array.isArray(record.ops) ? record.ops : null;
   return {
-    ...stringField(input, 'document_id'), ...stringField(input, 'summary'), ...stringField(input, 'mode'),
-    ops_omitted: true, op_count: ops.length, ops_bytes: Buffer.byteLength(JSON.stringify(input.ops ?? [])),
+    ...refField(record, 'document_id'),
+    ...(typeof record.summary === 'string' ? { summary: record.summary.trim().slice(0, 300) } : {}),
+    ...(record.mode === 'direct' || record.mode === 'suggest' ? { mode: record.mode } : {}),
+    ops_omitted: true,
+    op_count: ops ? ops.length : storableCount(record.op_count),
+    ops_bytes: ops ? Buffer.byteLength(JSON.stringify(ops)) : storableCount(record.ops_bytes),
   };
 }
 
 /**
- * A create_document call as a run, a message or a plan keeps it (M7, rule
- * C4): where it was to go, never its title or Markdown. `documentId` names
- * the document once it exists. Idempotent.
+ * A create_document call as a run, a message, a plan or a settled proposal
+ * keeps it (M7, rule C4): where it was to go, never its title or Markdown.
+ * `documentId` names the document once it exists. Rebuilt every time (fix
+ * round 1, I1).
  */
 export function createDocumentInputForStorage(input: unknown, documentId: string | null = null): unknown {
-  if (!isRecord(input)) return input;
-  const id = documentId ?? (typeof input.document_id === 'string' ? input.document_id : null);
+  const record = isRecord(input) ? input : {};
+  const id = documentId ?? storableRef(record.document_id);
   return {
     ...(id ? { document_id: id } : {}),
-    ...stringField(input, 'drive_id'), ...stringField(input, 'folder_id'), ...stringField(input, 'parent_document_id'),
-    ...(input.title !== undefined ? { title: isOmitted(input.title) ? input.title : omittedText(input.title, id) } : {}),
-    ...(input.markdown !== undefined ? { markdown: isOmitted(input.markdown) ? input.markdown : omittedText(input.markdown, id) } : {}),
+    ...refField(record, 'drive_id'), ...refField(record, 'folder_id'), ...refField(record, 'parent_document_id'),
+    ...refField(record, 'source_message_id'),
+    ...(record.title !== undefined ? { title: omittedText(record.title, id) } : {}),
+    ...(record.markdown !== undefined ? { markdown: omittedText(record.markdown, id) } : {}),
   };
 }
 

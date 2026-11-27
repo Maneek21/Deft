@@ -93,6 +93,7 @@ import {
   sanitizeDocumentSendParams,
 } from '../lib/document-send.js';
 import { clientSafeErrorText } from '../lib/client-safe-error.js';
+import { DOCUMENT_DRAFT_ACTION, settledDocumentDraftParamsSql } from '../lib/document-draft-params.js';
 
 export const agentRoutes = new Hono();
 
@@ -324,6 +325,9 @@ function actionParamString(params: unknown, key: string): string | null {
 }
 
 function rejectedActionLabel(action: { action: string; params: unknown }): string {
+  // M7 fix round 1 (I3): posted in the room, so a document draft or edit is never named.
+  if (action.action === DOCUMENT_DRAFT_ACTION) return 'Defty\'s document draft';
+  if (action.action === 'edit_document') return 'Defty\'s document edit';
   const actionLabel = action.action.replace(/_/g, ' ');
   const target = actionParamString(action.params, 'title')
     ?? actionParamString(action.params, 'task_identifier')
@@ -1692,6 +1696,8 @@ export async function rejectActionAsReviewer(
     .set({
       approval_status: 'rejected',
       error: reason ?? null,
+      // M7 fix round 1 (I3): a rejected document draft keeps no title or Markdown.
+      ...(action.action === DOCUMENT_DRAFT_ACTION ? { params: settledDocumentDraftParamsSql() } : {}),
       ...(isModuleTaskLinkWriteAction(action.action)
         || isModuleWriteActionName(action.action)
         || isModuleRecordBulkCreateAction(action.action)

@@ -493,6 +493,13 @@ export type AgentEditWriteOptions = {
   fromProposal?: JSONContent;
   /** The caller's work in the write's transaction, after the agent version: it commits or rolls back with the edit. */
   inTransaction?: (tx: Tx, applied: { versionId: string; changedBlockIds: string[] }) => Promise<void>;
+  /**
+   * The caller's check in the write's transaction, with the document row
+   * locked and after every writer check (and the already-applied check),
+   * before anything changes: whatever it throws rolls the write back and is
+   * rethrown (M7 fix round 1, I4: the chat exception's landing, decided again).
+   */
+  beforeWrite?: (tx: Tx) => Promise<void>;
 };
 
 /**
@@ -520,6 +527,7 @@ opts: AgentEditWriteOptions = {}): Promise<{ versionId: string; changedBlockIds:
       beforeMutate: async (tx) => {
         const already = await appliedEdit(tx, i.orgId, i.documentId, i.actionId);
         if (already) throw new AlreadyApplied(already);
+        await opts.beforeWrite?.(tx);
       },
       mutate: (doc) => {
         outcome.details = editInDoc(doc, {

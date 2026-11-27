@@ -38,24 +38,26 @@
 // same transaction), or answers the refusal. The action's params are only
 // { document_id, summary, suggestion_id? }: the operations live in the
 // suggestion, or in the agent version's edit_details (rule C4).
-import { and, eq } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+import { and, asc, eq, isNull } from 'drizzle-orm';
 import * as Y from 'yjs';
 import { agentActions, agentEmployees, orgs } from '@deft/db/schema';
 import { documents, drives } from '@deft/db/documents';
 import { EMPTY_DOCUMENT, markdownToJson } from '@deft/doc-schema';
 import { deriveContent, type JSONContent } from '../collab/persistence.js';
 import { readCurrentDocument } from '../collab/server.js';
+import type { executeAction as ExecuteActionFn, executeActionDirect as ExecuteActionDirectFn } from './agent-actions.js';
 import { isDestructiveAction, type TrustLevel } from './agent-approval.js';
 import { getActiveAgentToolPolicy } from './agent-tool-policy.js';
 import { logAuditEvent } from './audit.js';
-import { db } from './db.js';
-import { createDocumentInputForStorage, editDocumentInputForStorage } from './document-audience.js';
+import { db, withDbAdvisoryLock } from './db.js';
+import { createDocumentInputForStorage, editDocumentInputForStorage, storableRef } from './document-audience.js';
 import { documentRoleFor } from './document-access.js';
 import { applyOpsToJson, type DocumentEditOp } from './document-edit.js';
 import {
   agentEditModeFor, decideEditLanding, otherHumansOpen, type EditLanding, type EditLandingInput,
 } from './document-edit-landing.js';
-import { DOCUMENT_EDIT_ACTION } from './document-suggestions.js';
+import { DIRECT_EDIT_SUGGESTED, DOCUMENT_EDIT_ACTION } from './document-suggestions.js';
 import { createDocumentInTx, DocumentRefusal } from './documents.js';
 import { deftyUserId } from './legacy-notes.js';
 import { linkToolImagesInTx, ToolImageChanged, toolImages } from './note-tool-images.js';
@@ -156,10 +158,11 @@ export function parseEditDocumentInput(input: unknown): EditDocumentCall | null 
 /** What an edit_document action's params are (rule C4): the document and the summary, and the suggestion once made. */
 export function documentEditActionParams(params: unknown): { document_id: string; summary: string; suggestion_id?: string } {
   const record = isRecord(params) ? params : {};
+  const suggestionId = storableRef(record.suggestion_id);
   return {
-    document_id: typeof record.document_id === 'string' ? record.document_id : '',
+    document_id: storableRef(record.document_id) ?? '',
     summary: typeof record.summary === 'string' ? record.summary.trim().slice(0, MAX_SUMMARY) : '',
-    ...(typeof record.suggestion_id === 'string' ? { suggestion_id: record.suggestion_id } : {}),
+    ...(suggestionId ? { suggestion_id: suggestionId } : {}),
   };
 }
 
@@ -277,12 +280,217 @@ export function documentEditReply(decision: Extract<DocumentEditDecision, { kind
  * Closes a direct edit's action that came back waiting for approval (an
  * employee whose own trust was lowered between the decision and the write):
  * a pending edit_document action with no suggestion could never be applied,
- * so it expires and the runner queues a suggestion instead.
+ * so it expires (and gives up its request key) and a suggestion is queued instead.
  */
 export async function expireUnsuggestedEditAction(orgId: string, actionId: string): Promise<void> {
   await db.update(agentActions)
-    .set({ approval_status: 'expired', error: 'Superseded: this edit was queued as a suggestion', updated_at: new Date() })
+    .set({ approval_status: 'expired', error: 'Superseded: this edit was queued as a suggestion', runtime_request_key: null, updated_at: new Date() })
     .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId), eq(agentActions.approval_status, 'pending')));
+}
+
+// ---------------------------------------------------------------------------
+// The landing decided again inside the write (fix round 1, I4)
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+let recheckHookForTest: ((documentId: string) => Promise<void>) | null = null;
+/** Test seam: awaited inside the write, before the landing is decided again. */
+export function _setDirectEditRecheckHookForTest(hook: ((documentId: string) => Promise<void>) | null): void {
+  recheckHookForTest = hook;
+}
+
+/**
+ * chatEditLanding again, read in the write's transaction `tx` (the document
+ * row locked, after the writer's checks): the workspace's trust and, for an
+ * employee, the lower of that and its own, read now; the asker's role,
+ * setting and the drive, read now; whether another person is in the document;
+ * and the same request (the model's mode, the asker's own message, the
+ * call). A downgrade that committed before this read leaves the edit a
+ * suggestion; one that commits after it orders after the edit.
+ */
+export async function chatEditLandingInTx(tx: Tx, i: {
+  orgId: string; askerId: string; agentEmployeeId?: string | null; documentId: string; params: unknown;
+  requestOverride: EditLandingInput['requestOverride']; askerMessageText: string | null;
+}): Promise<ChatEditLanding> {
+  if (recheckHookForTest) await recheckHookForTest(i.documentId);
+  const role = await documentRoleFor(i.askerId, i.orgId, i.documentId, tx);
+  const [doc] = await tx.select({ kind: drives.kind, owner: drives.owner_user_id, suggestOnly: drives.agent_suggest_only }).from(documents)
+    .innerJoin(drives, and(eq(drives.id, documents.drive_id), eq(drives.org_id, documents.org_id)))
+    .where(and(eq(documents.id, i.documentId), eq(documents.org_id, i.orgId), eq(documents.is_deleted, false))).limit(1);
+  if (!doc || !role) return { landing: 'refuse', reason: 'asker_cannot_edit' };
+  const [org] = await tx.select({ trust_level: orgs.trust_level }).from(orgs).where(eq(orgs.id, i.orgId)).limit(1);
+  let trustLevel = lowerTrustLevel(org?.trust_level);
+  if (i.agentEmployeeId) {
+    const [employee] = await tx.select({ trust_level: agentEmployees.trust_level }).from(agentEmployees).where(and(
+      eq(agentEmployees.id, i.agentEmployeeId), eq(agentEmployees.org_id, i.orgId), eq(agentEmployees.is_active, true), eq(agentEmployees.is_deleted, false),
+    )).limit(1);
+    trustLevel = employee ? lowerTrustLevel(trustLevel, employee.trust_level) : 'conservative';
+  }
+  return chatEditLanding({
+    trustLevel,
+    askerId: i.askerId,
+    askerRole: role,
+    drive: { kind: doc.kind, ownerUserId: doc.owner, agentSuggestOnly: doc.suggestOnly },
+    mode: await agentEditModeFor(i.orgId, i.askerId, tx),
+    requestOverride: i.requestOverride,
+    askerMessageText: i.askerMessageText,
+    otherHumansOpen: await otherHumansOpen({ orgId: i.orgId, documentId: i.documentId, askerId: i.askerId }, tx),
+  }, i.params);
+}
+
+// ---------------------------------------------------------------------------
+// One edit per request (fix round 1, I5)
+
+/**
+ * The key of one edit_document call: the triggering message and the model's
+ * tool_use id, hashed. Stored as the direct action's runtime_request_key
+ * (the column plans and runtime actions use for the same purpose), so a
+ * redelivered job that makes the same call finds the action it already made.
+ * Null without a triggering message (only chat has one).
+ */
+export function documentEditRequestKey(orgId: string, messageId: string | null | undefined, toolUseId: string | null | undefined): string | null {
+  if (!messageId || !toolUseId) return null;
+  return `document-edit:${createHash('sha256').update(`${orgId}\u0000${messageId}\u0000${toolUseId}`).digest('hex')}`;
+}
+
+type PriorEdit = { id: string; approval_status: string; executed_at: Date | null; error: string | null; params: unknown };
+
+async function priorDocumentEdit(orgId: string, agentEmployeeId: string | null, key: string): Promise<PriorEdit | null> {
+  const [row] = await db.select({
+    id: agentActions.id, approval_status: agentActions.approval_status, executed_at: agentActions.executed_at,
+    error: agentActions.error, params: agentActions.params,
+  }).from(agentActions).where(and(
+    eq(agentActions.org_id, orgId),
+    agentEmployeeId ? eq(agentActions.agent_employee_id, agentEmployeeId) : isNull(agentActions.agent_employee_id),
+    eq(agentActions.runtime_request_key, key),
+    eq(agentActions.action, DOCUMENT_EDIT_ACTION),
+  )).orderBy(asc(agentActions.created_at)).limit(1);
+  return row ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// The call, as the runner makes it
+
+/** What the runner does with an edit_document call. */
+export type DocumentEditOutcome = {
+  /** What the model is told (the runner holds it to the room's audience). */
+  reply: Record<string, unknown>;
+  failed: boolean;
+  /** For the run's executed actions: a refusal, or an edit applied or attempted. */
+  executed?: { actionId: string | null; success: boolean };
+  /** A suggestion to queue: persist makes it from `params.ops`, or links `existingActionId`, whose suggestion exists. */
+  pending?: { params: Record<string, unknown>; existingActionId?: string };
+};
+
+type DirectResult = { actionId: string; success: boolean; result?: unknown; error?: string; requiresApproval?: boolean };
+
+/**
+ * Runs one edit_document call Defty made in a chat (the header): background
+ * work is refused; then, under an advisory lock on the call's request key,
+ * an action this request already made is reused (fix round 1, I5: its
+ * outcome answered again after the asker's access is checked, or an edit that
+ * never finished written again through the same checks); otherwise the edit
+ * is decided, and a direct one written through `executeDirect` with its
+ * landing decided again inside the write (I4). The executors are passed in
+ * (lib/agent-actions.ts imports this module).
+ */
+export async function runDocumentEditCall(i: {
+  orgId: string; askerId: string; agentEmployeeId?: string; background: boolean; input: unknown; askerMessageText: string | null;
+  conversationId: string | null; sourceMessageId?: string; toolUseId: string;
+  executeDirect: typeof ExecuteActionDirectFn; executeExisting: typeof ExecuteActionFn;
+}): Promise<DocumentEditOutcome> {
+  if (i.background) {
+    const refused = refusal('unprompted') as Extract<DocumentEditDecision, { kind: 'refuse' }>;
+    return { reply: refused.reply, failed: true, executed: { actionId: null, success: false } };
+  }
+  const key = documentEditRequestKey(i.orgId, i.sourceMessageId, i.toolUseId);
+  const handle = () => decideAndRunEdit(i, key);
+  return key ? withDbAdvisoryLock(`agent-document-edit:${key}`, handle) : handle();
+}
+
+async function decideAndRunEdit(i: Parameters<typeof runDocumentEditCall>[0], key: string | null): Promise<DocumentEditOutcome> {
+  const prior = key ? await priorDocumentEdit(i.orgId, i.agentEmployeeId ?? null, key) : null;
+  // A request already answered: its outcome, never a second edit.
+  if (prior && !(prior.approval_status === 'approved' && prior.executed_at === null)) return replayPriorEdit(i, prior);
+
+  const decision = await decideDocumentEdit({
+    orgId: i.orgId, askerId: i.askerId, agentEmployeeId: i.agentEmployeeId, background: false, input: i.input, askerMessageText: i.askerMessageText,
+  });
+  if (decision.kind === 'refuse') return { reply: decision.reply, failed: true, executed: { actionId: null, success: false } };
+  const queue = (landing: Exclude<ChatEditLanding, { landing: 'refuse' }>, existingActionId?: string): DocumentEditOutcome => ({
+    reply: documentEditReply({ ...decision, kind: 'suggest', landing }),
+    failed: false,
+    pending: { params: { ...decision.actionParams, ops: decision.call.ops }, ...(existingActionId ? { existingActionId } : {}) },
+  });
+  if (decision.kind === 'suggest') return queue(decision.landing);
+
+  const recheck = (tx: Tx) => chatEditLandingInTx(tx, {
+    orgId: i.orgId, askerId: i.askerId, agentEmployeeId: i.agentEmployeeId, documentId: decision.call.documentId, params: i.input,
+    requestOverride: requestOverrideOf(decision.call.mode), askerMessageText: i.askerMessageText,
+  });
+  const documentEdit = { ops: decision.call.ops, recheck };
+  // An edit this request started that never finished is written again under the same action
+  // (the writer's already-applied check makes that safe); otherwise a new action.
+  const direct: DirectResult = prior
+    ? { actionId: prior.id, ...(await i.executeExisting(prior.id, DOCUMENT_EDIT_ACTION, decision.actionParams, i.orgId, i.askerId,
+      { ...(i.agentEmployeeId ? { agentEmployeeId: i.agentEmployeeId } : {}), documentEdit })) }
+    : await i.executeDirect(DOCUMENT_EDIT_ACTION, decision.actionParams, i.orgId, i.askerId, i.conversationId, 'quick', {
+      agentEmployeeId: i.agentEmployeeId,
+      source: 'document_edit_exception',
+      ...(i.sourceMessageId ? { messageId: i.sourceMessageId } : {}),
+      toolUseId: i.toolUseId,
+      ...(key ? { runtimeRequestKey: key } : {}),
+      documentEdit,
+    });
+  if (direct.requiresApproval) {
+    // The employee's own trust was lowered meanwhile: a suggestion instead.
+    await expireUnsuggestedEditAction(i.orgId, direct.actionId);
+    return queue({ landing: 'suggest', reason: 'conservative_trust' });
+  }
+  if (direct.success) {
+    return { reply: documentEditReply(decision, direct.actionId), failed: false, executed: { actionId: direct.actionId, success: true } };
+  }
+  if (direct.error === DIRECT_EDIT_SUGGESTED) {
+    // Decided again inside the write: no longer direct, so the same action now waits as a suggestion.
+    const reason = isRecord(direct.result) && typeof direct.result.reason === 'string' ? direct.result.reason : 'conservative_trust';
+    return queue({ landing: 'suggest', reason } as Exclude<ChatEditLanding, { landing: 'refuse' }>, direct.actionId);
+  }
+  return {
+    reply: { error: direct.error ?? 'The edit could not be applied', code: 'EDIT_FAILED' },
+    failed: true,
+    executed: { actionId: direct.actionId, success: false },
+  };
+}
+
+/**
+ * The outcome of an action this request already made (I5), told again only
+ * while the asker can still open the document: applied (with its undo id),
+ * failed, waiting as a suggestion (linked to this reply), or settled.
+ */
+async function replayPriorEdit(i: Parameters<typeof runDocumentEditCall>[0], prior: PriorEdit): Promise<DocumentEditOutcome> {
+  const params = documentEditActionParams(prior.params);
+  const notFound: DocumentEditOutcome = { reply: { error: 'Document not found', code: 'DOCUMENT_NOT_FOUND' }, failed: true };
+  if (!params.document_id || !(await documentRoleFor(i.askerId, i.orgId, params.document_id))) return notFound;
+  const [doc] = await db.select({ title: documents.title }).from(documents)
+    .where(and(eq(documents.id, params.document_id), eq(documents.org_id, i.orgId), eq(documents.is_deleted, false))).limit(1);
+  if (!doc) return notFound;
+  const named = { document_id: params.document_id, title: doc.title, url: `/d/${params.document_id}` };
+  if (prior.approval_status === 'approved' && !prior.error) {
+    return { reply: { ...named, landing: 'direct', reason: 'already_applied', undo: { action_id: prior.id } }, failed: false,
+      executed: { actionId: prior.id, success: true } };
+  }
+  if (prior.approval_status === 'approved') {
+    return { reply: { error: prior.error ?? 'The edit could not be applied', code: 'EDIT_FAILED' }, failed: true, executed: { actionId: prior.id, success: false } };
+  }
+  if (prior.approval_status === 'pending') {
+    const ops = parseEditDocumentInput(i.input)?.ops;
+    return {
+      reply: { ...named, landing: 'suggest', reason: 'already_suggested' },
+      failed: false,
+      ...(ops ? { pending: { params: { ...params, ops }, existingActionId: prior.id } } : {}),
+    };
+  }
+  return { reply: { error: 'This edit was already settled', code: 'EDIT_ALREADY_SETTLED' }, failed: true };
 }
 
 // ---------------------------------------------------------------------------

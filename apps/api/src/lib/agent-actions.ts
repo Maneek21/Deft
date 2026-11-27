@@ -58,7 +58,7 @@ import {
 } from './legacy-notes.js';
 import { updateDocument } from './documents.js';
 import { DOCUMENT_EDIT_ACTION, executeDocumentEditAction } from './document-suggestions.js';
-import type { DocumentEditOp } from './document-edit.js';
+import type { DirectDocumentEdit } from './document-suggestions.js';
 import { CREATE_DOCUMENT_ACTION, createAgentDocument, documentEditActionParams } from './agent-document-write-tools.js';
 import { executeWikiWriteAction, TERMINAL_REFUSAL_RESULT, wikiProposalTargetValues } from './wiki-proposal-target.js';
 import {
@@ -1566,9 +1566,10 @@ export async function executeAction(
     /**
      * Set only by the chat exception's direct edit (M7, executeActionDirect
      * from lib/agent-runner.ts): the call's operations, which the action's
-     * params never hold (rule C4).
+     * params never hold (rule C4), and the landing decided again inside the
+     * write (fix round 1, I4).
      */
-    documentEditOps?: DocumentEditOp[];
+    documentEdit?: DirectDocumentEdit;
   },
 ): Promise<{ success: boolean; result: any; error?: string }> {
   const agentEmployeeId = options?.agentEmployeeId ?? null;
@@ -1717,7 +1718,7 @@ export async function executeAction(
       // chat exception's direct edit with the call's own operations (M7).
       case DOCUMENT_EDIT_ACTION:
         return executeDocumentEditAction({
-          orgId, actionId, claimToken: options?.suggestionClaimToken, directOps: options?.documentEditOps,
+          orgId, actionId, claimToken: options?.suggestionClaimToken, direct: options?.documentEdit,
         });
 
       // A document Defty or an agent creates (M7, lib/agent-document-write-tools.ts):
@@ -3523,8 +3524,8 @@ type ExecuteActionDirectOptions = {
   humanMcpClientId?: string;
   /** Internal plan rail that can only add a human checkpoint. */
   forceApproval?: boolean;
-  /** The chat exception's direct edit only (M7): edit_document's operations, never stored in params. */
-  documentEditOps?: DocumentEditOp[];
+  /** The chat exception's direct edit only (M7): edit_document's operations (never stored in params) and its recheck. */
+  documentEdit?: DirectDocumentEdit;
 };
 
 type ExecuteActionDirectResult = {
@@ -4008,7 +4009,7 @@ async function executeActionDirectLocked(
 
   const result = await executeAction(actionRecord.id, action, params, orgId, userId, {
     agentEmployeeId: options?.agentEmployeeId,
-    ...(action === DOCUMENT_EDIT_ACTION && options?.documentEditOps ? { documentEditOps: options.documentEditOps } : {}),
+    ...(action === DOCUMENT_EDIT_ACTION && options?.documentEdit ? { documentEdit: options.documentEdit } : {}),
     trustedHumanMcpPrincipal: Boolean(
       isModuleRecordBulkCreateAction(action)
       && humanPrincipal

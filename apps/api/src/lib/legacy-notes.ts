@@ -48,6 +48,7 @@ import { readCurrentDocument, type CollabActor } from '../collab/server.js';
 import { db } from './db.js';
 import { DEFTY_EMAIL } from './defty-identity.js';
 import { documentRoleFor, visibleDocumentCondition, type DocRole } from './document-access.js';
+import { omittedText, storableRef } from './document-audience.js';
 import { DocumentWriteRefused, writeDocument } from './document-writer.js';
 import { emitDocumentAccessChanged, emitDocumentUpdated } from './document-access-events.js';
 import { emitDocumentEvent } from './document-events.js';
@@ -483,13 +484,21 @@ function omittedToolContent(content: unknown, documentId: string | null) {
 export function toolInputWithContentOmitted(action: string, toolInput: unknown, result: unknown): unknown {
   if (!DOCUMENT_CONTENT_TOOLS.has(action) || !toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return toolInput;
   const record = toolInput as Record<string, unknown>;
-  if (record.content === undefined || record.content === null) return toolInput;
-  if (typeof record.content === 'object' && (record.content as Record<string, unknown>).content_omitted === true) return toolInput;
   const outcome = result && typeof result === 'object' ? result as Record<string, unknown> : {};
   const documentId = typeof outcome.document_id === 'string' ? outcome.document_id
     : typeof outcome.canvas_document_id === 'string' ? outcome.canvas_document_id : null;
   if (!documentId) return toolInput;
-  return { ...record, content: omittedToolContent(record.content, documentId) };
+  // Rebuilt from F15's fields every time (M7 fix round 1, I1): nothing else the
+  // model sent, and no `content_omitted` marker of its own, is kept.
+  const text = (key: string, max: number) => (typeof record[key] === 'string' ? { [key]: (record[key] as string).slice(0, max) } : {});
+  const ref = (key: string) => (storableRef(record[key]) === null ? {} : { [key]: record[key] as string });
+  return {
+    ...(action === 'create_note'
+      ? { ...text('title', 500), ...(['private', 'org', 'space'].includes(record.visibility as string) ? { visibility: record.visibility } : {}), ...ref('visibility_space_id') }
+      : { ...text('space_name', 200), ...text('title', 500) }),
+    ...ref('source_message_id'),
+    ...(record.content === undefined || record.content === null ? {} : { content: omittedText(record.content, documentId) }),
+  };
 }
 
 /**
