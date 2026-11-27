@@ -14,8 +14,10 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 - In a room, a thread, a group DM or a DM between two people, Defty now uses only the
   records every reader of that conversation can see: its members and guests and, for a
-  public room, everyone in the workspace who can open it, plus any agent that can read
-  it (with that agent's project limits). It used to answer with the asker's access, so a
+  public room, everyone in the workspace who can open it. An agent counts while its
+  employee is active, with that employee's project limits, and it reads every public
+  room, so an agent limited to some projects narrows Defty's answers there; a paused
+  agent doesn't count. It used to answer with the asker's access, so a
   reply in a public room could name a restricted task that the other people there get
   "not found" on. Tasks and their counts, projects, messages, notes, canvases and wiki
   pages are checked this way. So are the tasks named in the room's messages, Defty's
