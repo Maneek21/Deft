@@ -49,8 +49,10 @@ const event = randomUUID(), imported = randomUUID(), malformed = randomUUID();
 // Invitations accepted from email or an app, stored as native events with the
 // sender's attendee list (native-calendar-invitation-create.ts).
 const emailInvite = randomUUID(), appInvite = randomUUID(), rsvpInvite = randomUUID();
+// Any other field Deft does not write itself fails closed too.
+const otherImport = randomUUID();
 const SHOWN = [event, imported, malformed];
-const INVITES = [emailInvite, appInvite, rsvpInvite];
+const INVITES = [emailInvite, appInvite, rsvpInvite, otherImport];
 // [id, name, role in org (null: not a member), active, kind]
 const people: Array<[string, string, string | null, boolean, 'human' | 'agent']> = [
   [sam, 'Sam Creator', 'owner', true, 'human'],
@@ -113,6 +115,7 @@ before(async () => {
   await insertEvent(emailInvite, 'native', `${TITLE} email invite`, attendees([raj]), { email_invitation: { schema_version: 'test.email_invitation' }, email_invitation_response: 'accepted' });
   await insertEvent(appInvite, 'native', `${TITLE} app invite`, attendees([raj]), { app_integration_invitation: { schema_version: 'deft.app_calendar_invitation.v1' }, email_invitation_response: null });
   await insertEvent(rsvpInvite, 'native', `${TITLE} rsvp invite`, attendees([raj]), { email_invitation_response: null });
+  await insertEvent(otherImport, 'native', `${TITLE} other import`, attendees([raj]), { source_ref: 'another-app' });
   // ics_publish_tokens comes from an upgrade a partial local push-full may lack;
   // if so, create it exactly as the upgrade does.
   if (!(await c.query(`SELECT to_regclass('public.ics_publish_tokens') AS t`)).rows[0].t) {
@@ -226,7 +229,7 @@ test('an attendee who is a member sees the native event everywhere, and not the 
   assert.deepEqual(await surfaces(raj), everywhere([event]));
 });
 
-test('an invitation the creator accepted from email or an app stays theirs, though it lists the attendee', async () => {
+test('an invitation the creator accepted, or any event with fields Deft does not write, stays theirs, though it lists the attendee', async () => {
   assert.deepEqual(await surfaces(raj, org, INVITES), everywhere([]));
   // The creator still has them where they had them before (the calendar list
   // and dashboard show email invitations through their own projection).

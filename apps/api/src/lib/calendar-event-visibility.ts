@@ -11,9 +11,12 @@ import { canonicalDeftyEmployeeCondition } from './defty-identity.js';
  * matched by email, ignoring case) who is an active owner, admin or member of
  * the event's organization. A guest, a deactivated member and anyone outside
  * the organization see nothing. An imported event stays its owner's: one from
- * another calendar, and an invitation accepted from email or an app, which is
- * stored as a native event marked by email_invitation, app_integration_invitation
- * or email_invitation_response (native-calendar-invitation-create.ts). */
+ * another calendar, and an accepted invitation, which is stored as a native
+ * event too but carries its own source fields (native-calendar-invitation-create.ts).
+ * So only an event whose metadata holds nothing but the fields Deft writes
+ * (DEFT_EVENT_FIELDS) is shared; anything else fails closed. */
+const DEFT_EVENT_FIELDS = sql.raw(`'start', 'end', 'location', 'attendees', 'hangoutLink', 'status', 'allDay'`);
+
 function ownerCondition(viewerUserId: string | typeof agentEmployees.user_id): SQL {
   return sql`(${events.user_id} = ${viewerUserId} OR EXISTS (
     SELECT 1 FROM ${connectedAccounts}
@@ -21,9 +24,9 @@ function ownerCondition(viewerUserId: string | typeof agentEmployees.user_id): S
       AND ${connectedAccounts.org_id} = ${events.org_id}
       AND ${connectedAccounts.user_id} = ${viewerUserId}
   ) OR (${events.source} = 'native' AND ${events.event_type} = 'calendar_event'
-    AND ${events.metadata} -> 'email_invitation' IS NULL
-    AND ${events.metadata} -> 'app_integration_invitation' IS NULL
-    AND ${events.metadata} -> 'email_invitation_response' IS NULL
+    AND jsonb_typeof(${events.metadata}) = 'object'
+    AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(CASE WHEN jsonb_typeof(${events.metadata}) = 'object'
+      THEN ${events.metadata} ELSE '{}'::jsonb END) AS field(name) WHERE field.name NOT IN (${DEFT_EVENT_FIELDS}))
     AND EXISTS (
     SELECT 1 FROM ${orgMembers} attendee_member
     INNER JOIN ${users} attendee_user ON attendee_user.id = attendee_member.user_id
