@@ -35,6 +35,9 @@ if (!runningInCi && process.env.DATABASE_URL === configuredDatabaseUrl) {
 // process so pairing coverage cannot silently turn into skipped tests.
 process.env.DEFT_APPS_ENABLED = 'true';
 process.env.DEFT_APP_DEVELOPER_PAIRING_ENABLED = 'true';
+// Defty's reply suites test its answers in rooms, which the FIX158 stop-gap
+// turns off by default; its own test (defty-dm-only-db) turns it back on.
+process.env.DEFT_DEFTY_SHARED_ANSWERS ??= 'on';
 
 const pnpmCli = process.env.npm_execpath;
 if (!pnpmCli) {

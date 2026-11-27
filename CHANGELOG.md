@@ -10,6 +10,18 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Defty answers only in a direct message for now
+
+- In a room, a thread in a room, a group DM or a DM between two people, Defty now replies
+  once: "I can't answer here: other people can read this conversation, and my answer
+  could include things not all of them can see. Ask me in a direct message." It reads
+  with the access of the person who asked, so a reply there could name a restricted task
+  that other people in the conversation can't open. It runs nothing in those
+  conversations and drafts no approval cards there, and a thread it follows stays quiet.
+  A 1:1 DM with Defty works as before, as does a room only you can read. Self-hosted
+  operators can set `DEFT_DEFTY_SHARED_ANSWERS=on` to bring back answers in shared
+  conversations, leak included.
+
 ## [0.3.0-preview.157] — 2026-11-27 (prerelease)
 
 Changes since `v0.3.0-preview.156`: #624, #625, #626 and #627 (#624 changes only tests).

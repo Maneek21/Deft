@@ -9,6 +9,7 @@ import { getApprovalTier } from '../../lib/agent-approval.js';
 import { eq, and, desc, sql, ne, lt, inArray } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
+import { DEFTY_EMAIL } from '../../lib/defty-identity.js';
 import { buildModuleReadActor } from '../../lib/agent-context.js';
 import {
   authorizedDurableAgentResult,
@@ -1429,6 +1430,36 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     // we still want recent flat history; agent-runner gets it via conversationHistory.
     const historyParentId = parentId || messageId;
 
+    // FIX158 stop-gap: Defty reads with the asker's access, so it answers
+    // only where the asker is the only reader. Anywhere others can read the
+    // answer it runs nothing and says, once, to ask it in a direct message;
+    // an implicitly followed turn there stays silent. On by default;
+    // DEFT_DEFTY_SHARED_ANSWERS=on restores answers in shared conversations
+    // (and with them the leak this guards against).
+    if (process.env.DEFT_DEFTY_SHARED_ANSWERS !== 'on' && await othersCanReadConversation(orgId, spaceId, userId)) {
+      if (followed) return;
+      const posted = await db.transaction(async (tx) => {
+        if (await claimDeftyReplySlot(tx, replyTrigger, delivery)) return null;
+        const [inserted] = await tx.insert(messages).values({
+          org_id: orgId,
+          space_id: spaceId,
+          user_id: agentUserId,
+          content: DEFTY_SHARED_CONVERSATION_REPLY,
+          parent_id: threadParentId,
+          metadata: { is_agent_reply: true, reply_to_message_id: messageId },
+        }).returning();
+        await assertDeliveryOwnedBeforeCommit(tx, delivery);
+        return inserted ?? null;
+      });
+      if (!posted) return;
+      try {
+        await broadcastAgentReply({ dependencies, agentUserId, agentMessage: posted, spaceId, threadParentId });
+      } catch {
+        console.warn('[agent-reply] Reply committed but its broadcast failed');
+      }
+      return;
+    }
+
     // Load conversation history.
     // - DM (no explicit thread): last 10 top-level messages in the space.
     // - Channel or explicit thread: last 10 messages in the thread + the
@@ -2193,6 +2224,36 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     console.error('[agent-reply] Failed to generate agent reply:');
     throw err; // Re-throw so the PostgreSQL queue worker can retry.
   }
+}
+
+/** What Defty says in a conversation other people can read (FIX158 stop-gap). */
+export const DEFTY_SHARED_CONVERSATION_REPLY = 'I can\'t answer here: other people can read this conversation, and my answer could include things not all of them can see. Ask me in a direct message.';
+
+/**
+ * True when anyone but the asker can read the conversation `spaceId`: another
+ * member who is active in the workspace, or, for a public room that is not
+ * archived, any active member of the workspace other than a human guest.
+ * Defty never counts; an agent counts while its employee is active. A
+ * conversation that is not in this workspace counts as read by others.
+ */
+async function othersCanReadConversation(orgId: string, spaceId: string, askerId: string): Promise<boolean> {
+  const rows = (await db.execute(sql`SELECT EXISTS (
+      SELECT 1 FROM spaces conv
+      JOIN org_members reader_member ON reader_member.org_id = conv.org_id AND reader_member.is_active = true
+      JOIN users reader_user ON reader_user.id = reader_member.user_id
+      WHERE conv.id = ${spaceId} AND conv.org_id = ${orgId}
+        AND reader_member.user_id <> ${askerId}
+        AND reader_user.email IS DISTINCT FROM ${DEFTY_EMAIL}
+        AND reader_user.kind <> 'system'
+        AND (reader_user.kind <> 'agent' OR EXISTS (SELECT 1 FROM agent_employees reader_employee
+          WHERE reader_employee.user_id = reader_user.id AND reader_employee.org_id = conv.org_id
+            AND reader_employee.is_active = true AND reader_employee.is_deleted = false))
+        AND (EXISTS (SELECT 1 FROM space_members conv_member WHERE conv_member.space_id = conv.id AND conv_member.user_id = reader_member.user_id)
+          OR (conv.type = 'public' AND conv.is_archived = false
+            AND NOT (reader_member.role = 'guest' AND reader_user.kind = 'human')))
+    ) AS shared, EXISTS (SELECT 1 FROM spaces conv WHERE conv.id = ${spaceId} AND conv.org_id = ${orgId}) AS known`)).rows as Array<{ shared: boolean; known: boolean }>;
+  const row = rows[0];
+  return !row?.known || row.shared === true;
 }
 
 async function broadcastAgentReply(params: {
