@@ -65,6 +65,13 @@ export type DocumentStoredEvent = {
   agentUserIds: string[];
   /** The agent actions whose writes this store holds. */
   actionIds: string[];
+  /**
+   * The people Defty's writes in this store were made for: a write's
+   * `askerId` when it names someone other than the agent, which writeDocument
+   * honours for Defty alone. Listeners that act on the content (backlinks)
+   * check access as these people, never as Defty.
+   */
+  askerIds: string[];
   previousJson: JSONContent;
   json: JSONContent;
   sizeBytes: number;

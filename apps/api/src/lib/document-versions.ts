@@ -266,6 +266,16 @@ async function whileRestoring<T>(orgId: string, documentId: string, fn: () => Pr
   }
 }
 
+/**
+ * Runs `fn` with the document's automatic versions paused, as a restore
+ * pauses them: for a write that saves a version of its own in its
+ * transaction (an agent edit and its undo, lib/document-edit.ts), so its
+ * store isn't saved a second time as an automatic version.
+ */
+export function withAutomaticVersionsPaused<T>(orgId: string, documentId: string, fn: () => Promise<T>): Promise<T> {
+  return whileRestoring(orgId, documentId, fn);
+}
+
 /** The automatic version (the header). */
 async function saveAutomaticVersion(e: DocumentStoredEvent): Promise<void> {
   if (restoring.has(docKey(e.orgId, e.documentId))) return;

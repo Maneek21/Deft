@@ -3,6 +3,11 @@ import { logId } from '../../lib/log-metadata.js';
 // (e.g. PROJ-42) and creates cross_references + task comments linking them.
 // Notes are documents now (F15): a queued note job reads the document the
 // note moved to, and records the reference from that document.
+// A scan of Defty's write names Defty and the person who asked (`askerId`,
+// plan Task M4; lib/document-cross-references.ts). Defty has no employee to
+// re-authorize, so the asker is re-authorized instead and every access check
+// is made as the asker; the reference and any comment are still Defty's. An
+// asker on a job for anyone but Defty is refused, so no one else's checks change.
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
@@ -19,6 +24,7 @@ import {
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { documents, drives } from '@deft/db/documents';
+import { DEFTY_EMAIL } from '../../lib/defty-identity.js';
 import { visibleDocumentCondition } from '../../lib/document-access.js';
 import { mappedTargetId } from '../../lib/legacy-notes.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
@@ -36,6 +42,8 @@ interface CrossReferenceJobData {
   content: string;
   orgId: string;
   userId: string;
+  /** Who Defty wrote for, when `userId` is Defty's: access is checked as this person. */
+  askerId?: string;
 }
 
 export async function handleCrossReference(job: JobData): Promise<void> {
@@ -56,8 +64,18 @@ export async function handleCrossReference(job: JobData): Promise<void> {
   }
   if (!sourceId) return;
 
+  // Defty writing for someone: checked as the asker (the header). Anyone else naming an asker is refused.
+  const askerId = typeof data.askerId === 'string' && data.askerId !== userId ? data.askerId : null;
+  if (askerId !== null) {
+    const [defty] = await db.select({ id: users.id }).from(users)
+      .where(and(eq(users.id, userId), eq(users.email, DEFTY_EMAIL), eq(users.kind, 'agent')))
+      .limit(1);
+    if (!defty) return;
+  }
+  const accessUserId = askerId ?? userId;
+
   // Jobs may execute after a member is offboarded or an employee is paused.
-  // Re-authorize the queued actor before performing any durable write.
+  // Re-authorize the queued actor (for Defty, the asker) before performing any durable write.
   const [activeHuman] = await db
     .select({ id: orgMembers.id })
     .from(orgMembers)
@@ -67,7 +85,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
     ))
     .where(and(
       eq(orgMembers.org_id, orgId),
-      eq(orgMembers.user_id, userId),
+      eq(orgMembers.user_id, accessUserId),
       eq(orgMembers.is_active, true),
     ))
     .limit(1);
@@ -78,7 +96,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
       .from(agentEmployees)
       .where(and(
         eq(agentEmployees.org_id, orgId),
-        eq(agentEmployees.user_id, userId),
+        eq(agentEmployees.user_id, accessUserId),
         eq(agentEmployees.is_active, true),
         eq(agentEmployees.is_deleted, false),
       ))
@@ -98,7 +116,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
       })
       .from(documents)
       .innerJoin(drives, and(eq(drives.id, documents.drive_id), eq(drives.org_id, documents.org_id)))
-      .where(and(eq(documents.id, sourceId), visibleDocumentCondition(userId, orgId)))
+      .where(and(eq(documents.id, sourceId), visibleDocumentCondition(accessUserId, orgId)))
       .limit(1);
     if (!document) return;
 
@@ -119,7 +137,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
       ))
       .innerJoin(spaceMembers, and(
         eq(spaceMembers.space_id, messages.space_id),
-        eq(spaceMembers.user_id, userId),
+        eq(spaceMembers.user_id, accessUserId),
       ))
       .where(and(
         eq(messages.id, sourceId),
@@ -153,7 +171,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
           eq(projects.is_archived, false),
           eq(tasks.org_id, orgId),
           eq(tasks.is_deleted, false),
-          visibleTaskCondition(userId),
+          visibleTaskCondition(accessUserId),
         ))
         .limit(1);
 

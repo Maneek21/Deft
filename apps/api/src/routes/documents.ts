@@ -47,6 +47,13 @@
 // 403, TOO_LARGE 413, BUSY 503 with Retry-After (live editing can't take
 // the write now; nothing changed, so the client tries again), and
 // INVALID_CONTENT or REVISION_CHANGED 409.
+//
+// Agent edits (M4; the rules are in lib/document-edit.ts): POST
+// /agent-edits/:actionId/undo takes no body and needs edit on the document
+// the action edited. An action that isn't there, or whose document the
+// caller can't open, is 404; below edit is 403 FORBIDDEN_ROLE; the writer's
+// refusals answer as for a restore. It answers { restored_block_ids,
+// conflicted_block_ids }; undoing again restores nothing.
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
@@ -67,6 +74,7 @@ import { couldSeeLegacySource, mappedTargetId } from '../lib/legacy-notes.js';
 import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 import { documentCards, MAX_DOCUMENT_CARDS } from '../lib/chat-documents.js';
 import { DocumentWriteRefused, type DocumentWriteRefusalCode } from '../lib/document-writer.js';
+import { undoAgentEdit } from '../lib/document-edit.js';
 import {
   getVersion, listVersions, nameVersion, restoreVersion, VERSION_PAGE_DEFAULT, VERSION_PAGE_MAX,
 } from '../lib/document-versions.js';
@@ -462,6 +470,20 @@ documentRoutes.post('/:id/versions/:vid/restore', async (c) => {
     return c.json({ version_id: versionId });
   } catch (error) {
     return failed(c, error, 'restore the version');
+  }
+});
+
+// POST /api/documents/agent-edits/:actionId/undo (needs edit): puts back the blocks an agent's direct edit changed.
+documentRoutes.post('/agent-edits/:actionId/undo', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!(await noBodyOrJson(c))) return invalid(c);
+    const actionId = idSchema.safeParse(c.req.param('actionId'));
+    if (!actionId.success) return invalid(c);
+    const undone = await undoAgentEdit({ orgId: user.org_id, actionId: actionId.data, userId: user.id });
+    return c.json({ restored_block_ids: undone.restoredBlockIds, conflicted_block_ids: undone.conflictedBlockIds });
+  } catch (error) {
+    return failed(c, error, 'undo the edit');
   }
 });
 

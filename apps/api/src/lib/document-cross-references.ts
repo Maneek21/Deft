@@ -8,10 +8,12 @@
 //
 // The job (workers/handlers/cross-reference.ts) reads the document again as
 // the queued person (a store's first editor, else the agent that wrote it;
-// a created document's creator) and records only what they can see; Defty
-// has no employee row, so its own writes queue a scan that records nothing.
-// The job key holds the revision (`doc-xref:<documentId>:<revision>`), so
-// each store is scanned once.
+// a created document's creator) and records only what they can see. Defty
+// has no employee row, so a store holding only Defty's write carries the
+// person who asked (the stored event's `askerIds`, plan Task M4): the job
+// names Defty and `askerId`, and the worker checks access as the asker. The
+// job key holds the revision (`doc-xref:<documentId>:<revision>`), so each
+// store is scanned once.
 import { and, eq, inArray } from 'drizzle-orm';
 import { documents } from '@deft/db/documents';
 import { jsonToText } from '@deft/doc-schema';
@@ -21,23 +23,26 @@ import { onDocumentEvent, type DocumentLifecycleEvent } from './document-events.
 import { enqueue, QUEUE_NAMES } from './queues.js';
 import { mentionsTaskKey } from './task-key.js';
 
-async function queueScan(orgId: string, documentId: string, revision: number, userId: string): Promise<void> {
+async function queueScan(orgId: string, documentId: string, revision: number, userId: string, askerId?: string): Promise<void> {
   await enqueue(QUEUE_NAMES.AGENT_JOBS, 'cross-reference', {
-    sourceType: 'document', sourceId: documentId, content: '', orgId, userId,
+    sourceType: 'document', sourceId: documentId, content: '', orgId, userId, ...(askerId ? { askerId } : {}),
   }, { orgId, dedupeKey: `doc-xref:${documentId}:${revision}` });
 }
 
 /** A derived store: queues a scan when the stored text names a task key. */
 export async function queueStoredDocumentScan(e: DocumentStoredEvent): Promise<void> {
-  const userId = e.editorIds[0] ?? e.agentUserIds[0];
+  const editorId = e.editorIds[0];
+  const userId = editorId ?? e.agentUserIds[0];
   if (!userId) return;
+  // A store with no person's edits in it, written by Defty for someone: checked as that person.
+  const askerId = editorId === undefined ? e.askerIds[0] : undefined;
   let text: string;
   try {
     text = jsonToText(e.json);
   } catch {
     return;
   }
-  if (mentionsTaskKey(text)) await queueScan(e.orgId, e.documentId, e.revision, userId);
+  if (mentionsTaskKey(text)) await queueScan(e.orgId, e.documentId, e.revision, userId, askerId);
 }
 
 /** Created documents: queues a scan of each whose text names a task key. */

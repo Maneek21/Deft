@@ -1004,7 +1004,7 @@ function createCollabServer(): CollabServer {
       slot.lastDerivedAt = Date.now();
       if (slot.changeCounter === counter) slot.derivedDirty = false;
       void queueListeners(slot.documentId, {
-        orgId: slot.orgId!, documentId: slot.documentId, editorIds: byCount(editors!), agentUserIds: [], actionIds: [],
+        orgId: slot.orgId!, documentId: slot.documentId, editorIds: byCount(editors!), agentUserIds: [], actionIds: [], askerIds: [],
         previousJson, json: derived.json, sizeBytes: state.byteLength, at: new Date(), revision,
       });
     }
@@ -1420,6 +1420,8 @@ function createCollabServer(): CollabServer {
       editorIds: byCount(editors),
       agentUserIds: i.actor.kind === 'agent' ? [i.actor.userId] : [],
       actionIds: i.actor.actionId ? [i.actor.actionId] : [],
+      // Only Defty's write gets this far naming someone else (writeDocument's check).
+      askerIds: i.actor.kind === 'agent' && i.actor.askerId !== undefined && i.actor.askerId !== i.actor.userId ? [i.actor.askerId] : [],
       previousJson, json, sizeBytes, at: new Date(), revision,
     };
   }
