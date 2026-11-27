@@ -570,12 +570,65 @@ function fallbackDedupeSignature(toolName: string, args: Record<string, unknown>
   return createHash('sha256').update(`${toolName}:${stableJson(input)}`).digest('hex');
 }
 
+/** The document a note tool's answer names, or null (rule C4, M7). */
+function noteAnswerDocumentId(result: ToolResult): string | null {
+  try {
+    const payload = JSON.parse(result.content[0]?.text ?? '') as Record<string, any>;
+    const note = payload && typeof payload.note === 'object' && payload.note !== null ? payload.note as Record<string, unknown> : {};
+    const id = [payload?.document_id, note.document_id, note.id].find((value) => typeof value === 'string' && value.length > 0);
+    return typeof id === 'string' ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The outcome a note tool's answer reports (created, updated, archived), and nothing else. */
+function noteAnswerOutcome(result: ToolResult): Record<string, boolean> {
+  try {
+    const payload = JSON.parse(result.content[0]?.text ?? '') as Record<string, unknown>;
+    return Object.fromEntries(['created', 'updated', 'archived'].flatMap((key) => (typeof payload?.[key] === 'boolean' ? [[key, payload[key] as boolean]] : [])));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * A note tool's answer as kept for replay (rule C4, M7): the outcome and the
+ * document, never its title or content, which a replay reads again.
+ */
+function noteAnswerReference(result: ToolResult): ToolResult {
+  const id = noteAnswerDocumentId(result);
+  return textResult({ ...noteAnswerOutcome(result), ...(id ? { document_id: id, url: `/d/${id}`, note: { id, document_id: id } } : {}) });
+}
+
+/**
+ * A note tool's replay (rule C4, M7): the note read again, as the caller may
+ * open it now (readNoteDocument, the one access check); a caller who can't
+ * gets the outcome and the document's id only. Whatever an older stored
+ * answer held is never served.
+ */
+function noteAnswerReplay(ctx: HumanToolContext): (stored: ToolResult) => Promise<ToolResult> {
+  return async (stored) => {
+    const id = noteAnswerDocumentId(stored);
+    const note = id ? await readNoteDocument(ctx.org_id, ctx.user_id, id) : null;
+    if (!id || !note) return noteAnswerReference(stored);
+    return textResult({ ...noteAnswerOutcome(stored), document_id: id, url: note.url, note: { ...note, document_id: note.id } });
+  };
+}
+
 async function withIdempotency(
   toolName: string,
   args: { idempotency_key?: unknown } & Record<string, unknown>,
   ctx: HumanToolContext,
   execute: () => Promise<ToolResult>,
-  options: { bind?: string; store?: (result: ToolResult) => Promise<boolean> } = {},
+  options: {
+    bind?: string;
+    store?: (result: ToolResult) => Promise<boolean>;
+    /** What is kept for replay, when not the answer itself (rule C4: no document text). */
+    storedAs?: (result: ToolResult) => ToolResult;
+    /** How a stored answer is replayed, when not as it was kept (a fresh read with the caller's access now). */
+    replay?: (stored: ToolResult) => Promise<ToolResult>;
+  } = {},
 ): Promise<ToolResult> {
   // A bound result answers only a call for the same target (`bind`); `store`
   // keeps an unsettled answer from being stored for replay.
@@ -602,7 +655,7 @@ async function withIdempotency(
       .orderBy(desc(oauthAuditEvents.created_at))
       .limit(1);
     const replay = storedToolResult(existing?.metadata?.result);
-    if (replay) return replayForViewer(replay, ctx);
+    if (replay) return replayForViewer(options.replay ? await options.replay(replay) : replay, ctx);
   }
 
   const result = await execute();
@@ -620,7 +673,7 @@ async function withIdempotency(
         grant_id: ctx.grant_id ?? null,
         principal_kind: ctx.principal_kind ?? 'human',
         ...(bind === null ? {} : { bind }),
-        result,
+        result: options.storedAs ? options.storedAs(result) : result,
       },
     });
   }
@@ -3396,7 +3449,7 @@ export async function humanNoteCreate(args: Record<string, unknown>, ctx: HumanT
     const note = await readNoteDocument(ctx.org_id, ctx.user_id, documentId);
     return textResult({ created: true, note: note ? { ...note, document_id: documentId } : { id: documentId, document_id: documentId },
       document_id: documentId, url: `/d/${documentId}` });
-  });
+  }, { storedAs: noteAnswerReference, replay: noteAnswerReplay(ctx) });
 }
 
 export async function humanNoteUpdate(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3431,7 +3484,7 @@ export async function humanNoteUpdate(args: Record<string, unknown>, ctx: HumanT
     const updated = await readNoteDocument(ctx.org_id, ctx.user_id, documentId);
     return updated ? textResult({ updated: true, note: { ...updated, document_id: updated.id }, url: updated.url })
       : errorResult('Note not found or not visible');
-  });
+  }, { storedAs: noteAnswerReference, replay: noteAnswerReplay(ctx) });
 }
 
 export async function humanNoteArchive(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3449,7 +3502,7 @@ export async function humanNoteArchive(args: Record<string, unknown>, ctx: Human
       throw error;
     }
     return textResult({ archived: true, note: { id: documentId, document_id: documentId, title: current.title } });
-  });
+  }, { storedAs: noteAnswerReference, replay: noteAnswerReplay(ctx) });
 }
 
 function parseRequiredDate(value: unknown, field: string): Date | ToolResult {

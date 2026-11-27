@@ -11,6 +11,7 @@ import {
   PLAN_EMPLOYEE_UNAVAILABLE_ERROR,
   planCreatorKeepsRoomsSql,
   PlanAccessError,
+  planWithDocumentReferences,
   type PlanStep,
 } from '../lib/agent-plans.js';
 import { getActiveOrgMembership } from '../lib/org-membership.js';
@@ -69,8 +70,11 @@ function planAccessRefusal(err: unknown) {
  */
 async function withDestructiveMarks<T extends {
   steps: unknown; org_id?: string; agent_employee_id?: string | null;
-} | undefined>(plan: T): Promise<T> {
-  if (!plan || !Array.isArray(plan.steps)) return plan;
+} | undefined>(stored: T): Promise<T> {
+  if (!stored || !Array.isArray(stored.steps)) return stored;
+  // M7 (rule C4): a completed document step is shown as references only,
+  // whenever it was stored (lib/agent-plans.ts planWithDocumentReferences).
+  const plan = planWithDocumentReferences(stored as NonNullable<T> & { steps: unknown[] });
   const hasMcpStep = plan.steps.some((step: any) => String(step?.tool ?? '').startsWith('mcp__'));
   const liveTools = hasMcpStep && plan.org_id
     ? await getMCPToolsForAgent(plan.org_id, plan.agent_employee_id ?? undefined).catch(() => [])
