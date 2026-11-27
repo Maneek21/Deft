@@ -10,6 +10,7 @@ import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js'
 import { DocumentRefusal } from '../lib/documents.js';
 import { briefCitationsVisibleSql, createMeetingNotes, linkedDocumentsByEvent } from '../lib/meeting-notes.js';
 import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
+import { liveHumanCalendarEventCondition } from '../lib/calendar-event-visibility.js';
 
 export const calendarRoutes = new Hono();
 
@@ -78,10 +79,11 @@ calendarRoutes.get('/', async (c) => {
       timestamp: events.timestamp,
       metadata: events.metadata,
       source: events.source,
+      // An attendee sees someone else's event read-only (calendar-event-visibility.ts).
+      viewer_is_owner: sql<boolean>`${events.user_id} = ${user.id}`,
     }).from(events)
       .where(and(
-        eq(events.org_id, user.org_id),
-        eq(events.user_id, user.id),
+        liveHumanCalendarEventCondition(user.org_id, user.id),
         between(events.timestamp, from, to),
         sql`${events.metadata}->'email_invitation'->>'schema_version' IS DISTINCT FROM 'deft.email_calendar_event.v1'`,
       ))

@@ -1,16 +1,44 @@
 import { and, eq, or, sql, type SQL } from 'drizzle-orm';
-import { agentEmployees, connectedAccounts, events, orgMembers } from '@deft/db/schema';
+import { agentEmployees, connectedAccounts, events, orgMembers, users } from '@deft/db/schema';
 import { canonicalDeftyEmployeeCondition } from './defty-identity.js';
 
-/** Events belong to their direct user or to the owner of the connected account.
- * The connected account must be in the event's organization as well. */
+/** Who sees a calendar event. This is the one rule for every calendar read;
+ * changing or cancelling an event stays with its own user (events.user_id).
+ *
+ * Events belong to their direct user or to the owner of the connected account.
+ * The connected account must be in the event's organization as well. An event
+ * made in Deft is also seen, read-only, by each attendee (metadata.attendees,
+ * matched by email, ignoring case) who is an active owner, admin or member of
+ * the event's organization. A guest, a deactivated member and anyone outside
+ * the organization see nothing. An imported event stays its owner's: one from
+ * another calendar, and an accepted invitation, which is stored as a native
+ * event too but carries its own source fields (native-calendar-invitation-create.ts).
+ * So only an event whose metadata holds nothing but the fields Deft writes
+ * (DEFT_EVENT_FIELDS) is shared; anything else fails closed. */
+const DEFT_EVENT_FIELDS = sql.raw(`'start', 'end', 'location', 'attendees', 'hangoutLink', 'status', 'allDay'`);
+
 function ownerCondition(viewerUserId: string | typeof agentEmployees.user_id): SQL {
   return sql`(${events.user_id} = ${viewerUserId} OR EXISTS (
     SELECT 1 FROM ${connectedAccounts}
     WHERE ${connectedAccounts.id} = ${events.connected_account_id}
       AND ${connectedAccounts.org_id} = ${events.org_id}
       AND ${connectedAccounts.user_id} = ${viewerUserId}
-  ))`;
+  ) OR (${events.source} = 'native' AND ${events.event_type} = 'calendar_event'
+    AND jsonb_typeof(${events.metadata}) = 'object'
+    AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(CASE WHEN jsonb_typeof(${events.metadata}) = 'object'
+      THEN ${events.metadata} ELSE '{}'::jsonb END) AS field(name) WHERE field.name NOT IN (${DEFT_EVENT_FIELDS}))
+    AND EXISTS (
+    SELECT 1 FROM ${orgMembers} attendee_member
+    INNER JOIN ${users} attendee_user ON attendee_user.id = attendee_member.user_id
+    WHERE attendee_member.org_id = ${events.org_id}
+      AND attendee_member.user_id = ${viewerUserId}
+      AND attendee_member.is_active = true
+      AND attendee_member.role IN ('owner', 'admin', 'member')
+      AND lower(attendee_user.email) IN (
+        SELECT lower(attendee ->> 'email') FROM jsonb_array_elements(CASE
+          WHEN jsonb_typeof(${events.metadata} -> 'attendees') = 'array' THEN ${events.metadata} -> 'attendees'
+          ELSE '[]'::jsonb END) AS attendee)
+  )))`;
 }
 
 /** Use for a host-authenticated human or native Defty caller. A stale or

@@ -13,6 +13,8 @@ export type CalEvent = {
   timestamp: string; metadata: any; source: string;
   /** Meeting notes linked to the event that the viewer can open (M2). */
   documents?: Array<{ id: string; title: string }>;
+  /** False when the viewer is an attendee of someone else's event: read-only. */
+  viewer_is_owner?: boolean;
 };
 
 /** `legacy`: the id is an old note id (from the API's `notes` key), not a document id. */

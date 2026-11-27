@@ -164,15 +164,18 @@ test('"Notes for this meeting" creates a meeting-notes document titled after the
   await call(member, 'POST', path, { drive_id: 7 }, 400);
   await call(member, 'POST', path, { title: 'Not a field here' }, 400);
 
-  // Someone who can't see the event gets a 404, and nothing is made.
+  // Someone who can't see the event gets a 404, and nothing is made. An admin who is not an attendee can't see it.
   const count = async () => (await fx!.client.query('SELECT count(*)::int AS n FROM documents WHERE org_id = $1', [fx!.orgId])).rows[0].n;
   const before = await count();
-  assert.equal((await call(member2, 'POST', path, {}, 404)).code, 'NOT_FOUND');
+  assert.equal((await call(fx.people.admin, 'POST', path, {}, 404)).code, 'NOT_FOUND');
   await call(outsider, 'POST', path, {}, 404);
   await call(member, 'POST', `/api/calendar/events/${randomUUID()}/document`, {}, 404);
   assert.equal(await count(), before);
   const { rows: [{ n: linked }] } = await fx.client.query('SELECT count(*)::int AS n FROM document_event_links WHERE event_id = $1', [event]);
   assert.equal(linked, 2, 'one link per document made');
+  // An attendee sees the event read-only (calendar-event-visibility.ts), so may make notes for it, in a drive they can edit.
+  assert.equal((await stored((await call(member2, 'POST', path, undefined, 201)).document.id)).owner_user_id, member2);
+  assert.equal((await call(member2, 'POST', path, { drive_id: viewOnly }, 403)).code, 'FORBIDDEN_ROLE');
 
   // A guest sees only the people they share a chat with: the owner is left out, not listed by address.
   // In Los Angeles, UTC midnight on 7 Dec is still 6 Dec: an all-day event keeps its own date.
