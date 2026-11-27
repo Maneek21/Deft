@@ -25,7 +25,7 @@ const NOTE = 'note-1';
 const OWNER = { id: 'owner', name: 'Sam Owner', email: 'sam@example.test', kind: 'human', role: 'owner' };
 const RAJ = { id: 'raj', name: 'Raj Patel', email: 'raj@example.test', kind: 'human', role: 'member' };
 const ANA = { id: 'ana', name: 'Ana Silva', email: 'ana@example.test', kind: 'human', role: 'member' };
-const DEFTY = { id: 'defty', name: 'Defty', email: 'deft-agent@system.local', kind: 'agent', role: 'member' };
+const DEFTY = { id: 'defty', name: 'Defty', email: 'deft-agent@system.local', kind: 'agent', role: 'member', is_defty: true };
 const HELPER = { id: 'helper-agent', name: 'Release Helper', email: 'helper@agents.local', kind: 'agent', role: 'member' };
 const MEMBERS = [OWNER, RAJ, ANA, DEFTY, HELPER];
 
@@ -41,7 +41,10 @@ type Seen = {
   alert: string | null;
 };
 
-async function shareWith(person: string | null, answer: ShareAnswer, afterShare?: (tab: any) => Promise<void>): Promise<Seen> {
+type ShareRow = { id: string; user_id: string; permission: string; user_name: string | null; user_email: string | null };
+type View = { members?: Array<Record<string, unknown>>; shares?: ShareRow[] };
+
+async function shareWith(person: string | null, answer: ShareAnswer, afterShare?: (tab: any) => Promise<void>, view: View = {}): Promise<Seen> {
   const page = path.join(web, 'src/app/(app)/notes/page.tsx');
   const auth = path.join(web, 'src/lib/auth-context.tsx');
   const header = path.join(web, 'src/components/app-header-context.tsx');
@@ -79,7 +82,8 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
   const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
   const requests: Seen['requests'] = [];
   // The note starts shared with Ana.
-  const shares: Array<{ id: string; user_id: string; permission: string; user_name: string; user_email: string }> = [
+  const members = view.members ?? MEMBERS;
+  const shares: ShareRow[] = view.shares ? [...view.shares] : [
     { id: 'share-ana', user_id: ANA.id, permission: 'view', user_name: ANA.name, user_email: ANA.email },
   ];
   try {
@@ -97,7 +101,7 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
       if (url.pathname === '/api/auth/me') {
         return json({ user: { id: OWNER.id, name: OWNER.name, email: OWNER.email, timezone: 'UTC', role: 'owner' }, org: { id: 'org', name: 'Launch Co', slug: 'launch' } });
       }
-      if (url.pathname === '/api/members') return json(MEMBERS);
+      if (url.pathname === '/api/members') return json(members);
       if (url.pathname === '/api/daily-notes') return json([]);
       if (url.pathname === '/api/daily-notes/folders') return json({ folders: [] });
       if (url.pathname === '/api/daily-notes/templates') return json({ templates: [] });
@@ -110,7 +114,7 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
         if (answer !== 'server') return json(answer.body, answer.status);
         // As the server: no user_id is a 400; an id that is not an active member is a 404.
         if (typeof body?.user_id !== 'string' || !body.user_id) return json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
-        const member = MEMBERS.find((m) => m.id === body.user_id);
+        const member = members.find((m) => m.id === body.user_id) as { id: string; name: string | null; email: string | null } | undefined;
         if (!member) return json({ error: 'Member not found or inactive', code: 'MEMBER_NOT_FOUND' }, 404);
         const share = { id: `share-${member.id}`, user_id: member.id, permission: 'view', user_name: member.name, user_email: member.email };
         shares.push(share);
@@ -133,8 +137,8 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
 
     await tab.getByRole('button', { name: 'Share note' }).click();
     const dialog = tab.locator('div', { has: tab.getByRole('heading', { name: 'Share Note' }) }).last();
-    await dialog.getByText('Shared with').waitFor();
-    await dialog.getByRole('button', { name: RAJ.name }).waitFor();
+    await dialog.getByText('Add people').waitFor();
+    await dialog.getByRole('button', { name: HELPER.name }).waitFor();
     const addPeople = dialog.locator('div.max-h-40 button');
     const offered = await addPeople.allInnerTexts();
 
@@ -191,4 +195,23 @@ test('note Share: when the server refuses the share, the dialog says so', async 
   assert.match(seen.alert ?? '', /couldn.t share/i);
   assert.match(seen.alert ?? '', /Raj Patel/);
   assert.deepEqual(seen.sharedWith, [`${ANA.name} (view)`]);
+});
+
+// A guest sees no email address but their own (people-visibility), so Defty is
+// known by the members list's is_defty flag, not by its address.
+const asGuestSees = (m: Record<string, unknown>) => ({ ...m, email: m.id === OWNER.id ? OWNER.email : null });
+
+test('note Share: a guest owner is not offered Defty either, though the members list hides its email', async () => {
+  const seen = await shareWith(null, 'server', undefined, { members: MEMBERS.map(asGuestSees), shares: [] });
+  assert.deepEqual(seen.offered, [RAJ.name, ANA.name, HELPER.name]);
+});
+
+test('note Share: a share row with no name shows the email, or "Someone" when neither can be shown', async () => {
+  const seen = await shareWith(null, 'server', undefined, {
+    shares: [
+      { id: 'share-raj', user_id: RAJ.id, permission: 'view', user_name: '', user_email: RAJ.email },
+      { id: 'share-hidden', user_id: 'hidden', permission: 'view', user_name: null, user_email: null },
+    ],
+  });
+  assert.deepEqual(seen.sharedWith, [`${RAJ.email} (view)`, 'Someone (view)']);
 });

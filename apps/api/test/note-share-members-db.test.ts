@@ -12,16 +12,18 @@ import pg from 'pg';
 import { Hono } from 'hono';
 import { memberRoutes } from '../src/routes/members.js';
 import { dailyNoteRoutes } from '../src/routes/daily-notes.js';
+import { ensureDeftyDm, ensureDeftyMembership } from '../src/lib/ensure-defty-membership.js';
 
 const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
 const run = randomUUID().slice(0, 8);
 const org = randomUUID();
-const owner = randomUUID(), raj = randomUUID(), ana = randomUUID();
+const owner = randomUUID(), raj = randomUUID(), ana = randomUUID(), gus = randomUUID();
 const note = randomUUID();
 const people: Array<[string, string, string]> = [
   [owner, 'Sam Owner', 'owner'],
   [raj, 'Raj Patel', 'member'],
   [ana, 'Ana Silva', 'member'],
+  [gus, 'Gus Guest', 'guest'],
 ];
 const emailOf = (id: string) => `nsm-${run}-${id}@test.local`;
 
@@ -38,6 +40,9 @@ before(async () => {
 after(async () => {
   await c.query(`DELETE FROM note_shares WHERE note_id = $1`, [note]);
   await c.query(`DELETE FROM notes WHERE org_id = $1`, [org]);
+  await c.query(`DELETE FROM messages WHERE org_id = $1`, [org]);
+  await c.query(`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id = $1)`, [org]);
+  await c.query(`DELETE FROM spaces WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM org_members WHERE org_id = $1`, [org]);
   await c.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [people.map(([id]) => id)]);
   await c.query(`DELETE FROM orgs WHERE id = $1`, [org]);
@@ -99,4 +104,19 @@ test('note share: only the note\'s owner can share it', async () => {
   assert.equal(res.status, 404);
   const count = await c.query(`SELECT count(*)::int AS n FROM note_shares WHERE note_id = $1 AND shared_with_user_id = $2`, [note, ana]);
   assert.equal(count.rows[0].n, 0);
+});
+
+test('members list: Defty is flagged is_defty, also for a guest, who sees no email addresses', async () => {
+  // The Share dialog leaves Defty out by this flag: Defty reads notes as the
+  // person asking it, so a share gives it nothing.
+  const defty = await ensureDeftyMembership(org);
+  await ensureDeftyDm(org, gus);
+  const asOwner = (await call(owner, '/api/members')).body as Array<Record<string, unknown>>;
+  assert.equal(asOwner.find((m) => m.id === defty)?.is_defty, true);
+  assert.equal(asOwner.find((m) => m.id === raj)?.is_defty, false);
+  const asGuest = (await call(gus, '/api/members')).body as Array<Record<string, unknown>>;
+  const deftyForGuest = asGuest.find((m) => m.id === defty);
+  assert.ok(deftyForGuest, 'the guest sees Defty, with whom they have a DM');
+  assert.equal(deftyForGuest.email, null, 'a guest sees no one else\'s email address');
+  assert.equal(deftyForGuest.is_defty, true);
 });

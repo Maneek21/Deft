@@ -5,6 +5,7 @@ import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import jwt from 'jsonwebtoken';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
+import { DEFTY_EMAIL } from '../lib/defty-identity.js';
 import {
   users,
   orgMembers,
@@ -683,7 +684,8 @@ memberRoutes.get('/', async (c) => {
     // Clear expired statuses
     const now = new Date();
     const result = members.map(member => {
-      const m = { ...member, email: emailFor(viewer, member.id, member.email) };
+      // is_defty is read before a guest's view hides the email address.
+      const m = { ...member, email: emailFor(viewer, member.id, member.email), is_defty: member.email === DEFTY_EMAIL };
       if (m.status_expires_at && new Date(m.status_expires_at) < now) {
         // Auto-clear expired status (fire-and-forget DB update)
         db.update(users).set({ status_emoji: null, status_text: null, status_expires_at: null })

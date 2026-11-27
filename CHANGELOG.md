@@ -17,7 +17,10 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   only **Org** visibility worked. **Add people** now leaves out you, the people the note is
   already shared with, and Defty, which reads notes as the person asking it and so gains
   nothing from a share. If a share is refused, the dialog says "Couldn't share the note
-  with *name*. Try again."
+  with *name*. Try again." A person under **Shared with** whose name you can't see is shown
+  by email address, or as "Someone".
+- `GET /api/members` gives each person an `is_defty` flag, so Defty can be recognised even
+  by a guest, who sees no one else's email address.
 
 ## [0.3.0-preview.156] — 2026-11-27 (prerelease)
 

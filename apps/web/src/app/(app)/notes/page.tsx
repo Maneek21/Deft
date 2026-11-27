@@ -50,8 +50,6 @@ async function uploadRefusal(res: Response): Promise<string> {
   return body && typeof body.error === 'string' && body.error.trim() ? body.error : `The image could not be uploaded (${res.status}).`;
 }
 
-const DEFTY_EMAIL = 'deft-agent@system.local';
-
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
 registerAICommands();
@@ -846,7 +844,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                     <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--muted)' }}>Shared with</div>
                     {shares.map((s: any) => (
                       <div key={s.id} className="flex items-center justify-between py-1.5">
-                        <span className="text-[12px]" style={{ color: 'var(--foreground)' }}>{s.user_name} ({s.permission})</span>
+                        <span className="text-[12px]" style={{ color: 'var(--foreground)' }}>{s.user_name || s.user_email || 'Someone'} ({s.permission})</span>
                         <button onClick={() => handleUnshare(s.user_id)} className="text-[10px] px-2 py-0.5 rounded"
                           style={{ color: 'var(--status-red)' }}>Remove</button>
                       </div>
@@ -857,7 +855,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 <div className="max-h-40 overflow-y-auto space-y-1">
                   {members
                     // Defty reads notes as the person asking it, so a share gives it nothing.
-                    .filter((m: any) => m.id !== user?.id && m.email !== DEFTY_EMAIL && !shares.some((s: any) => s.user_id === m.id))
+                    .filter((m: any) => m.id !== user?.id && !m.is_defty && !shares.some((s: any) => s.user_id === m.id))
                     .map((m: any) => (
                       <button key={m.id} onClick={() => handleShare(m)}
                         className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded-md text-[12px] hover:opacity-80"
