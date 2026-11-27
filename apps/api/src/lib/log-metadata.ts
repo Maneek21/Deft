@@ -11,9 +11,9 @@ export function logId(value: unknown): string {
 }
 
 const JOB_NAMES = new Set([
-  'agent-reply', 'observe-chat-message', 'task-extract', 'cross-reference',
+  'agent-reply', 'defty-document-notice', 'observe-chat-message', 'task-extract', 'cross-reference',
   'native-mention-reconcile', 'native-mention-publish', 'native-mention-deliver',
-  'embed-content', 'memory-extract', 'memory-capture', 'chat-knowledge-batch',
+  'embed-content', 'document-attachments-reconcile', 'memory-extract', 'memory-capture', 'chat-knowledge-batch',
   'blocked-alert', 'duplicate-detect', 'clip-process', 'agent-employee-message',
   'agent-employee-task', 'plan-executor', 'agent-employee-trigger', 'employee-trigger',
   'workflow-execute', 'app-run-attempt', 'app-run-attention', 'app-public-ingress',
@@ -23,7 +23,7 @@ const JOB_NAMES = new Set([
   'manager-pulse', 'burnout-detect', 'weekly-digest', 'wiki-lint', 'agent-daily-reset',
   'reminder-fire', 'scheduled-message-send', 'agent-heartbeat', 'heartbeat-native',
   'trigger-dispatch', 'ics-sync', 'github-sync-scan', 'github-sync-connection',
-  'chat-observation-backfill', 'attention-maintenance', 'app-integration-notification',
+  'chat-observation-backfill', 'attention-maintenance', 'document-suggestion-expiry', 'app-integration-notification',
   'attention-delivery', 'notification-attention-sync',
 ]);
 

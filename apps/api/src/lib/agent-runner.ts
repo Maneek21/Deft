@@ -20,6 +20,7 @@ import { selectVerifiedResponse } from './agent-response-verification.js';
 import { retrieveContext } from './retrieve-context.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
+import { createPlanInputForStorage } from './agent-plans.js';
 import { isReadOnlyAgentRequest } from './agent-request-policy.js';
 import { agentToolFailure } from './agent-tool-result.js';
 import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles, containsLinkConstruct, decodedJsonText, decodeHtmlEntities, mentionsApproval, requiresRuntimeActionEvidence, hasRuntimeActionEvidence } from './agent-source-grounding.js';
@@ -27,7 +28,10 @@ import {
   createModuleNextReadsResolver,
   nativeAgentToolResult,
 } from './agent-module-next-reads.js';
-import { executeActionDirect, isModuleWriteAction } from './agent-actions.js';
+import { executeAction, executeActionDirect, isModuleWriteAction } from './agent-actions.js';
+import { draftToolInputForStorage, isDraftTextAction } from './document-draft-params.js';
+import { citationForStorage, documentToolCallForStorage, holdDocumentToolResponse, type DocumentRef, type WithheldRef } from './document-audience.js';
+import { CREATE_DOCUMENT_ACTION, DOCUMENT_EDIT_ACTION, runDocumentEditCall } from './agent-document-write-tools.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier, type TrustLevel } from './agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
 import { getIO } from '../socket.js';
@@ -56,6 +60,7 @@ Rules:
 - Keep conversation evidence scoped to the current channel or group DM. Quote another channel only when the user explicitly asks for it and can read it. Do not add unrelated project task lists to a conversation answer.
 - Before proposing a write action that names a person (assignee, mentioned user) or project, verify they exist using the appropriate search tool. If the named entity doesn't exist in this workspace, ASK the user to clarify rather than confidently proposing a write against a fabricated name. Never invent a project name to attach a task to — if the user has not named a project, use the single project linked to this space, otherwise the single active accessible project. If several remain, ask which project and name up to five candidates. If the user explicitly says "no project", set project_name to "" (empty string). NEVER default to "General", "Inbox", "Default", or any other invented project name; there is no implicit default project. Same rule for assignee_name when unassigned.
 - For registered write actions (including tasks, messages, wiki, notes, reminders, canvas, and decision links), clearly explain what you'll do. When invoked from a chat mention, writes are not executed immediately — they're queued for the user's approval, which appears as an Approve/Reject card on your reply and in the user's Inbox under the Approvals tab. Do NOT refer to an "Agent panel" or "Agent dashboard" — neither exists.
+- After editing a document, say whether the edit went straight in or is waiting as a suggestion, and offer Undo for a direct edit.
 - You are responding in a chat thread. Keep your reply as a single cohesive message.
 - Use compact markdown lists when helpful; headings require a requested summary or report.
 - Do NOT narrate your tool usage. Do NOT say "I'll search for..." or "Let me look up..." — just use the tools silently and present your findings directly.
@@ -344,9 +349,25 @@ export async function runAgentQuery(params: {
   toolPolicy?: 'default' | 'none';
   /** false: no durable note is saved from this run's answer (default: saved for an employee). */
   durableNotes?: boolean;
+  /**
+   * M7: the asker's own triggering chat message, as they wrote it, and
+   * nothing else: never document text, a tool result, the model's arguments
+   * or an earlier message. Only it can carry "just do it" for edit_document
+   * (lib/document-edit-landing.ts askerRequestedDirect). Null or absent: none.
+   */
+  askerMessageText?: string | null;
 }): Promise<{
   text: string;
   citations: any[];
+  /**
+   * M3: what the document tools showed the model (`shown`, re-checked against
+   * the chat's audience when the reply is written) and left out of a shared
+   * conversation (`withheld`, for the asker's private notice). References
+   * only. Absent when no document tool named anything.
+   */
+  documents?: { shown: DocumentRef[]; withheld: WithheldRef[] };
+  /** M7 consult O-F3: the provider failed mid-run, so the text is the failure notice, not the model's account of what it did. */
+  providerFailed?: boolean;
   pendingActions: any[];
   executedActions: any[];
   // Phase 2 — last assistant API response, exposed so agent-reply can
@@ -592,6 +613,10 @@ export async function runAgentQuery(params: {
   let allCitations: any[] = [];
   let pendingActions: any[] = [];
   let executedActions: any[] = [];
+  /** What the document tools left out of this shared conversation (lib/document-audience.ts). */
+  const withheldDocuments: WithheldRef[] = [];
+  /** What the document tools showed the model, for the reply's check at write time. */
+  const shownDocuments = new Map<string, DocumentRef>();
   const moduleNextReads = createModuleNextReadsResolver({
     availableToolNames: tools.map((tool) => tool.name),
     executeRead: async (operation, input) => {
@@ -607,6 +632,7 @@ export async function runAgentQuery(params: {
     },
   });
   let finalText = '';
+  let providerFailed = false;
   let intermediateText = ''; // Text from iterations with tool calls (preamble — usually discarded)
   // Phase 2 — capture metadata from the final API response so agent-reply
   // can populate metadata.agent_blocks / model / tokens_* parity with
@@ -672,6 +698,7 @@ export async function runAgentQuery(params: {
     } catch (err) {
       // A no-tools caller owns its fallback, so the failure reaches it.
       if (noTools) throw err;
+      providerFailed = true;
       finalText = 'I could not complete this lookup because the AI provider did not return a usable response. Please retry. This failure does not mean the requested records are missing.';
       break;
     }
@@ -821,6 +848,55 @@ export async function runAgentQuery(params: {
           toolResults.push({ type: 'tool_result', tool_use_id: tool.id, is_error: true, content: JSON.stringify({ error: referenceError }) });
           continue;
         }
+        if (tool.name === DOCUMENT_EDIT_ACTION) {
+          // M7, the chat exception (lib/agent-document-write-tools.ts): where an
+          // edit lands is decided here, before the rule that chat writes wait
+          // for approval. Background work is refused before anything is read.
+          // Only the asker's own triggering message can say "just do it". One
+          // edit per triggering message and tool call (fix round 1, I5); a
+          // direct edit's landing is decided again inside the write (I4).
+          const outcome = await runDocumentEditCall({
+            orgId, askerId: userId, agentEmployeeId, background: mode === 'background', input: tool.input,
+            askerMessageText: mode === 'chat_mention' && typeof params.askerMessageText === 'string' ? params.askerMessageText : null,
+            conversationId: params.conversationId ?? null, sourceMessageId: params.sourceMessageId, toolUseId: tool.id,
+            executeDirect: executeActionDirect, executeExisting: executeAction,
+            // Consult O-F2: a request that has ended (agent-reply's timeout, a lost job lease) writes nothing.
+            abortSignal: params.abortSignal,
+          });
+          if (outcome.pending) {
+            // persistAgentReplyWithActions stores { document_id, summary } and makes the
+            // suggestion from the operations in its transaction, or links the action
+            // whose suggestion already exists.
+            pendingActions.push({
+              action: DOCUMENT_EDIT_ACTION,
+              params: outcome.pending.params,
+              tool_use_id: tool.id,
+              approval_tier: 'quick',
+              agent_employee_id: agentEmployeeId ?? null,
+              mcp_connection_id: null,
+              ...(outcome.pending.existingActionId ? { existing_action_id: outcome.pending.existingActionId } : {}),
+            });
+          }
+          // M3: the reply names the document, so it is held to the room's audience.
+          const held = await holdDocumentToolResponse({
+            orgId, askerId: userId, conversationId: params.conversationId, toolName: DOCUMENT_EDIT_ACTION, response: { result: outcome.reply, citations: [] },
+          });
+          if (held.withheld.length) withheldDocuments.push(...held.withheld);
+          for (const ref of held.shown) shownDocuments.set(`${ref.type}:${ref.id}`, ref);
+          // Rule C4: the call is kept without its operations wherever the run keeps it.
+          const stored = documentToolCallForStorage(DOCUMENT_EDIT_ACTION, tool.input, held.result);
+          if (outcome.executed) {
+            executedActions.push({ actionId: outcome.executed.actionId, action: DOCUMENT_EDIT_ACTION, params: stored.input, success: outcome.executed.success, result: stored.result });
+          }
+          tool.input = stored.input as typeof tool.input;
+          toolResults.push({
+            type: 'tool_result' as const,
+            tool_use_id: tool.id,
+            content: JSON.stringify(held.result),
+            ...(outcome.failed ? { is_error: true } : {}),
+          });
+          continue;
+        }
         const approvalTier = getApprovalTier(tool.name, callApprovalTier);
         if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input, approvalTier)) {
           // Background mode: auto-execute if trust level permits
@@ -840,6 +916,26 @@ export async function runAgentQuery(params: {
             approvalTier,
             { agentEmployeeId, source: 'background' },
           );
+          // F15 B-I1 and M7 (rule C4; fix round 5 for the note and canvas
+          // titles): a draft tool's call is recorded with each text as its size
+          // wherever this run keeps it (the assistant blocks callers store as
+          // agent_blocks, the executed actions, the history sent back to the
+          // model), run or not; once it ran, it names the document it wrote.
+          if (isDraftTextAction(tool.name)) {
+            const written = success && result && typeof result === 'object' ? result as Record<string, unknown> : {};
+            const documentId = [written.document_id, written.canvas_document_id].find((value): value is string => typeof value === 'string') ?? null;
+            tool.input = draftToolInputForStorage(tool.name, tool.input, documentId) as typeof tool.input;
+          }
+          let modelResult = result;
+          if (success && tool.name === CREATE_DOCUMENT_ACTION) {
+            // M3: the created document is held to the conversation's audience.
+            const held = await holdDocumentToolResponse({
+              orgId, askerId: userId, conversationId: params.conversationId, toolName: tool.name, response: { result, citations: [] },
+            });
+            if (held.withheld.length) withheldDocuments.push(...held.withheld);
+            for (const ref of held.shown) shownDocuments.set(`${ref.type}:${ref.id}`, ref);
+            modelResult = held.result;
+          }
           executedActions.push({ actionId, action: tool.name, params: tool.input, success, result, error });
           if (requiresApproval) {
             pendingActions.push({
@@ -861,7 +957,7 @@ export async function runAgentQuery(params: {
             tool_use_id: tool.id,
             content: JSON.stringify(
               success
-                ? { status: 'auto_executed', ...result }
+                ? { status: 'auto_executed', ...modelResult }
                 : requiresApproval
                   ? { status: 'approval_required', action_id: actionId, approval_tier: currentTier ?? approvalTier }
                   : { status: 'auto_execute_failed', ...failureResult, error: errorMsg },
@@ -884,6 +980,11 @@ export async function runAgentQuery(params: {
             agent_employee_id: agentEmployeeId ?? null,
             mcp_connection_id: mcpConnectionIds.get(tool.name) ?? null,
           });
+          // M7 (rule C4): the proposal keeps its text for the card (agent_actions,
+          // shown only to its requester), but the call the run keeps
+          // (agent_blocks) never does: a document draft's title and Markdown,
+          // and since fix round 5 a note's or canvas's title and content.
+          if (isDraftTextAction(tool.name)) tool.input = draftToolInputForStorage(tool.name, tool.input) as typeof tool.input;
           toolResults.push({
             type: 'tool_result' as const,
             tool_use_id: tool.id,
@@ -908,7 +1009,7 @@ export async function runAgentQuery(params: {
             ? { ...(tool.input as Record<string, unknown>), query: 'blocked' }
             : tool.input as Record<string, unknown>, content, params.spaceContext, params.conversationId)
           : tool.input as any;
-        const { result: rawResult, citations } = await executeToolCall(
+        const { result: rawResult, citations, withheld, shown } = await executeToolCall(
           readToolName,
           readInput,
           orgId,
@@ -916,13 +1017,24 @@ export async function runAgentQuery(params: {
           params.conversationId,
           agentEmployeeId,
         );
+        if (withheld?.length) withheldDocuments.push(...withheld);
+        for (const ref of shown ?? []) shownDocuments.set(`${ref.type}:${ref.id}`, ref);
         const result = mode === 'chat_mention' ? formatDeftyChatReadResult(readToolName, rawResult) : rawResult;
+        // M3 (rule C4): a document read is recorded as references only, wherever
+        // this run keeps it (the executed actions, the assistant blocks callers
+        // store as agent_blocks, the citations they store); the model is given
+        // the result itself below.
+        const read = documentToolCallForStorage(tool.name, tool.input, result);
+        // M7 fix round 2: a plan's literal document text is kept by the plan
+        // alone, for its creator only; the call the run keeps (the
+        // room's agent_blocks, the executed actions) holds each text as its size.
+        const stored = tool.name === 'create_plan' ? { ...read, input: createPlanInputForStorage(tool.input) } : read;
         executedActions.push({
           actionId: null,
           action: tool.name,
-          params: tool.input,
+          params: stored.input,
           success: !(result && typeof result === 'object' && 'error' in result),
-          result,
+          result: stored.result,
           readOnly: !installedWrites.has(tool.name) && !['app_action_batch_propose', 'app_action_batch_cancel'].includes(tool.name),
         });
 
@@ -933,7 +1045,8 @@ export async function runAgentQuery(params: {
           result,
           sources: citations,
         });
-        allCitations.push(...formatted.sources);
+        tool.input = stored.input as typeof tool.input;
+        allCitations.push(...formatted.sources.map(citationForStorage));
         toolResults.push({
           type: 'tool_result' as const,
           tool_use_id: tool.id,
@@ -942,6 +1055,10 @@ export async function runAgentQuery(params: {
         });
         } catch (error) {
           const result = agentToolFailure(error);
+          // A failed document read keeps its references only too (M3), and a failed plan its literals' sizes.
+          tool.input = (tool.name === 'create_plan'
+            ? createPlanInputForStorage(tool.input)
+            : documentToolCallForStorage(tool.name, tool.input, result).input) as typeof tool.input;
           executedActions.push({ actionId: null, action: tool.name, params: tool.input, success: false, result, readOnly: true });
           toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify(result), is_error: true });
         }
@@ -1001,6 +1118,9 @@ export async function runAgentQuery(params: {
   return {
     text: verifiedText,
     citations: allCitations,
+    ...(shownDocuments.size > 0 || withheldDocuments.length > 0
+      ? { documents: { shown: [...shownDocuments.values()], withheld: withheldDocuments } } : {}),
+    ...(providerFailed ? { providerFailed: true } : {}),
     pendingActions,
     executedActions,
     model: reasonModel,

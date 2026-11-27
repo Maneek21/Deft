@@ -1,6 +1,13 @@
 import { logId } from '../../lib/log-metadata.js';
-// Handler: cross-reference — scans messages or notes for task identifiers
+// Handler: cross-reference — scans messages or documents for task identifiers
 // (e.g. PROJ-42) and creates cross_references + task comments linking them.
+// Notes are documents now (F15): a queued note job reads the document the
+// note moved to, and records the reference from that document.
+// A scan of Defty's write names Defty and the person who asked (`askerId`,
+// plan Task M4; lib/document-cross-references.ts). Defty has no employee to
+// re-authorize, so the asker is re-authorized instead and every access check
+// is made as the asker; the reference and any comment are still Defty's. An
+// asker on a job for anyone but Defty is refused, so no one else's checks change.
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
@@ -9,7 +16,6 @@ import {
   projects,
   taskComments,
   spaces,
-  notes,
   messages,
   spaceMembers,
   orgMembers,
@@ -17,7 +23,10 @@ import {
   users,
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { visibleNoteCondition } from '../../lib/note-visibility.js';
+import { documents, drives } from '@deft/db/documents';
+import { DEFTY_EMAIL } from '../../lib/defty-identity.js';
+import { visibleDocumentCondition } from '../../lib/document-access.js';
+import { mappedTargetId } from '../../lib/legacy-notes.js';
 import { visibleTaskCondition } from '../../lib/task-visibility.js';
 import { toPlainText } from '../../lib/plain-text.js';
 import { taskKeyMatch, taskKeysIn } from '../../lib/task-key.js';
@@ -26,13 +35,15 @@ interface CrossReferenceJobData {
   // Message-sourced (legacy shape)
   messageId?: string;
   spaceId?: string;
-  // Note-sourced (Task 5.1)
-  sourceType?: 'message' | 'note';
+  // Document-sourced; 'note' is an old queued job, read as its document (F15).
+  sourceType?: 'message' | 'note' | 'document';
   sourceId?: string;
   noteId?: string;
   content: string;
   orgId: string;
   userId: string;
+  /** Who Defty wrote for, when `userId` is Defty's: access is checked as this person. */
+  askerId?: string;
 }
 
 export async function handleCrossReference(job: JobData): Promise<void> {
@@ -41,17 +52,30 @@ export async function handleCrossReference(job: JobData): Promise<void> {
 
   // Resolve source: explicit sourceType takes priority, else fall back to
   // messageId (legacy enqueue shape from messages.ts).
-  let sourceType: 'message' | 'note' = data.sourceType ?? 'message';
+  const sourceType: 'message' | 'document' = data.sourceType === 'note' || data.sourceType === 'document' ? 'document' : 'message';
   let sourceId: string;
   if (data.sourceType === 'note') {
-    sourceId = data.sourceId || data.noteId || '';
+    const noteId = data.sourceId || data.noteId || '';
+    sourceId = noteId ? (await mappedTargetId(orgId, 'note', noteId)) ?? '' : '';
+  } else if (data.sourceType === 'document') {
+    sourceId = data.sourceId || '';
   } else {
     sourceId = data.sourceId || data.messageId || '';
   }
   if (!sourceId) return;
 
+  // Defty writing for someone: checked as the asker (the header). Anyone else naming an asker is refused.
+  const askerId = typeof data.askerId === 'string' && data.askerId !== userId ? data.askerId : null;
+  if (askerId !== null) {
+    const [defty] = await db.select({ id: users.id }).from(users)
+      .where(and(eq(users.id, userId), eq(users.email, DEFTY_EMAIL), eq(users.kind, 'agent')))
+      .limit(1);
+    if (!defty) return;
+  }
+  const accessUserId = askerId ?? userId;
+
   // Jobs may execute after a member is offboarded or an employee is paused.
-  // Re-authorize the queued actor before performing any durable write.
+  // Re-authorize the queued actor (for Defty, the asker) before performing any durable write.
   const [activeHuman] = await db
     .select({ id: orgMembers.id })
     .from(orgMembers)
@@ -61,7 +85,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
     ))
     .where(and(
       eq(orgMembers.org_id, orgId),
-      eq(orgMembers.user_id, userId),
+      eq(orgMembers.user_id, accessUserId),
       eq(orgMembers.is_active, true),
     ))
     .limit(1);
@@ -72,7 +96,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
       .from(agentEmployees)
       .where(and(
         eq(agentEmployees.org_id, orgId),
-        eq(agentEmployees.user_id, userId),
+        eq(agentEmployees.user_id, accessUserId),
         eq(agentEmployees.is_active, true),
         eq(agentEmployees.is_deleted, false),
       ))
@@ -84,24 +108,22 @@ export async function handleCrossReference(job: JobData): Promise<void> {
   // This both closes stale-job leaks and proves the actor may still see it.
   let plainContent: string;
   let sourceMayCreateComment = false;
-  if (sourceType === 'note') {
-    const [note] = await db
+  if (sourceType === 'document') {
+    const [document] = await db
       .select({
-        content: notes.content,
-        visibility: notes.visibility,
+        text: documents.content_text,
+        drive_kind: drives.kind,
       })
-      .from(notes)
-      .where(and(
-        eq(notes.id, sourceId),
-        eq(notes.org_id, orgId),
-        eq(notes.is_deleted, false),
-        visibleNoteCondition(userId),
-      ))
+      .from(documents)
+      .innerJoin(drives, and(eq(drives.id, documents.drive_id), eq(drives.org_id, documents.org_id)))
+      .where(and(eq(documents.id, sourceId), visibleDocumentCondition(accessUserId, orgId)))
       .limit(1);
-    if (!note) return;
+    if (!document) return;
 
-    plainContent = toPlainText(note.content);
-    sourceMayCreateComment = note.visibility === 'org';
+    plainContent = document.text;
+    // Only a document in an open drive (every full member can read it) leaves
+    // the org-wide comment, as only an org-visible note did.
+    sourceMayCreateComment = document.drive_kind === 'open';
   } else {
     const [message] = await db
       .select({
@@ -115,7 +137,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
       ))
       .innerJoin(spaceMembers, and(
         eq(spaceMembers.space_id, messages.space_id),
-        eq(spaceMembers.user_id, userId),
+        eq(spaceMembers.user_id, accessUserId),
       ))
       .where(and(
         eq(messages.id, sourceId),
@@ -149,7 +171,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
           eq(projects.is_archived, false),
           eq(tasks.org_id, orgId),
           eq(tasks.is_deleted, false),
-          visibleTaskCondition(userId),
+          visibleTaskCondition(accessUserId),
         ))
         .limit(1);
 
@@ -187,11 +209,11 @@ export async function handleCrossReference(job: JobData): Promise<void> {
       if (inserted.length === 0) continue;
 
       // A task comment is visible to every viewer of the target. Only leave a
-      // generic pointer for org-wide sources; never copy private/shared note or
-      // private/DM message text into the target.
+      // generic pointer for org-wide sources; never copy private or shared
+      // document text, or private/DM message text, into the target.
       if (!sourceMayCreateComment) continue;
-      const commentLabel = sourceType === 'note'
-        ? 'Referenced from an org-visible note'
+      const commentLabel = sourceType === 'document'
+        ? 'Referenced from a document in an open drive'
         : 'Referenced from a public-space message';
       await db.insert(taskComments).values({
         org_id: orgId,

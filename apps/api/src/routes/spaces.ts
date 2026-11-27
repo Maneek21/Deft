@@ -10,6 +10,8 @@ import { peopleViewer, personVisibleSql, withoutHiddenEmails } from '../lib/peop
 import { cancelPendingScheduledMessagesForSpace } from '../lib/scheduled-message-cancel.js';
 import { closeLostRoomActionsInTx, finishLostRoomCancellations } from '../lib/lost-room-action-cancellation.js';
 import { lockRoomAccessChange } from '../lib/room-access-lock.js';
+import { applyAccessLossInTx, finishAccessLoss } from '../lib/document-access-change.js';
+import { parseSharedCursor, spaceDocuments } from '../lib/chat-documents.js';
 
 export const spaceRoutes = new Hono();
 
@@ -39,7 +41,7 @@ async function canSeeSpaceForCreatorRoute(space: { id: string; created_by: strin
  * worker while the worker waits on the membership row.
  */
 async function removeSpaceMember(orgId: string, spaceId: string, userId: string) {
-  const { removed, closedActions } = await db.transaction(async (tx) => {
+  const { removed, closedActions, documentLoss } = await db.transaction(async (tx) => {
     // DFX2: the person's room-access lock first (lib/room-access-lock.ts).
     await lockRoomAccessChange(tx, orgId, userId);
     const removed = await tx.delete(spaceMembers)
@@ -49,10 +51,15 @@ async function removeSpaceMember(orgId: string, spaceId: string, userId: string)
     // DFX2: their pending assistant actions from this room close with a
     // reason, committed with the removal.
     const closedActions = removed.length ? await closeLostRoomActionsInTx(tx, { orgId, requesterId: userId }) : [];
-    return { removed, closedActions };
+    // Drives and documents (rule C3): what the chat was given (drive
+    // memberships, links, shares) leaves with the person, in this transaction.
+    const change = { orgId, spaceId, userIds: [userId] };
+    const documentLoss = removed.length ? { change, result: await applyAccessLossInTx(tx, change) } : null;
+    return { removed, closedActions, documentLoss };
   });
   // Receipts and attention items (never throws; the sweep repairs a failure).
   await finishLostRoomCancellations(orgId, closedActions);
+  if (documentLoss) await finishAccessLoss(documentLoss.change, documentLoss.result);
   return removed;
 }
 
@@ -454,6 +461,33 @@ spaceRoutes.get('/:id', async (c) => {
   }
 });
 
+// GET /api/spaces/:id/documents[?cursor=] — the chat's Docs tab (F13;
+// lib/chat-documents.ts): its linked drive, whether the caller may link one
+// (`can_link`), and the documents shared into it, as far as the caller can
+// open them, each with the caller's role, 50 a page with `next_cursor`;
+// hidden drive and folder names are null. Needs a seat in the chat (a public
+// chat's reader who hasn't joined is refused, like a missing chat). The seat
+// check and each page's reads share one read-only, repeatable-read snapshot.
+// A cursor the server didn't issue is 400.
+spaceRoutes.get('/:id/documents', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = c.req.param('id');
+    const rawCursor = c.req.query('cursor');
+    const cursor = rawCursor === undefined ? null : parseSharedCursor(rawCursor);
+    if (rawCursor !== undefined && !cursor) return c.json({ error: 'Invalid cursor', code: 'VALIDATION_ERROR' }, 400);
+    const listed = await db.transaction(async (tx) => {
+      if (!(await requireSpaceMembership(spaceId, user.id, user.org_id, tx))) return null;
+      return spaceDocuments(tx, user.id, user.org_id, spaceId, cursor);
+    }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
+    if (!listed) return c.json(NOT_A_MEMBER, 403);
+    return c.json(listed);
+  } catch (err) {
+    console.error('Failed to list the space’s documents:');
+    return c.json({ error: 'Failed to list the documents', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 // PATCH /api/spaces/:id — update space (name, description, topic)
 spaceRoutes.patch('/:id', async (c) => {
   try {
@@ -766,13 +800,18 @@ spaceRoutes.delete('/:id', async (c) => {
     // the room's row lock, which every approval claim takes (shared) before
     // its claiming statement, so no claim commits on a pre-archive snapshot;
     // the pending actions that lose their room close in the same transaction.
-    const closedActions = await db.transaction(async (tx) => {
+    const { closedActions, documentLoss } = await db.transaction(async (tx) => {
       await tx.update(spaces)
         .set({ is_archived: true })
         .where(eq(spaces.id, spaceId));
-      return closeLostRoomActionsInTx(tx, { orgId: user.org_id });
+      const closedActions = await closeLostRoomActionsInTx(tx, { orgId: user.org_id });
+      // Drives and documents (rule C3). An archived chat keeps granting its
+      // members (rule C7), so this re-checks rather than takes anything away.
+      const change = { orgId: user.org_id, spaceId };
+      return { closedActions, documentLoss: { change, result: await applyAccessLossInTx(tx, change) } };
     });
     await finishLostRoomCancellations(user.org_id, closedActions);
+    await finishAccessLoss(documentLoss.change, documentLoss.result);
 
     await evictActiveHuddleParticipants({
       orgId: user.org_id,

@@ -30,13 +30,13 @@ import {
   wikiOpsLog,
   agentEmployees,
   agentActions,
-  canvases,
-  notes,
 } from '@deft/db/schema';
 import { getMCPToolsForAgent, parseMCPToolName } from './mcp-tools.js';
 import { isDestructiveAction } from './agent-approval.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
-import { visibleNoteCondition } from './note-visibility.js';
+import { logDeprecatedNoteTool, readCanvasDocument, readNoteDocument, searchNoteDocuments } from './legacy-notes.js';
+import { runDocumentReadTool } from './agent-document-tools.js';
+import { holdDocumentToolResponse, type DocumentRef, type WithheldRef } from './document-audience.js';
 import { capabilityService } from './capability-service.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
 import { resolveReadableRoom, retrieveContext, retrievedWikiAudienceCondition } from './retrieve-context.js';
@@ -74,6 +74,7 @@ import { buildNativeAppActionActor } from './agent-app-action-actor.js';
 import { resolveNativeWikiReader, readNativeWiki, searchNativeWiki } from './native-wiki-owner.js';
 import { liveHumanCalendarEventCondition, liveEmployeeCalendarEventCondition } from './calendar-event-visibility.js';
 import { deftyMessageCitation } from './defty-message-source.js';
+import { documentTextParamsForViewer } from './document-draft-params.js';
 
 // Workspace-wide views of people and of the agent roster: a guest sees only
 // the people who share a space with them, so Defty does not run these for one.
@@ -125,7 +126,11 @@ export async function executeToolCall(
   agentEmployeeId?: string,
   /** Set only by the plan executor for a plan's own create_plan step (DFX3). */
   planOrigin?: { sourceMessageId?: string; createdVia?: 'api' },
-): Promise<{ result: any; citations: Citation[] }> {
+  // `withheld`: what a document tool left out of `result` in a shared
+  // conversation (lib/document-audience.ts), for the asker's private notice;
+  // `shown`: what `result` shows of documents and drives, re-checked when the
+  // reply is written.
+): Promise<{ result: any; citations: Citation[]; withheld?: WithheldRef[]; shown?: DocumentRef[] }> {
   const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
   if (policyError) return { result: { error: policyError }, citations: [] };
 
@@ -2446,9 +2451,10 @@ export async function executeToolCall(
         conditions.push(eq(agentActions.agent_employee_id, employee_id));
       }
 
-      const actions = await db
+      const rows = await db
         .select({
           id: agentActions.id,
+          user_id: agentActions.user_id,
           action: agentActions.action,
           params: agentActions.params,
           approval_status: agentActions.approval_status,
@@ -2462,6 +2468,13 @@ export async function executeToolCall(
         .where(and(...conditions))
         .orderBy(desc(agentActions.created_at))
         .limit(maxResults);
+      // M7 fix round 4: the result reaches the person reading (and the model
+      // repeats it), so a document draft's text is there only for the person
+      // who asked for it; an owner or admin reading others' actions gets its size.
+      const actions = rows.map((row) => {
+        const { user_id: _requester, ...shown } = documentTextParamsForViewer(row, _userId);
+        return shown;
+      });
 
       return {
         result: {
@@ -2541,10 +2554,15 @@ export async function executeToolCall(
     }
 
     // B06/C12: advertised read tools that previously fell through to
-    // "Unknown tool". Each read answers with the asker's visibility: a canvas
-    // only for a room the asker belongs to, notes only when owned, shared,
-    // org-visible, or space-visible in a room the asker belongs to.
+    // "Unknown tool". Notes and canvases are documents now (F15,
+    // lib/legacy-notes.ts): each read answers with the asker's access to the
+    // document (lib/document-access.ts), and a canvas only for a room the
+    // asker belongs to. Content comes back as Markdown.
+    // In a shared conversation each of these is held to its audience, as the
+    // document tools are (lib/document-audience.ts).
     case 'read_canvas': {
+      // M7: an alias of read_document now (lib/legacy-notes.ts).
+      logDeprecatedNoteTool('read_canvas');
       await requireActiveOrgMembership(orgId, _userId);
       const spaceName = typeof params.space_name === 'string' ? params.space_name : '';
       if (!spaceName.trim()) return { result: { error: 'space_name is required', code: 'SPACE_REQUIRED' }, citations: [] };
@@ -2554,69 +2572,49 @@ export async function executeToolCall(
         return { result: { error: resolvedRoom.error, code: resolvedRoom.code }, citations: [] };
       }
       const room = resolvedRoom.room;
-      const [canvas] = await db
-        .select({ id: canvases.id, title: canvases.title, content: canvases.content, updated_at: canvases.updated_at })
-        .from(canvases)
-        .where(and(eq(canvases.space_id, room.id), eq(canvases.org_id, orgId)))
-        .limit(1);
+      const canvas = await readCanvasDocument(orgId, _userId, room.id);
       if (!canvas) return { result: { space: room.name, canvas: null, exists: false }, citations: [] };
-      return {
+      return holdDocumentToolResponse({ orgId, askerId: _userId, conversationId, toolName, response: {
         result: { space: room.name, canvas, exists: true },
-        citations: [{ type: 'canvas', id: canvas.id, title: `${room.name} canvas`.slice(0, 80) }],
-      };
+        citations: [{ type: 'document', id: canvas.id, title: `${room.name} canvas`.slice(0, 80), url: canvas.url }],
+      } });
     }
 
     case 'search_notes': {
+      logDeprecatedNoteTool('search_notes');
       await requireActiveOrgMembership(orgId, _userId);
       const query = typeof params.query === 'string' ? params.query.trim() : '';
       if (!query) return { result: { error: 'query is required', code: 'QUERY_REQUIRED' }, citations: [] };
       const scope = ['mine', 'org', 'all'].includes(params.scope) ? params.scope : 'all';
       const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 50);
-      const pattern = `%${escapeSearchLike(query.slice(0, 200))}%`;
-      const rows = await db
-        .select({
-          id: notes.id,
-          title: notes.title,
-          visibility: notes.visibility,
-          updated_at: notes.updated_at,
-          snippet: sql<string>`substring(coalesce(${notes.content}, '') from 1 for 240)`,
-        })
-        .from(notes)
-        .where(and(
-          eq(notes.org_id, orgId),
-          eq(notes.is_deleted, false),
-          visibleNoteCondition(_userId),
-          scope === 'mine' ? eq(notes.user_id, _userId) : scope === 'org' ? eq(notes.visibility, 'org') : undefined,
-          or(ilike(notes.title, pattern), sql`coalesce(${notes.content}, '') ILIKE ${pattern}`),
-        ))
-        .orderBy(desc(notes.updated_at))
-        .limit(limit);
-      return {
+      const rows = await searchNoteDocuments({ orgId, userId: _userId, query: query.slice(0, 200), scope, limit });
+      return holdDocumentToolResponse({ orgId, askerId: _userId, conversationId, toolName, response: {
         result: { notes: rows, count: rows.length },
-        citations: rows.map((row) => ({ type: 'note', id: row.id, title: (row.title || 'Untitled note').slice(0, 80) })),
-      };
+        citations: rows.map((row) => ({ type: 'document', id: row.id, title: (row.title || 'Untitled').slice(0, 80), url: row.url })),
+      } });
     }
 
     case 'read_note': {
+      logDeprecatedNoteTool('read_note');
       await requireActiveOrgMembership(orgId, _userId);
       const noteId = typeof params.note_id === 'string' ? params.note_id : '';
       if (!noteId) return { result: { error: 'note_id is required', code: 'NOTE_REQUIRED' }, citations: [] };
-      const [row] = await db
-        .select({ id: notes.id, title: notes.title, content: notes.content, visibility: notes.visibility, updated_at: notes.updated_at })
-        .from(notes)
-        .where(and(
-          eq(notes.id, noteId),
-          eq(notes.org_id, orgId),
-          eq(notes.is_deleted, false),
-          visibleNoteCondition(_userId),
-        ))
-        .limit(1);
+      const row = await readNoteDocument(orgId, _userId, noteId);
       if (!row) return { result: { error: 'Note not found or not visible to caller', code: 'NOTE_NOT_FOUND' }, citations: [] };
-      return {
-        result: { id: row.id, title: row.title, content: row.content ?? '', visibility: row.visibility, updated_at: row.updated_at },
-        citations: [{ type: 'note', id: row.id, title: (row.title || 'Untitled note').slice(0, 80) }],
-      };
+      return holdDocumentToolResponse({ orgId, askerId: _userId, conversationId, toolName, response: {
+        result: { id: row.id, document_id: row.id, title: row.title, content: row.content, content_format: row.content_format,
+          updated_at: row.updated_at, url: row.url },
+        citations: [{ type: 'document', id: row.id, title: (row.title || 'Untitled').slice(0, 80), url: row.url }],
+      } });
     }
+
+    // Documents (M3): read with the asker's access (lib/agent-document-tools.ts),
+    // then held to a shared conversation's audience (lib/document-audience.ts).
+    case 'search_documents':
+    case 'read_document':
+    case 'list_drive':
+      return holdDocumentToolResponse({ orgId, askerId: _userId, conversationId, toolName,
+        response: await runDocumentReadTool(toolName, params, orgId, _userId) });
 
     default:
       return { result: { error: `Unknown tool: ${toolName}` }, citations: [] };

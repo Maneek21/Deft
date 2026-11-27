@@ -5,10 +5,11 @@ import { resolveScope, resolveWorkspace, type ExportContext } from './scope.js';
 import { PEOPLE_AND_SPACES, type Dataset } from './datasets.js';
 import { MESSAGES_AND_TASKS } from './datasets-content.js';
 import { NOTES_WIKI_EVENTS } from './datasets-knowledge.js';
+import { DRIVES_DOCUMENTS } from './datasets-documents.js';
 import { exportAttachments, type CopyHooks } from './attachments.js';
 import { sql } from 'drizzle-orm';
 import { exportModules } from './modules.js';
-import { writeReadme, writeTranscripts } from './render.js';
+import { writeDocumentMarkdown, writeReadme, writeTranscripts } from './render.js';
 
 export type ExportOptions = Readonly<{
   databaseUrl: string;
@@ -49,11 +50,12 @@ export const EXPORT_TABLES: readonly string[] = ['orgs', 'users', 'org_members',
   'messages', 'reactions', 'canvases', 'projects', 'project_spaces', 'labels', 'tasks', 'task_assignees', 'task_watchers', 'task_labels',
   'task_relationships', 'task_reactions', 'task_comments', 'note_folders', 'notes', 'note_shares', 'note_files', 'wiki_pages', 'wiki_links',
   'events', 'files', 'message_attachments', 'task_attachments', 'module_installations', 'module_versions', 'module_records',
-  'module_record_relations'];
+  'module_record_relations', 'drives', 'drive_members', 'doc_folders', 'documents', 'document_shares', 'document_versions',
+  'document_attachments', 'note_document_map'];
 
 export type ExportResult = Readonly<{ root: string; manifest: ExportManifest }>;
 
-export const DATASETS: readonly Dataset[] = [...PEOPLE_AND_SPACES, ...MESSAGES_AND_TASKS, ...NOTES_WIKI_EVENTS];
+export const DATASETS: readonly Dataset[] = [...PEOPLE_AND_SPACES, ...MESSAGES_AND_TASKS, ...NOTES_WIKI_EVENTS, ...DRIVES_DOCUMENTS];
 
 /**
  * Writes one workspace's content, for the given scope, into a new folder.
@@ -78,7 +80,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
       for (const dataset of DATASETS) {
         if (dataset.scopes && !dataset.scopes.includes(scope.kind)) continue;
         const file = await writer.jsonl(dataset.path);
-        for await (const row of snapshot.rows(dataset.query(ctx))) {
+        for await (const row of snapshot.rows(dataset.query(ctx), { fetchLimit: dataset.fetchLimit })) {
           await file.write(row);
           const omission = dataset.omission?.(row);
           if (omission) await writer.omit(omission);
@@ -92,6 +94,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
       datasets.push({ path: attachments.path, records: attachments.records });
       datasets.push(...await exportModules(snapshot, writer, ctx));
       await writeTranscripts(snapshot, writer, ctx);
+      const documentsWritten = await writeDocumentMarkdown(snapshot, writer, ctx);
       const memberName = scope.kind === 'member'
         ? (await snapshot.all<{ name: string }>(sql`SELECT name FROM users WHERE id = ${scope.user_id}`))[0]?.name ?? null : null;
 
@@ -112,7 +115,7 @@ export async function exportWorkspace(options: ExportOptions): Promise<ExportRes
           datasets,
           not_included: NOT_INCLUDED,
         };
-        await writeReadme(writer, manifest, memberName, attachments.files_copied);
+        await writeReadme(writer, manifest, memberName, attachments.files_copied, documentsWritten);
         await writer.writeJson('manifest.json', manifest);
       });
       return { root: writer.root, manifest };

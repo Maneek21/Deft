@@ -10,7 +10,7 @@ import {
 } from '../src/resources-v2.js';
 
 const corePairs = [
-  ['messages', 'message'], ['wiki_pages', 'wiki_page'], ['notes', 'note'],
+  ['messages', 'message'], ['wiki_pages', 'wiki_page'], ['notes', 'note'], ['documents', 'document'],
   ['files', 'file'], ['calendar_events', 'calendar_event'],
   ['people', 'person'], ['teams', 'team'],
 ] as const;
@@ -31,7 +31,7 @@ const v1Task = {
 };
 
 describe('ResourceRef v2', () => {
-  test('accepts exactly seven native owner/type pairs and opaque runtime refs', () => {
+  test('accepts exactly eight native owner/type pairs and opaque runtime refs', () => {
     for (const [instance, type] of corePairs) {
       const ref = coreRef(instance, type);
       assert.deepEqual(ResourceRefV2Schema.parse(ref), ref);

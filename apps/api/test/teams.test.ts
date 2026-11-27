@@ -375,6 +375,18 @@ describe('Loop 3 teams API', () => {
     assert.equal(relink.status, 201);
   });
 
+  test('a document is a known resource type but cannot be linked yet', async () => {
+    const linked = await authed(`/api/teams/${TEAM_ID}/resources`, LEAD_ID, {
+      method: 'POST',
+      body: JSON.stringify({ resource_type: 'document', resource_id: crypto.randomUUID() }),
+    });
+    assert.equal(linked.status, 400);
+    assert.equal((await linked.json() as { code: string }).code, 'INVALID_RESOURCE');
+
+    const detached = await authed(`/api/teams/${TEAM_ID}/resources/document/${crypto.randomUUID()}`, LEAD_ID, { method: 'DELETE' });
+    assert.equal(detached.status, 404);
+  });
+
   test('summary route is scoped and does not leak cross-org teams', async () => {
     const summary = await authed(`/api/teams/${TEAM_ID}/summary`, TARGET_ID);
     assert.equal(summary.status, 200);

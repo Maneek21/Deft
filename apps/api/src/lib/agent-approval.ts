@@ -122,6 +122,16 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   create_note: 'quick',
   note_to_wiki: 'quick',
 
+  // ─── Documents (M7) ─────────────────────────────────────────────────
+  // create_document waits for its one-click card from chat. edit_document
+  // from chat goes straight in only under the chat exception
+  // (lib/agent-document-write-tools.ts: Standard or Autonomous workspace
+  // trust, an asker who can edit, a direct setting or request, a drive that
+  // takes edits, and a call that isn't destructive); otherwise it is a
+  // suggestion only its asker reviews. Background work never edits.
+  create_document: 'quick',
+  edit_document: 'quick',
+
   // ─── Block 2.2 — thread reply ───────────────────────────────────────
   // Same tier as post_message (full) — it posts as the agent's shadow
   // user to a shared channel.

@@ -7,7 +7,7 @@ import { ResourceRefV2Schema, ResourceResolveResultV2Schema, RESOURCE_V2_CONTRAC
 import { db } from './db.js';
 import { ResourceAuthorizationError } from './resource-authorization.js';
 import type { NativeResourceDisplay, NativeResourceSubject } from './native-resource-types.js';
-import { resolveNativeMessageDisplay, resolveNativeWikiDisplay, resolveNativeNoteDisplay } from './native-content-projections.js';
+import { resolveNativeMessageDisplay, resolveNativeWikiDisplay, resolveNativeDocumentDisplay } from './native-content-projections.js';
 import { resolveNativeCalendarDisplay, resolveNativeFileDisplay } from './native-calendar-file-projections.js';
 import { resolveNativePersonDisplay, resolveNativeTeamDisplay } from './native-directory-projections.js';
 import { resolveAppRuntimeDisplay } from './app-runtime-resource-display.js';
@@ -86,7 +86,9 @@ async function nativeDisplay(subject: NativeResourceSubject, ref: ResourceRefV2)
   switch (ref.provider.provider_instance_id) {
     case 'messages': return resolveNativeMessageDisplay(subject, ref.resource_id);
     case 'wiki_pages': return resolveNativeWikiDisplay(subject, ref.resource_id);
-    case 'notes': return resolveNativeNoteDisplay(subject, ref.resource_id);
+    // A `notes` reference names an old note: shown as the document it moved to (F15).
+    case 'notes':
+    case 'documents': return resolveNativeDocumentDisplay(subject.org_id, subject.user_id, ref.resource_id);
     case 'files': return resolveNativeFileDisplay(subject, ref.resource_id);
     case 'calendar_events': return resolveNativeCalendarDisplay(subject, ref.resource_id);
     case 'people': return resolveNativePersonDisplay(subject, ref.resource_id);

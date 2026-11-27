@@ -15,7 +15,7 @@
  *   - 6 task labels applied across all three projects
  *   - 20 more wiki pages spanning every type with cross-links
  *     (wiki_links) and citations back to real seed messages
- *   - 6 more personal notes distributed across all 5 users
+ *   - 6 more personal notes distributed across all 5 users (documents, F15)
  *   - 22 calendar events — weekly standup cadence for 4 weeks, 1:1s,
  *     sprint retros, product review, demo day
  *   - 5 message pins per space
@@ -872,9 +872,35 @@ const SEED_LABELS = [
 // Main
 // ═══════════════════════════════════════════════════════════════════
 
-async function main(): Promise<void> {
+/** A personal note to seed: a document since notes became documents (F15). */
+type SeedNoteDocument = { orgId: string; userId: string; title: string; icon: string; content: string };
+
+/**
+ * Notes are documents (spec 5.12): each is created in its author's My drive,
+ * where a private note moves, through the documents library
+ * (lib/legacy-notes.ts), after the seed's transaction has committed. Run by
+ * the command line after main (main alone writes only through `pool`).
+ */
+async function seedNoteDocuments(notes: SeedNoteDocument[]): Promise<void> {
+  if (notes.length === 0) return;
+  const { createNoteDocument, noteContentJson } = await import('../lib/legacy-notes.js');
+  const { closeDb } = await import('../lib/db.js');
+  try {
+    for (const note of notes) {
+      await createNoteDocument({
+        orgId: note.orgId, userId: note.userId, title: note.title, icon: note.icon, json: noteContentJson(note.content), visibility: 'private',
+      });
+    }
+    console.log(`  extra notes (documents): ${notes.length}`);
+  } finally {
+    await closeDb();
+  }
+}
+
+async function main(): Promise<SeedNoteDocument[]> {
   console.log('Layering rich supplementary seed data on top of existing org…');
   const client = await pool.connect();
+  const noteDocuments: SeedNoteDocument[] = [];
   try {
     await client.query('BEGIN');
 
@@ -1220,17 +1246,12 @@ async function main(): Promise<void> {
     }
     console.log(`  extra wiki pages: ${EXTRA_WIKI.length}, links: ${linkCount}`);
 
-    // ─── 8. Personal notes ───
+    // ─── 8. Personal notes: documents, once this transaction commits (seedNoteDocuments) ───
     for (const n of EXTRA_NOTES) {
       const uid = userIds[n.user];
       if (!uid) continue;
-      await client.query(
-        `insert into notes (id, org_id, user_id, title, content, icon, created_at, updated_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $7)`,
-        [randomUUID(), orgId, uid, n.title, n.content, n.icon, daysAgo(n.daysAgo)],
-      );
+      noteDocuments.push({ orgId, userId: uid, title: n.title, icon: n.icon, content: n.content });
     }
-    console.log(`  extra notes: ${EXTRA_NOTES.length}`);
 
     // ─── 9. Calendar events ───
     for (const e of EXTRA_EVENTS) {
@@ -1332,9 +1353,10 @@ async function main(): Promise<void> {
     client.release();
     await pool.end();
   }
+  return noteDocuments;
 }
 
-main().catch((e) => {
+main().then(seedNoteDocuments).catch((e) => {
   console.error(e);
   process.exit(1);
 });

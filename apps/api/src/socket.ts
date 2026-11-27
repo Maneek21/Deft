@@ -482,6 +482,10 @@ export function setupSocket(server: HTTPServer, dependencies: SocketSetupDepende
     allowRequest: (request, callback) => callback(null, socketOriginAllowed(request.headers.origin)),
     pingInterval: 10000,
     pingTimeout: 5000,
+    // Upgrades on other paths belong to live editing (/collab, collab/server.ts),
+    // whose listener also ends every unknown path. engine.io would otherwise end
+    // them itself after a second.
+    destroyUpgrade: false,
   });
   installOrgTaskEventGuard(io);
 

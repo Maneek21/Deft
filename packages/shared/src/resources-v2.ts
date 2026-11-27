@@ -31,7 +31,9 @@ function coreRef<const TInstance extends string, const TType extends string>(
 
 export const MessageResourceRefV2Schema = coreRef('messages', 'message');
 export const WikiPageResourceRefV2Schema = coreRef('wiki_pages', 'wiki_page');
+/** An old note. Kept for references made before the notes move; resolved as the document it moved to (F15). */
 export const NoteResourceRefV2Schema = coreRef('notes', 'note');
+export const DocumentResourceRefV2Schema = coreRef('documents', 'document');
 export const FileResourceRefV2Schema = coreRef('files', 'file');
 export const CalendarEventResourceRefV2Schema = coreRef('calendar_events', 'calendar_event');
 export const PersonResourceRefV2Schema = coreRef('people', 'person');
@@ -52,6 +54,7 @@ export const ResourceRefV2Schema = z.union([
   MessageResourceRefV2Schema,
   WikiPageResourceRefV2Schema,
   NoteResourceRefV2Schema,
+  DocumentResourceRefV2Schema,
   FileResourceRefV2Schema,
   CalendarEventResourceRefV2Schema,
   PersonResourceRefV2Schema,

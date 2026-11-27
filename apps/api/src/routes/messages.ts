@@ -31,6 +31,7 @@ import {
   normalizeAttachmentIds,
   toMessageAttachment,
 } from '../lib/message-attachments.js';
+import { canPostDocuments, MAX_MESSAGE_DOCUMENTS } from '../lib/chat-documents.js';
 
 export const messageRoutes = new Hono();
 
@@ -38,9 +39,12 @@ const sendMessageSchema = z.object({
   content: z.string().min(1),
   parent_id: z.string().optional(),
   file_ids: z.array(z.string().min(1)).max(MAX_MESSAGE_ATTACHMENTS).optional(),
+  /** Documents posted with the message (F13): at most five, each one the poster can open. */
+  document_ids: z.array(z.string().trim().min(1).max(200)).max(MAX_MESSAGE_DOCUMENTS).optional(),
 });
 
 class AttachmentClaimError extends Error {}
+class DocumentNotVisibleError extends Error {}
 
 /**
  * History cursor: `<created_at ISO>|<message id>` names the oldest message of
@@ -154,8 +158,11 @@ export async function storeLinkPreviews(
   messageId: string,
   previews: LinkPreview[],
 ): Promise<boolean> {
+  // Merged into the metadata already there, in this one statement, so what
+  // the message carries (its documents, F13) is kept.
   const stored = await db.update(messages)
-    .set({ metadata: { link_previews: previews } })
+    .set({ metadata: sql`(CASE WHEN jsonb_typeof(${messages.metadata}) = 'object' THEN ${messages.metadata} ELSE '{}'::jsonb END)
+      || jsonb_build_object('link_previews', ${JSON.stringify(previews)}::jsonb)` })
     .where(and(eq(messages.id, messageId), eq(messages.is_deleted, false)))
     .returning({ id: messages.id });
   if (stored.length === 0) return false;
@@ -466,6 +473,9 @@ messageRoutes.post('/:spaceId', async (c) => {
       }, 400);
     }
 
+    // Documents posted with the message (F13), once each, in the order given.
+    const documentIds = [...new Set(parsed.data.document_ids ?? [])];
+
     const mentionedUserIds = await resolveMentionedUserIds(normalizedContent, user.org_id);
 
     // A07: an explicit Defty wake is decided before the insert so the
@@ -509,12 +519,20 @@ messageRoutes.post('/:spaceId', async (c) => {
       key: nativeCreateKey(c.req.header('Idempotency-Key')), payload: parsed.data,
       replay: async (tx, id) => (await tx.select().from(messages).where(and(eq(messages.id, id), eq(messages.org_id, user.org_id), eq(messages.space_id, spaceId), eq(messages.user_id, user.id), eq(messages.is_deleted, false))).limit(1))[0],
       create: async (tx) => {
+        // Rule C4: the poster can open every document, checked in this
+        // transaction. The message keeps their ids only, never a title, so
+        // its answer, its live event and its notifications carry none; each
+        // reader's card is read for them (POST /api/documents/cards).
+        if (documentIds.length > 0 && !(await canPostDocuments(tx, user.id, user.org_id, documentIds))) {
+          throw new DocumentNotVisibleError('You can only post documents you can open');
+        }
         const [insertedMessage] = await tx.insert(messages).values({
         org_id: user.org_id,
         space_id: spaceId,
         user_id: user.id,
         content: normalizedContent,
         parent_id: parsed.data.parent_id,
+        ...(documentIds.length > 0 ? { metadata: { documents: documentIds.map((id) => ({ id })) } } : {}),
         }).returning();
         if (!insertedMessage) throw new Error('Message insert returned no row');
         await enqueueNativeMentionPublication(tx, { orgId: user.org_id, userId: user.id },
@@ -778,6 +796,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     if (err instanceof AttachmentClaimError) {
       return c.json({ error: err.message, code: 'ATTACHMENT_NOT_FOUND' }, 404);
     }
+    if (err instanceof DocumentNotVisibleError) return c.json({ error: err.message, code: 'DOCUMENT_NOT_VISIBLE' }, 400);
     if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
     if (err instanceof NativeMentionLimitError) return c.json({ error: err.message, code: 'NATIVE_MENTION_LIMIT' }, 400);
     console.error('Failed to send message:');

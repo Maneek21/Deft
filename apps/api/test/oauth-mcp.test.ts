@@ -53,6 +53,8 @@ const PRIVATE_PROOF = `PRIVATE-OAUTH-MCP-PROOF-${TEST_ID}`;
 const TEAM_ID = `oauth-mcp-team-${TEST_ID}`;
 const TEAM_HANDLE = `oauth-mcp-salsa-ops-${TEST_ID.slice(0, 8)}`;
 const NOTE_ID = `oauth-mcp-note-${TEST_ID}`;
+// note_update writes the note's document without a live server (F15).
+process.env.DEFT_DOCUMENTS_LIVE ??= 'off';
 const EVENT_ID = `oauth-mcp-event-${TEST_ID}`;
 const NOTIFICATION_ID = `oauth-mcp-notification-${TEST_ID}`;
 const APPROVAL_ID = `oauth-mcp-approval-${TEST_ID}`;
@@ -106,6 +108,10 @@ async function cleanup() {
     await client.query(`DELETE FROM wiki_ops_log WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM wiki_page_versions WHERE page_id IN (SELECT id FROM wiki_pages WHERE org_id = $1)`, [ORG_ID]);
     await client.query(`DELETE FROM wiki_pages WHERE org_id = $1`, [ORG_ID]);
+    for (const table of ['attention_events', 'attention_items', 'notifications', 'doc_favorites', 'note_document_map', 'document_attachments',
+      'document_versions', 'document_shares', 'documents', 'doc_folders', 'drive_members', 'drives']) {
+      await client.query(`DELETE FROM ${table} WHERE org_id = $1`, [ORG_ID]).catch(() => undefined);
+    }
     await client.query(`DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE org_id = $1)`, [ORG_ID]);
     await client.query(`DELETE FROM notes WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM agent_employees WHERE org_id = $1`, [ORG_ID]);
@@ -320,6 +326,17 @@ async function seedWorkspace() {
        VALUES ($1, $2, $3, 'OAuth MCP operator note', '<p>Headless operating note</p>', 'private')`,
       [NOTE_ID, ORG_ID, USER_ID],
     );
+    // The notes move (F14): the note is a document in its author's My drive (here keeping the note's id), mapped.
+    // The note tools read documents since F15.
+    await client.query(`INSERT INTO drives (id, org_id, name, kind, owner_user_id, created_by) VALUES ($1, $2, 'My drive', 'personal', $3, $3)`,
+      [`${NOTE_ID}-drive`, ORG_ID, USER_ID]);
+    await client.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'full')`,
+      [`${NOTE_ID}-owner`, ORG_ID, `${NOTE_ID}-drive`, USER_ID]);
+    await client.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, content_text, created_by)
+      VALUES ($1, $2, $3, 'OAuth MCP operator note', '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Headless operating note"}]}]}'::jsonb,
+        'Headless operating note', $4)`, [NOTE_ID, ORG_ID, `${NOTE_ID}-drive`, USER_ID]);
+    await client.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+      VALUES ($1, $2, 'note', $3, 'document', $3)`, [`${NOTE_ID}-map`, ORG_ID, NOTE_ID]);
     await client.query(
       `INSERT INTO events (id, org_id, source, event_type, title, body, actor, timestamp, metadata, user_id)
        VALUES ($1, $2, 'native', 'calendar_event', 'OAuth MCP operating review', 'Review headless parity', 'OAuth MCP User', now() + interval '2 days',
@@ -1332,9 +1349,11 @@ test('OAuth operational profile can run reversible owner workflows with receipts
   const firstNote = await call('note_create', noteArgs);
   const replayedNote = await call('note_create', noteArgs);
   assert.equal(replayedNote.note.id, firstNote.note.id, 'fallback dedupe replays an identical create intent');
-  assert.match(firstNote.url, /^\/notes\?note=/);
+  // Notes are documents since F15: the link is the document's.
+  assert.match(firstNote.url, /^\/d\//);
   const updatedNote = await call('note_update', { note_id: firstNote.note.id, content: '<p>Updated operating record</p>', idempotency_key: `note-update-${TEST_ID}` });
-  assert.equal(updatedNote.note.version, 2);
+  assert.equal(updatedNote.updated, true);
+  assert.match(updatedNote.note.content, /Updated operating record/);
 
   const start = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
   const end = new Date(start.getTime() + 45 * 60 * 1000);

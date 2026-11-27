@@ -13,7 +13,7 @@ import { logId } from './log-metadata.js';
 import { createHash } from 'node:crypto';
 import { canonicalCapabilityJson } from '@deft/shared';
 import { db, withDbAdvisoryLock } from './db.js';
-import { agentActions, agentPlans, orgs, tasks, messages } from '@deft/db/schema';
+import { agentActions, agentEmployees, agentPlans, orgs, tasks, messages } from '@deft/db/schema';
 import { eq, and, sql, type SQL } from 'drizzle-orm';
 import { planCreatorKeepsRoomsSql } from './plan-room-access.js';
 import { lockPlanRoomAccess } from './room-access-lock.js';
@@ -28,6 +28,10 @@ import {
 } from './agent-actions.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import { runAgentQuery } from './agent-runner.js';
+import { DOCUMENT_EDIT_ACTION } from './document-suggestions.js';
+import { documentToolCallForStorage, editDocumentInputForStorage, omittedText, storableRef, type OmittedText } from './document-audience.js';
+import { isDraftTextAction, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from './document-draft-params.js';
+import { isCanonicalDeftyEmployee } from './defty-identity.js';
 import type { TrustLevel } from './agent-approval.js';
 import { getIO } from '../socket.js';
 import { getMCPToolsForAgent } from './mcp-tools.js';
@@ -64,6 +68,8 @@ export interface PlanStep {
     | 'skipped_due_to_failure';
   result?: any;
   error?: string;
+  /** M7 (rule C4): set once a document tool's step keeps references only (documentStepForStorage). */
+  content_omitted?: true;
 }
 
 export interface StepCondition {
@@ -116,8 +122,401 @@ export async function assertPlanEmployeeBindable(orgId: string, agentEmployeeId:
   }
 }
 
+/**
+ * M7: a document edit is made from chat, where its asker's request and
+ * setting decide where it lands, never as a plan step: a step would store
+ * its operations (document text) in the plan, and an approved plan would
+ * apply them with no suggestion to review.
+ */
+export const PLAN_DOCUMENT_EDIT_ERROR = 'Document edits are made from chat, not as plan steps';
+
+/**
+ * M7 fix round 5 (the controller's rule: a draft's text reaches only the
+ * person who asked). A plan step that writes a document's text
+ * (create_document, create_note, write_canvas) keeps that text on its
+ * pending action, which an employee's queue (fetch_unread,
+ * poll_pending_work) lists, and the employee's agent user would write it.
+ * So a plan bound to an agent employee carries no such step unless its
+ * creator is that employee's own user (or the employee is Defty's internal
+ * one, which is Defty's path): refused when the plan is made, edited or
+ * approved (code DRAFT_STEP_NOT_FOR_EMPLOYEE), and a plan stored before
+ * stops at that step without queueing anything.
+ */
+export const PLAN_DRAFT_STEP_EMPLOYEE_ERROR = 'A step that writes a document\'s text runs for the person who asked, so it can\'t be handed to an agent employee. Ask Defty to make the document from chat.';
+
+/** True when a draft step of `creatorId`'s plan would be handed to the bound employee (fix round 5). */
+export async function draftStepsWouldReachEmployee(orgId: string, creatorId: string, agentEmployeeId: string | null | undefined): Promise<boolean> {
+  if (!agentEmployeeId) return false;
+  const [employee] = await db
+    .select({ user_id: agentEmployees.user_id, slug: agentEmployees.slug, runtime_kind: agentEmployees.runtime_kind, is_byoa: agentEmployees.is_byoa })
+    .from(agentEmployees)
+    .where(and(eq(agentEmployees.id, agentEmployeeId), eq(agentEmployees.org_id, orgId)))
+    .limit(1);
+  if (!employee) return true;
+  if (isCanonicalDeftyEmployee(employee)) return false;
+  return employee.user_id !== creatorId;
+}
+
+// ─── Document content in plans (M7, rule C4) ───
+
+/**
+ * The document tools whose completed steps keep references only: the reads
+ * (their results are Markdown, titles, snippets), and the writes (their
+ * params are a document's text, their results name it).
+ */
+const DOCUMENT_STEP_TOOLS: ReadonlySet<string> = new Set([
+  'read_document', 'search_documents', 'list_drive', 'read_note', 'search_notes', 'read_canvas',
+  'create_document', 'create_note', 'write_canvas', 'note_to_wiki',
+  // Never run as a step (PLAN_DOCUMENT_EDIT_ERROR), but a plan stored before shows no operations.
+  DOCUMENT_EDIT_ACTION,
+]);
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** The string fields of `value` named in `keys`. */
+function stringFields(value: unknown, keys: readonly string[]): Record<string, string> {
+  if (!isPlainRecord(value)) return {};
+  return Object.fromEntries(keys.flatMap((key) => (typeof value[key] === 'string' ? [[key, value[key] as string]] : [])));
+}
+
+/**
+ * A document tool step's params and result as a plan keeps them once it has
+ * run (rule C4): the reads keep their ids and `{ document_id, block_ids,
+ * withheld }` (M3's documentToolCallForStorage, which also leaves out a
+ * search's words); create_note and write_canvas keep their content as
+ * `{ document_id, content_omitted, content_bytes }` (F15) and results that
+ * name the document; create_document keeps where it went (M7); note_to_wiki
+ * the page it made. Null for any other tool: its step is kept as it is.
+ */
+export function documentStepForStorage(tool: string, params: unknown, result: unknown): { params: unknown; result: unknown } | null {
+  if (!DOCUMENT_STEP_TOOLS.has(tool)) return null;
+  switch (tool) {
+    case 'create_note':
+    case 'write_canvas':
+    case 'create_document':
+      // Rebuilt (fix round 1): ids and references kept, every text field as its size.
+      return {
+        params: documentStepParamsForStorage(tool, params),
+        result: stringFields(result, ['note_id', 'document_id', 'canvas_document_id', 'space', 'url', 'error']),
+      };
+    case 'note_to_wiki':
+      return { params: documentStepParamsForStorage(tool, params), result: stringFields(result, ['wiki_page_id', 'slug', 'error']) };
+    default: {
+      const stored = documentToolCallForStorage(tool, params, result);
+      return { params: stored.input, result: stored.result };
+    }
+  }
+}
+
+/**
+ * A plan keeps no text read from a document in any step (fix round 1, I2). A
+ * document tool step's params are its ids (an id or a
+ * `$step.<id>.result.<field>` reference, nothing else) and, for the writes,
+ * each text field (create_note's and write_canvas's title and content,
+ * create_document's title and Markdown) is one of:
+ * - a reference, resolved when the step runs from what an earlier step read
+ *   as the creator. A read from an earlier run is read again then, as the
+ *   creator, through the same access-checked read tool (fix round 2), so a
+ *   resumed plan still runs;
+ * - a literal written for the plan (fix round 2). It is kept like a pending
+ *   draft: shown only to the plan's creator, who asked for it (fix round 3)
+ *   (routes/agent-plans.ts), and left out once the step completes or the
+ *   plan ends, when the step names what it made;
+ * - `{ content_omitted, content_bytes }`, which can't run.
+ * A step whose text is left out, or whose reference doesn't resolve, can't
+ * run (PLAN_DOCUMENT_TEXT_ERROR). A search keeps its words until it runs:
+ * they are the step's instruction, not a document's text.
+ */
+export const PLAN_DOCUMENT_TEXT_ERROR = 'This step\'s document text is no longer available, so it can\'t run. Ask Defty to make the document from chat.';
+
+/** The document reads a step's references can name (their completed steps keep references only). */
+const DOCUMENT_READ_STEP_TOOLS: ReadonlySet<string> = new Set([
+  'read_document', 'search_documents', 'list_drive', 'read_note', 'search_notes', 'read_canvas',
+]);
+
+/** The reads a later run can make again from the ids their completed step keeps (a search keeps no words once run). */
+const REREADABLE_STEP_TOOLS: ReadonlySet<string> = new Set(['read_document', 'read_note', 'read_canvas', 'list_drive']);
+
+/** A plan that has ended: its steps keep no literal text either. */
+const SETTLED_PLAN_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed']);
+
+const STEP_REFERENCE_IN_TEXT = /\$step\.([^.\s]+)\.result\./g;
+
+/** The step ids `value` names in `$step.<id>.result.…` references, at any depth. */
+function referencedStepIds(value: unknown, found = new Set<string>()): Set<string> {
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(STEP_REFERENCE_IN_TEXT)) found.add(match[1]!);
+  } else if (Array.isArray(value)) {
+    for (const item of value) referencedStepIds(item, found);
+  } else if (isPlainRecord(value)) {
+    for (const item of Object.values(value)) referencedStepIds(item, found);
+  }
+  return found;
+}
+
+/** The text fields of each document-writing step tool. */
+const DOCUMENT_TEXT_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  create_note: ['title', 'content'],
+  create_document: ['title', 'markdown'],
+  write_canvas: ['title', 'content'],
+};
+
+const STEP_REFERENCE = /^\$step\.[^.\s]+\.result\.[^\s]+$/;
+
+const isStepReference = (value: unknown): value is string => typeof value === 'string' && value.length <= 200 && STEP_REFERENCE.test(value);
+
+/** An id, or a reference to one, as a step keeps it; anything else is dropped. */
+function stepRef(value: unknown): string | null {
+  return storableRef(value) ?? (isStepReference(value) ? value : null);
+}
+
+/**
+ * A document tool step's params as a plan keeps them: ids, references, and no
+ * text. With `literals` (a step not yet completed, of a plan that hasn't
+ * ended, as the plan stores it and as its creator alone sees it: fix
+ * round 2), a write's text field written for the plan is kept as written.
+ */
+export function documentStepParamsForStorage(tool: string, params: unknown, options: { literals?: boolean } = {}): Record<string, unknown> {
+  const record = isPlainRecord(params) ? params : {};
+  const refs = (...keys: string[]): Record<string, string> => Object.fromEntries(keys.flatMap((key): Array<[string, string]> => {
+    const ref = stepRef(record[key]);
+    return ref === null ? [] : [[key, ref]];
+  }));
+  const shortText = (key: string, max: number) => (typeof record[key] === 'string' ? { [key]: (record[key] as string).slice(0, max) } : {});
+  // A text field is a reference, a literal (with `literals`), or its size: never anything else.
+  const textFields: Record<string, string | OmittedText> = Object.fromEntries((DOCUMENT_TEXT_FIELDS[tool] ?? [])
+    .flatMap((key): Array<[string, string | OmittedText]> => {
+      const value = record[key];
+      if (value === undefined) return [];
+      if (typeof value === 'string' && (isStepReference(value) || options.literals === true)) return [[key, value]];
+      return [[key, omittedText(value, null)]];
+    }));
+  switch (tool) {
+    case 'read_document': return refs('document_id');
+    case 'read_note': return refs('note_id');
+    case 'read_canvas': return shortText('space_name', 200);
+    case 'list_drive': return refs('drive_id', 'folder_id');
+    case 'search_documents':
+    case 'search_notes':
+      return {
+        ...shortText('query', 200), ...refs('drive_id'),
+        ...(['mine', 'org', 'all'].includes(record.scope as string) ? { scope: record.scope } : {}),
+        ...(typeof record.limit === 'number' && Number.isFinite(record.limit) ? { limit: record.limit } : {}),
+      };
+    case 'create_note':
+      return {
+        ...textFields, ...refs('visibility_space_id', 'source_message_id'),
+        ...(['private', 'org', 'space'].includes(record.visibility as string) ? { visibility: record.visibility } : {}),
+      };
+    case 'write_canvas': return { ...textFields, ...shortText('space_name', 200), ...refs('source_message_id') };
+    case 'create_document': return { ...textFields, ...refs('drive_id', 'folder_id', 'parent_document_id', 'source_message_id') };
+    case 'note_to_wiki': return { ...refs('note_id'), ...shortText('type', 40) };
+    case DOCUMENT_EDIT_ACTION: return editDocumentInputForStorage(record) as Record<string, unknown>;
+    default: return record;
+  }
+}
+
+// ─── The keys a plan and its steps keep (M5–M7 consult S-F2) ───
+
+const STEP_STATUSES: ReadonlySet<string> = new Set(['pending', 'running', 'completed', 'failed', 'skipped', 'waiting_approval', 'skipped_due_to_failure']);
+const CONDITION_OPERATORS: ReadonlySet<string> = new Set(['eq', 'neq', 'gt', 'lt', 'contains', 'empty', 'not_empty']);
+
+/**
+ * A step rebuilt from a fixed key list (consult S-F2): the caller's `id`,
+ * `description`, `tool`, `params`, `depends_on` and `condition`, each only in
+ * its own type, and with `system`, the fields the executor and the routes
+ * write (`status`, `result`, `error`, `content_omitted`,
+ * `approved_by_user_id`). Every other key is dropped, so no text survives in
+ * a field nothing reviews. A step that isn't an object is returned as it is.
+ */
+function allowlistedStep(step: unknown, system: 'caller' | 'stored'): unknown {
+  if (!isPlainRecord(step)) return step;
+  const out: Record<string, unknown> = {};
+  if (typeof step.id === 'string') out.id = step.id;
+  if (typeof step.description === 'string') out.description = step.description;
+  if (typeof step.tool === 'string') out.tool = step.tool;
+  out.params = isPlainRecord(step.params) ? step.params : {};
+  if (Array.isArray(step.depends_on)) out.depends_on = step.depends_on.filter((id): id is string => typeof id === 'string');
+  if (isPlainRecord(step.condition) && typeof step.condition.field === 'string' && CONDITION_OPERATORS.has(step.condition.operator as string)) {
+    out.condition = { field: step.condition.field, operator: step.condition.operator, ...('value' in step.condition ? { value: step.condition.value } : {}) };
+  }
+  if (typeof step.status === 'string' && STEP_STATUSES.has(step.status)) out.status = step.status;
+  if (typeof step.error === 'string') out.error = step.error;
+  if (system === 'stored') {
+    if ('result' in step && step.result !== undefined) out.result = step.result;
+    if (step.content_omitted === true) out.content_omitted = true;
+    if (typeof step.approved_by_user_id === 'string') out.approved_by_user_id = step.approved_by_user_id;
+  }
+  return out;
+}
+
+/** True for a plan with a step that reads, searches, creates or edits a document, a note or a canvas (consult S-F2). */
+export function planTouchesDocuments(steps: unknown): boolean {
+  return Array.isArray(steps) && steps.some((step) => isPlainRecord(step) && typeof step.tool === 'string' && DOCUMENT_STEP_TOOLS.has(step.tool));
+}
+
+/** What anyone but its creator reads for a document-touching plan's title (consult S-F2). */
+export function neutralPlanTitle(steps: unknown[]): string {
+  return `Plan: ${steps.length} step${steps.length === 1 ? '' : 's'}`;
+}
+
+/** What anyone but its creator reads for a document-touching plan's step description (consult S-F2). */
+export function neutralStepDescription(index: number, tool: unknown): string {
+  return `Step ${index + 1}: ${typeof tool === 'string' ? tool : 'step'}`;
+}
+
+/**
+ * Steps as a plan stores them (createPlanRow, PUT /api/agent-plans/:id):
+ * each rebuilt from the fixed key list (consult S-F2; no result, no stored
+ * mark, no approver of the caller's: only the executor and the routes set
+ * those), and each document tool step's params through
+ * documentStepParamsForStorage, keeping the literals written for the plan
+ * (fix round 2).
+ */
+export function planStepsForStorage<S>(steps: S[]): S[] {
+  return steps.map((raw) => {
+    const step = allowlistedStep(raw, 'caller');
+    if (!isPlainRecord(step) || typeof step.tool !== 'string' || !DOCUMENT_STEP_TOOLS.has(step.tool)) return step as S;
+    return { ...step, params: documentStepParamsForStorage(step.tool, step.params, { literals: true }) } as S;
+  });
+}
+
+/**
+ * A create_plan call as a run keeps it (agent_blocks, the run's executed
+ * actions: fix round 2): its title, description and steps only (consult
+ * S-F2), each step from the fixed key list, its document steps without
+ * their literal text, which only the plan itself keeps, for its creator
+ * alone. A plan with a document step keeps no free text either: its title,
+ * description and step descriptions are model-written and may be copied
+ * from a document, and run details reach more people than its creator.
+ */
+export function createPlanInputForStorage(input: unknown): unknown {
+  if (!isPlainRecord(input) || !Array.isArray(input.steps)) return input;
+  const touches = planTouchesDocuments(input.steps);
+  const steps = input.steps.map((raw: unknown, index: number) => {
+    const step = allowlistedStep(raw, 'caller');
+    if (!isPlainRecord(step)) return step;
+    const params = typeof step.tool === 'string' && DOCUMENT_STEP_TOOLS.has(step.tool) ? documentStepParamsForStorage(step.tool, step.params) : step.params;
+    return { ...step, params, ...(touches ? { description: neutralStepDescription(index, step.tool) } : {}) };
+  });
+  return {
+    title: touches ? neutralPlanTitle(input.steps) : (typeof input.title === 'string' ? input.title : ''),
+    ...(!touches && typeof input.description === 'string' ? { description: input.description } : {}),
+    steps,
+  };
+}
+
+/**
+ * True when a document-writing step can't run from what the plan keeps: a
+ * text field was left out (or isn't text), a reference didn't resolve to
+ * text, or a literal still names a step of this plan it couldn't resolve.
+ */
+export function documentStepTextUnavailable(
+  tool: string, stored: Record<string, unknown>, resolved: Record<string, unknown>, planStepIds: ReadonlySet<string> = new Set(),
+): boolean {
+  return (DOCUMENT_TEXT_FIELDS[tool] ?? []).some((key) => {
+    const value = stored[key];
+    if (value === undefined) return false;
+    if (typeof value !== 'string' || typeof resolved[key] !== 'string') return true;
+    return [...referencedStepIds(resolved[key])].some((stepId) => planStepIds.has(stepId));
+  });
+}
+
+/** A completed read's result as a plan keeps it, rebuilt from the kept shape: ids, `withheld` and an error only. */
+function keptReadResult(result: unknown): Record<string, unknown> | null {
+  if (!isPlainRecord(result)) return null;
+  const kept: Record<string, unknown> = {};
+  for (const key of ['document_id', 'drive_id', 'folder_id']) {
+    if (key in result) kept[key] = result[key] === null ? null : storableRef(result[key]);
+  }
+  if (typeof result.withheld === 'boolean') kept.withheld = result.withheld;
+  if (Array.isArray(result.block_ids)) kept.block_ids = result.block_ids.flatMap((id) => storableRef(id) ?? []);
+  const listed = (rows: unknown, key: 'document_id' | 'drive_id') => (Array.isArray(rows) ? rows : [])
+    .filter(isPlainRecord).map((row) => ({ [key]: storableRef(row[key]), withheld: row.withheld === true }));
+  if (Array.isArray(result.documents)) kept.documents = listed(result.documents, 'document_id');
+  if (Array.isArray(result.drives)) kept.drives = listed(result.drives, 'drive_id');
+  for (const key of ['error', 'code']) if (typeof result[key] === 'string') kept[key] = (result[key] as string).slice(0, 300);
+  return kept;
+}
+
+/**
+ * A document tool step's result (or its context entry) as a plan keeps it:
+ * a read's references, rebuilt from the kept shape when the step says it was
+ * kept so (`kept`, which no marker can turn into text: keptReadResult keeps
+ * ids only), and from the tool's own result otherwise.
+ */
+function documentStepResultForStorage(tool: string, params: unknown, result: unknown, kept: boolean): unknown {
+  if (result === undefined) return undefined;
+  const stored = documentStepForStorage(tool, params, result)!.result;
+  if (!DOCUMENT_READ_STEP_TOOLS.has(tool)) return isPlainRecord(stored) ? stored : null;
+  const ids = keptReadResult(result);
+  if (kept || ids === null || !isPlainRecord(stored)) return ids;
+  // The tool's own result (a row stored before the rules): its references, and any id it kept as one.
+  return { ...ids, ...Object.fromEntries(Object.entries(stored).filter(([, value]) => value !== undefined)) };
+}
+
+/**
+ * A plan as its payloads show it (routes/agent-plans.ts) and as its executor
+ * reads it back: every document tool step, and its entry in the plan's
+ * context, rebuilt from the allowlist for every status, whatever marks it
+ * carries (fix round 2, I2), so a plan stored before the rules shows no
+ * document text either:
+ * - a completed step: its params and result as references
+ *   (documentStepForStorage);
+ * - any other step: documentStepParamsForStorage's params, keeping the
+ *   literals written for the plan only with `literals` (its creator, and
+ *   the executor) and only while the plan hasn't ended;
+ * - each context entry of a document tool step: its result as references.
+ */
+export function planWithDocumentReferences<T extends { steps: unknown; context?: unknown; status?: unknown; title?: unknown; description?: unknown }>(
+  plan: T, options: { literals?: boolean; freeText?: boolean } = {},
+): T {
+  if (!Array.isArray(plan.steps)) return plan;
+  const literals = options.literals === true && !SETTLED_PLAN_STATUSES.has(String(plan.status));
+  // Consult S-F2: a plan with a document step shows its title, description
+  // and step descriptions only to its creator (`freeText`, which the executor
+  // and the creator's payloads pass); anyone else, a fallback admin included,
+  // reads "Plan: N steps" and "Step N: {tool}".
+  const neutral = options.freeText !== true && planTouchesDocuments(plan.steps);
+  const context = isPlainRecord(plan.context) ? { ...plan.context } : plan.context;
+  const steps = plan.steps.map((raw: unknown, index: number) => {
+    // Consult S-F2: every step from the fixed key list, whatever was stored.
+    const allowed = allowlistedStep(raw, 'stored');
+    const step = neutral && isPlainRecord(allowed) ? { ...allowed, description: neutralStepDescription(index, allowed.tool) } : allowed;
+    if (!isPlainRecord(step) || typeof step.tool !== 'string' || !DOCUMENT_STEP_TOOLS.has(step.tool)) return step;
+    const tool = step.tool;
+    const { content_omitted: marked, result, params, ...rest } = step;
+    const completed = step.status === 'completed';
+    const kept = completed && marked === true;
+    if (isPlainRecord(context) && typeof step.id === 'string' && step.id in context) {
+      const entry = context[step.id];
+      context[step.id] = { result: documentStepResultForStorage(tool, params, isPlainRecord(entry) ? entry.result : null, kept) ?? null };
+    }
+    const storedResult = documentStepResultForStorage(tool, params, result, kept);
+    return {
+      ...rest,
+      params: completed ? documentStepForStorage(tool, params, null)!.params : documentStepParamsForStorage(tool, params, { literals }),
+      ...(storedResult === undefined ? {} : { result: storedResult }),
+      ...(completed ? { content_omitted: true } : {}),
+    };
+  });
+  return {
+    ...plan, steps, context,
+    ...(neutral ? { title: neutralPlanTitle(plan.steps), description: null } : {}),
+  };
+}
+
 /** Plans with connected steps are created and approved for workspace members. */
-export async function assertPlanStepsAllowedFor(orgId: string, userId: string, steps: unknown): Promise<void> {
+export async function assertPlanStepsAllowedFor(orgId: string, userId: string, steps: unknown, agentEmployeeId?: string | null): Promise<void> {
+  if (Array.isArray(steps) && steps.some((step) => (step as { tool?: unknown } | null)?.tool === DOCUMENT_EDIT_ACTION)) {
+    throw new PlanAccessError(PLAN_DOCUMENT_EDIT_ERROR);
+  }
+  // M7 fix round 5: a draft step never goes to an employee that isn't the creator's own agent.
+  if (Array.isArray(steps) && steps.some((step) => isDraftTextAction((step as { tool?: unknown } | null)?.tool))
+    && await draftStepsWouldReachEmployee(orgId, userId, agentEmployeeId)) {
+    throw new PlanAccessError(PLAN_DRAFT_STEP_EMPLOYEE_ERROR);
+  }
   const hasConnectedStep = Array.isArray(steps)
     && steps.some((step) => isConnectedToolName((step as { tool?: unknown } | null)?.tool));
   if (hasConnectedStep && await isWorkspaceGuest(orgId, userId)) {
@@ -189,18 +588,24 @@ async function executeReviewedPlanDependency(params: {
   if (prior) {
     if (prior.action !== params.step.tool || prior.runtime_request_key !== requestKey) {
       if (prior.approval_status === 'pending') {
-        await db
-          .update(agentActions)
-          .set({
-            approval_status: 'expired',
-            error: `Plan step '${params.step.id}' changed after review was requested`,
-            updated_at: new Date(),
-          })
-          .where(and(
-            eq(agentActions.id, prior.id),
-            eq(agentActions.org_id, params.orgId),
-            eq(agentActions.approval_status, 'pending'),
-          ));
+        await db.transaction(async (tx) => {
+          const expired = await tx
+            .update(agentActions)
+            .set({
+              approval_status: 'expired',
+              error: `Plan step '${params.step.id}' changed after review was requested`,
+              updated_at: new Date(),
+              params: settledDocumentDraftParamsSql(),
+            })
+            .where(and(
+              eq(agentActions.id, prior.id),
+              eq(agentActions.org_id, params.orgId),
+              eq(agentActions.approval_status, 'pending'),
+            ))
+            .returning({ id: agentActions.id });
+          // M7 fix round 3 (I3): an expired document draft's approval items name nothing, in this commit.
+          if (expired.length > 0 && isDraftTextAction(prior.action)) await scrubDocumentDraftItems(tx, [prior.id]);
+        });
       }
       throw new PlanApprovalBoundaryError(
         `Plan step '${params.step.id}' input changed after review was requested`,
@@ -411,8 +816,9 @@ export interface CreatePlanRowInput {
 export async function createPlanRow(
   input: CreatePlanRowInput,
 ): Promise<{ plan_id: string; status: 'draft' }> {
-  await assertPlanStepsAllowedFor(input.org_id, input.user_id, input.steps);
-  const steps = input.steps.map((step) => ({
+  await assertPlanStepsAllowedFor(input.org_id, input.user_id, input.steps, input.agent_employee_id);
+  // Fix round 1 (I2): no document text is stored in any step, from creation on.
+  const steps = planStepsForStorage(input.steps).map((step) => ({
     ...step,
     approved_by_user_id: undefined,
     status: 'pending' as const,
@@ -500,10 +906,58 @@ async function executePlanUnlocked(
     .set({ status: 'executing', updated_at: new Date() })
     .where(eq(agentPlans.id, planId));
 
-  const steps = plan.steps as PlanStep[];
-  const context: PlanContext = (plan.context as PlanContext) ?? {};
+  // Every document step and its context entry rebuilt from the allowlist,
+  // whenever the plan was stored (I2); a step not yet run keeps the literals
+  // written for it (fix round 2). The first progress write below stores it so.
+  const rebuilt = planWithDocumentReferences({ steps: plan.steps, context: plan.context, status: plan.status }, { literals: true, freeText: true });
+  const steps = rebuilt.steps as PlanStep[];
+  const context: PlanContext = (rebuilt.context as PlanContext) ?? {};
+  const planStepIds: ReadonlySet<string> = new Set(steps.map((candidate) => candidate.id));
+  // M7 (rule C4): a document tool's full result, for this run's later steps
+  // only. The plan row keeps its references (completeStep).
+  const liveResults: PlanContext = {};
+  const readableContext = (): PlanContext => ({ ...context, ...liveResults });
+  // Fix round 2: a step naming a document read that completed in an earlier
+  // run reads it again now, as the creator, through the same access-checked
+  // read tool (the plan kept its ids only). A read that can't be made again
+  // (a search keeps no words once run) leaves the reference unresolved.
+  const readAgainFor = async (value: unknown): Promise<void> => {
+    for (const stepId of referencedStepIds(value)) {
+      if (liveResults[stepId]) continue;
+      const source = steps.find((candidate) => candidate.id === stepId);
+      if (!source || source.status !== 'completed' || !REREADABLE_STEP_TOOLS.has(source.tool)) continue;
+      try {
+        const { result } = await executeToolCall(
+          source.tool, { ...source.params }, orgId, userId, plan.conversation_id ?? undefined, plan.agent_employee_id ?? undefined,
+        );
+        liveResults[stepId] = { result };
+      } catch {
+        // Unresolved: a document write that needs it can't run (PLAN_DOCUMENT_TEXT_ERROR).
+      }
+    }
+  };
+  // A plan that ends keeps no literal either (fix round 2).
+  // Stored: the creator's free text is kept (consult S-F2 projects it per viewer).
+  const settledPlan = () => planWithDocumentReferences({ steps, context }, { freeText: true });
+  const completeStep = (step: PlanStep, ranWith: Record<string, any>, result: unknown) => {
+    step.status = 'completed';
+    liveResults[step.id] = { result };
+    const kept = documentStepForStorage(step.tool, ranWith, result);
+    if (kept) {
+      step.params = kept.params as Record<string, any>;
+      step.result = kept.result;
+      step.content_omitted = true;
+      context[step.id] = { result: kept.result };
+    } else {
+      step.result = result;
+      context[step.id] = { result };
+    }
+  };
   const connectedStepsRefused = steps.some((candidate) => isConnectedToolName(candidate.tool))
     && await isWorkspaceGuest(orgId, userId);
+  // M7 fix round 5: a plan stored before the rule still never hands a draft step to an employee.
+  const draftStepsRefused = steps.some((candidate) => isDraftTextAction(candidate.tool))
+    && await draftStepsWouldReachEmployee(orgId, plan.user_id, plan.agent_employee_id);
   const startIdx = plan.current_step ?? 0;
   const failFast = plan.fail_fast === true;
   const rollbackOnFail = plan.rollback_on_fail === true;
@@ -576,7 +1030,8 @@ async function executePlanUnlocked(
 
     // Evaluate condition
     if (step.condition) {
-      const shouldRun = evaluateCondition(step.condition, context);
+      await readAgainFor(step.condition.field);
+      const shouldRun = evaluateCondition(step.condition, readableContext());
       if (!shouldRun) {
         step.status = 'skipped';
         await updatePlanProgress(planId, steps, context, i);
@@ -590,7 +1045,9 @@ async function executePlanUnlocked(
     await updatePlanProgress(planId, steps, context, i);
 
     try {
-      const resolvedParams = resolveStepReferences(step.params, context);
+      if (draftStepsRefused && isDraftTextAction(step.tool)) throw new PlanApprovalBoundaryError(PLAN_DRAFT_STEP_EMPLOYEE_ERROR);
+      await readAgainFor(step.params);
+      const resolvedParams = resolveStepReferences(step.params, readableContext());
       if (plan.agent_employee_id && (step.tool === 'document_send' || step.tool === 'workspace_plan_import')) {
         // These proposals are reviewed against their source message, which an
         // employee records through its own document_send / workspace_plan_import tools.
@@ -599,6 +1056,8 @@ async function executePlanUnlocked(
       if (connectedStepsRefused && isConnectedToolName(step.tool)) {
         throw new PlanApprovalBoundaryError(CONNECTED_TOOL_UNAVAILABLE_ERROR);
       }
+      // M7: a plan made before the rule, or written around it, still never edits a document.
+      if (step.tool === DOCUMENT_EDIT_ACTION) throw new PlanApprovalBoundaryError(PLAN_DOCUMENT_EDIT_ERROR);
       const mcpToolPolicy = step.tool.startsWith('mcp__')
         ? (await getMCPToolsForAgent(orgId, plan.agent_employee_id ?? undefined))
           .find((tool) => tool.name === step.tool)
@@ -683,9 +1142,7 @@ async function executePlanUnlocked(
         if ((result as { error?: unknown } | null)?.error === CONNECTED_TOOL_UNAVAILABLE_ERROR) {
           throw new PlanApprovalBoundaryError(CONNECTED_TOOL_UNAVAILABLE_ERROR);
         }
-        step.status = 'completed';
-        step.result = result;
-        context[step.id] = { result };
+        completeStep(step, resolvedParams, result);
       } else {
         // Write action — check if it's a dependency and if it should auto-execute
         const isDependency = steps.some(
@@ -697,6 +1154,11 @@ async function executePlanUnlocked(
         const destructiveStep = isDestructiveAction(step.tool, resolvedParams, mcpToolPolicy?.annotations);
 
         const tier = getApprovalTier(step.tool, approvalTierOverride);
+        // A document's text is a literal written for the plan or a reference
+        // resolved as the creator now (I2, fix round 2), else the step can't run.
+        if (!priorDecision && documentStepTextUnavailable(step.tool, step.params, resolvedParams, planStepIds)) {
+          throw new PlanApprovalBoundaryError(PLAN_DOCUMENT_TEXT_ERROR);
+        }
         const execResult = priorDecision && priorDecision.key === null
           // Still pending (checked above): keep waiting on that row.
           ? { actionId: priorDecision.id, success: false, result: null, requiresApproval: true,
@@ -728,10 +1190,8 @@ async function executePlanUnlocked(
           });
 
         if (execResult.success) {
-          step.status = 'completed';
-          step.result = execResult.result;
+          completeStep(step, resolvedParams, execResult.result);
           delete step.error;
-          context[step.id] = { result: execResult.result };
         } else if (execResult.requiresApproval) {
           step.status = 'waiting_approval';
           step.error = execResult.error;
@@ -807,8 +1267,7 @@ async function executePlanUnlocked(
         await db
           .update(agentPlans)
           .set({
-            steps,
-            context,
+            ...settledPlan(),
             current_step: i,
             status: 'failed',
             error: errorMsg,
@@ -896,7 +1355,7 @@ async function executePlanUnlocked(
     const error = `${failedSteps.length} plan step${failedSteps.length === 1 ? '' : 's'} failed`;
     await db
       .update(agentPlans)
-      .set({ status: 'failed', context, error, updated_at: new Date() })
+      .set({ status: 'failed', ...settledPlan(), error, updated_at: new Date() })
       .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId)));
     onEvent?.({ type: 'plan:fail', data: { reason: 'step_failures', error } });
     return;
@@ -918,7 +1377,7 @@ async function executePlanUnlocked(
   // All applicable steps completed or were conditionally skipped.
   await db
     .update(agentPlans)
-    .set({ status: 'completed', context, error: null, updated_at: new Date() })
+    .set({ status: 'completed', ...settledPlan(), error: null, updated_at: new Date() })
     .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId)));
   onEvent?.({ type: 'plan:complete' });
 }

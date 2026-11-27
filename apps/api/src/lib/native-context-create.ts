@@ -1,28 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { notes, wikiPages } from '@deft/db/schema';
+import { wikiPages } from '@deft/db/schema';
 import type { db } from './db.js';
-import { syncNoteFiles } from './note-file-claims.js';
 
 export type ContextWriteDatabase = Pick<typeof db, 'select' | 'insert'>;
 export type ContextCreator = Readonly<{ id: string; org_id: string }>;
 
 /** Shared destination writes: ordinary routes and reviewed Email transfers use
  * the same defaults and provenance. Authorization belongs to the caller, which
- * can hold its existing transaction through both creation and its receipt. */
-export async function createNativeNote(database: ContextWriteDatabase & Pick<typeof db, 'update' | 'delete' | 'execute'>, user: ContextCreator,
-  input: { title?: string; content?: string; icon?: string | null; folder_id?: string | null;
-    is_template?: boolean; visibility?: 'private' | 'org' | 'space'; visibility_space_id?: string | null }) {
-  const [note] = await database.insert(notes).values({ org_id: user.org_id, user_id: user.id,
-    title: input.title || '', content: input.content || '', icon: input.icon || null,
-    folder_id: input.folder_id || null, is_template: input.is_template || false,
-    visibility: input.visibility || 'private',
-    visibility_space_id: input.visibility === 'space' ? input.visibility_space_id || null : null }).returning();
-  if (!note) throw new Error('Failed to create note');
-  // Link and keep the images the note shows that this person uploaded (note-file-claims.ts).
-  await syncNoteFiles(database, user, note);
-  return note;
-}
-
+ * can hold its existing transaction through both creation and its receipt.
+ * Notes are documents since the notes move (F15): nothing writes a note row
+ * any more, and a note destination creates a document (lib/legacy-notes.ts). */
 export async function createNativeKnowledge(database: ContextWriteDatabase, user: ContextCreator,
   input: { space_id: string; type: typeof wikiPages.$inferInsert.type; title: string; content: string;
     metadata: unknown; source_message_id?: string | null; source_space_id?: string | null;

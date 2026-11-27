@@ -1,9 +1,15 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { eq, and, between, desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tasks, events, notes, projects, meetingBriefs, reminders, automationRuns, orgMembers } from '@deft/db/schema';
+import { tasks, events, projects, meetingBriefs, reminders, automationRuns, orgMembers } from '@deft/db/schema';
+import { documents } from '@deft/db/documents';
+import { visibleDocumentCondition } from '../lib/document-access.js';
 import { getOrgTimezone, getDayBoundaries } from '../lib/task-dates.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
+import { DocumentRefusal } from '../lib/documents.js';
+import { briefCitationsVisibleSql, createMeetingNotes, linkedDocumentsByEvent } from '../lib/meeting-notes.js';
+import { jsonBody, noBodyOrJson } from '../lib/request-body.js';
 import { liveHumanCalendarEventCondition } from '../lib/calendar-event-visibility.js';
 
 export const calendarRoutes = new Hono();
@@ -42,7 +48,7 @@ calendarRoutes.get('/', async (c) => {
   const { end: to } = getDayBoundaries(orgTz, 0, toWC);
 
   // Run three queries in parallel
-  const [taskRows, eventRows, noteRows, reminderRows, invitationOccurrences] = await Promise.all([
+  const [taskRows, eventRows, documentRows, reminderRows, invitationOccurrences] = await Promise.all([
     // Tasks assigned to this user with due dates in range
     db.select({
       id: tasks.id,
@@ -83,20 +89,22 @@ calendarRoutes.get('/', async (c) => {
       ))
       .orderBy(events.timestamp),
 
-    // Notes created by this user in range
+    // Documents this user created in range, that they can still open (the
+    // notes of the day before the notes move, F15).
     db.select({
-      id: notes.id,
-      title: notes.title,
-      icon: notes.icon,
-      created_at: notes.created_at,
-    }).from(notes)
+      id: documents.id,
+      title: documents.title,
+      icon: documents.icon,
+      created_at: documents.created_at,
+    }).from(documents)
       .where(and(
-        eq(notes.org_id, user.org_id),
-        eq(notes.user_id, user.id),
-        eq(notes.is_deleted, false),
-        between(notes.created_at, from, to),
+        eq(documents.org_id, user.org_id),
+        eq(documents.created_by, user.id),
+        between(documents.created_at, from, to),
+        visibleDocumentCondition(user.id, user.org_id),
       ))
-      .orderBy(desc(notes.created_at)),
+      .orderBy(desc(documents.created_at))
+      .limit(200),
 
     // Reminders for this user in range
     db.select({
@@ -113,13 +121,47 @@ calendarRoutes.get('/', async (c) => {
       .orderBy(reminders.remind_at),
     readEmailCalendarOccurrences(db,{org_id:user.org_id,owner_user_id:user.id,from,to}),
   ]);
+  const calendarEvents = [...eventRows,...invitationOccurrences].sort((a,b)=>a.timestamp.getTime()-b.timestamp.getTime());
+  // Each event's meeting notes this viewer can open (M2), in one query.
+  const linkedDocuments = await linkedDocumentsByEvent(user.id, user.org_id, calendarEvents.map((event) => event.id));
 
   return c.json({
     tasks: taskRows,
-    events: [...eventRows,...invitationOccurrences].sort((a,b)=>a.timestamp.getTime()-b.timestamp.getTime()),
-    notes: noteRows,
+    events: calendarEvents.map((event) => ({ ...event, documents: linkedDocuments.get(event.id) ?? [] })),
+    documents: documentRows.map((row) => ({ ...row, url: `/d/${row.id}` })),
+    // Empty, for clients that still read the old key until the web reads documents (F16).
+    notes: [],
     reminders: reminderRows,
   });
+});
+
+const meetingNotesSchema = z.object({
+  drive_id: z.string().trim().min(1).max(200).optional(),
+  folder_id: z.string().trim().min(1).max(200).nullable().optional(),
+}).strict();
+
+// POST /events/:eventId/document { drive_id?, folder_id? } — "Notes for this
+// meeting" (M2): a document from the meeting notes template, linked to the
+// event. The caller must see the event and have edit on the drive (by
+// default their My drive); see lib/meeting-notes.ts.
+calendarRoutes.post('/events/:eventId/document', async (c) => {
+  const user = c.get('user');
+  const eventId = c.req.param('eventId');
+  if (!(await noBodyOrJson(c))) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+  const parsed = meetingNotesSchema.safeParse((await jsonBody(c)) ?? {});
+  if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+  if (eventId.length > 200) return c.json({ error: 'Event not found', code: 'NOT_FOUND' }, 404);
+  try {
+    const { document, finish } = await createMeetingNotes({
+      orgId: user.org_id, userId: user.id, eventId, driveId: parsed.data.drive_id, folderId: parsed.data.folder_id,
+    });
+    await finish();
+    return c.json({ document }, 201);
+  } catch (error) {
+    if (error instanceof DocumentRefusal) return c.json({ error: error.message, code: error.code }, error.status);
+    console.error('[calendar] creating meeting notes failed');
+    return c.json({ error: 'Failed to create the meeting notes', code: 'INTERNAL_ERROR' }, 500);
+  }
 });
 
 // GET /briefs?event_ids=id1,id2 — meeting prep briefs for specific events
@@ -158,6 +200,8 @@ calendarRoutes.get('/briefs', async (c) => {
       eq(meetingBriefs.org_id, user.org_id),
       eq(meetingBriefs.user_id, user.id),
       inArray(meetingBriefs.event_id, eventIds),
+      // A brief that carries an excerpt of meeting notes is hidden once this reader can't open them (M2).
+      briefCitationsVisibleSql(user.id, user.org_id),
     ))
     .orderBy(desc(meetingBriefs.created_at))
     .limit(50);

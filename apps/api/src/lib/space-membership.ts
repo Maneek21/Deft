@@ -43,10 +43,14 @@ export async function canSelfJoinPublicSpaces(
  * `orgId` (the caller's active org). One user can be an active member of
  * several orgs; without the org binding a session for org A passed this check
  * for an org-B space the user belongs to. A space outside the active org is
- * indistinguishable from a space the user is not a member of.
+ * indistinguishable from a space the user is not a member of. Pass the
+ * caller's transaction as `executor` when it already holds locks, so the
+ * check doesn't wait for a second pooled connection.
  */
-export async function requireSpaceMembership(spaceId: string, userId: string, orgId: string): Promise<boolean> {
-  const [member] = await db.select({ id: spaceMembers.id })
+export async function requireSpaceMembership(
+  spaceId: string, userId: string, orgId: string, executor: Pick<typeof db, 'select'> = db,
+): Promise<boolean> {
+  const [member] = await executor.select({ id: spaceMembers.id })
     .from(spaceMembers)
     .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
     .where(and(
@@ -63,10 +67,13 @@ export async function requireSpaceMembership(spaceId: string, userId: string, or
  * they are a member of it, or it is a public space they may read before
  * joining (see `unjoinedPublicSpaceReadableSql`; a guest never can). For read
  * routes only: posting and every other write keep `requireSpaceMembership`.
+ * `executor` as for requireSpaceMembership.
  */
-export async function canReadSpace(spaceId: string, userId: string, orgId: string): Promise<boolean> {
-  if (await requireSpaceMembership(spaceId, userId, orgId)) return true;
-  const [space] = await db.select({ id: spaces.id })
+export async function canReadSpace(
+  spaceId: string, userId: string, orgId: string, executor: Pick<typeof db, 'select'> = db,
+): Promise<boolean> {
+  if (await requireSpaceMembership(spaceId, userId, orgId, executor)) return true;
+  const [space] = await executor.select({ id: spaces.id })
     .from(spaces)
     .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, orgId), unjoinedPublicSpaceReadableSql(userId)))
     .limit(1);

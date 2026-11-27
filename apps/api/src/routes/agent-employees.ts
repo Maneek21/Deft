@@ -6,6 +6,9 @@ import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
 import { AgentSetGrew, agentManagementView, manageAgent, manageAgents, managementFor, ownerOnlyAgentUsers, type AgentManagementRefusal } from '../lib/agent-management.js';
 import { lockMembership, recordMembershipChange } from '../lib/membership-guard.js';
+import { accessLossInTx, finishAccessLoss } from '../lib/document-access-change.js';
+import { emitDocumentAccessChanged } from '../lib/document-access-events.js';
+import { endDriveAccessOnDepartureInTx, finishDriveLosses } from '../lib/drives.js';
 import { reviewableApprovalCountsByEmployee } from '../lib/pending-approval-audience.js';
 import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
@@ -64,6 +67,7 @@ import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-s
 import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-preflight.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { invalidatePlatformContextCacheFor } from '../lib/mcp-tools/context.js';
+import { isDraftTextAction, receiptForViewer, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from '../lib/document-draft-params.js';
 import {
   isCanonicalDeftyEmployee,
   isReservedDeftyEmployeeSlug,
@@ -505,7 +509,8 @@ agentEmployeeRoutes.get('/:id/turns/:turn_id/receipt', async (c) => {
     // Reuse the existing verify helper from Phase 7.
     const { verifyReceipt } = await import('../lib/receipts.js');
     const verified = await verifyReceipt(row as any);
-    return c.json({ receipt: row, verified, action_id: row.action_id });
+    // M7 fix round 5: a draft tool's receipt names the document and sizes, whenever it was signed.
+    return c.json({ receipt: receiptForViewer(row), verified, action_id: row.action_id });
   } catch (err) {
     console.error('Failed to fetch turn receipt:');
     return c.json({ error: 'Failed to fetch turn receipt', code: 'INTERNAL_ERROR' }, 500);
@@ -2537,6 +2542,34 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
     // The agent's membership ends on the membership locked path
     // (lib/membership-guard.ts), under the choke point's locks.
     const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, async (tx) => {
+      // A clone shares its source's user (POST /:id/clone). While another
+      // employee still names that user, the user stays in the workspace and
+      // keeps its personal drive: only this employee goes. manageAgent holds
+      // the user's account row, so two such deletions (and a sibling's pause
+      // or resume) run one after the other and each sees the last.
+      //
+      // The shared user's access follows the employee users.agent_employee_id
+      // names (lib/document-access.ts). When that is the one going, the user
+      // is repointed to a surviving sibling, an active one first, then the
+      // oldest, so the user and its drive stay reachable. An active heir
+      // loses nothing; a paused one means no access until it is resumed, an
+      // access loss without a freeze. The pointer's other readers follow the
+      // same employee: the locked eligibility check (lib/drives.ts) and the
+      // dispatch of tasks assigned to the user (lib/dispatch-agent-task.ts).
+      const [heir] = await tx.select({ id: agentEmployees.id, is_active: agentEmployees.is_active }).from(agentEmployees)
+        .where(and(
+          eq(agentEmployees.org_id, user.org_id), eq(agentEmployees.user_id, existing.user_id), eq(agentEmployees.is_deleted, false),
+          sql`${agentEmployees.id} <> ${id}`,
+        ))
+        .orderBy(desc(agentEmployees.is_active), asc(agentEmployees.created_at), asc(agentEmployees.id))
+        .limit(1);
+      if (heir) {
+        await tx.update(agentEmployees).set({ is_active: false, is_deleted: true, deleted_at: new Date() }).where(eq(agentEmployees.id, id));
+        const [shared] = await tx.select({ agent_employee_id: users.agent_employee_id }).from(users).where(eq(users.id, existing.user_id)).limit(1);
+        if (shared?.agent_employee_id !== id) return [];
+        await tx.update(users).set({ agent_employee_id: heir.id }).where(eq(users.id, existing.user_id));
+        return heir.is_active ? [] : [await accessLossInTx(tx, { orgId: user.org_id, userIds: [existing.user_id] })];
+      }
       const locked = await lockMembership(tx, { orgId: user.org_id, targetUserId: existing.user_id });
       await recordMembershipChange(tx, { orgId: user.org_id, targetUserId: existing.user_id, locked, change: { isActive: false } });
       await tx
@@ -2548,8 +2581,13 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
         .update(orgMembers)
         .set({ is_active: false, updated_at: new Date() })
         .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
+      // Drives and documents (rules C3 and C5): the agent leaves the
+      // workspace, through the same departure seam as a removed member, which
+      // freezes its personal drive.
+      return endDriveAccessOnDepartureInTx(tx, user.org_id, existing.user_id);
     });
     if (!managed.ok) return managementRefused(c, managed);
+    await finishDriveLosses(managed.value);
 
     // Module proposals temporarily contain record values for review. Close
     // those through the module-aware terminal path before the legacy generic
@@ -2561,19 +2599,25 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
       attentionResolution: 'employee_removed',
     });
 
-    // Preserve the existing status-only lifecycle for non-module actions.
-    const expiredActions = await db
-      .update(agentActions)
-      .set({ approval_status: 'expired' })
-      .where(
-        and(
-          eq(agentActions.org_id, user.org_id),
-          eq(agentActions.agent_employee_id, id),
-          eq(agentActions.approval_status, 'pending'),
-          notInArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES]),
-        ),
-      )
-      .returning({ id: agentActions.id, params: agentActions.params });
+    // Preserve the existing status-only lifecycle for non-module actions
+    // (a document draft keeps no title or Markdown: M7 fix round 1, I3).
+    const expiredActions = await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(agentActions)
+        .set({ approval_status: 'expired', params: settledDocumentDraftParamsSql() })
+        .where(
+          and(
+            eq(agentActions.org_id, user.org_id),
+            eq(agentActions.agent_employee_id, id),
+            eq(agentActions.approval_status, 'pending'),
+            notInArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES]),
+          ),
+        )
+        .returning({ id: agentActions.id, action: agentActions.action, params: agentActions.params });
+      // M7 fix round 3 (I3): an expired document draft's approval items name nothing, in this commit.
+      await scrubDocumentDraftItems(tx, rows.filter((row) => isDraftTextAction(row.action)).map((row) => row.id));
+      return rows.map(({ id: actionId, params }) => ({ id: actionId, params }));
+    });
     await markWorkIntentsExpiredForActions({
       orgId: user.org_id,
       actions: expiredActions,
@@ -2613,9 +2657,14 @@ agentEmployeeRoutes.post('/:id/pause', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, (tx) =>
-      tx.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id)));
+    // A paused agent holds no drive or document access (lib/document-access.ts
+    // needs an active employee): the access-loss path, rule C3.
+    const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, async (tx) => {
+      await tx.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id));
+      return accessLossInTx(tx, { orgId: user.org_id, userIds: [existing.user_id] });
+    });
     if (!managed.ok) return managementRefused(c, managed);
+    await finishAccessLoss(managed.value.change, managed.value.result);
 
     return c.json({ success: true, is_active: false });
   } catch (err) {
@@ -2649,6 +2698,8 @@ agentEmployeeRoutes.post('/:id/resume', async (c) => {
     const managed = await manageAgent({ userId: user.id, orgId: user.org_id }, id, (tx) =>
       tx.update(agentEmployees).set({ is_active: true }).where(eq(agentEmployees.id, id)));
     if (!managed.ok) return managementRefused(c, managed);
+    // Resuming takes nothing away: live document connections re-check (rule C3).
+    emitDocumentAccessChanged({ orgId: user.org_id, userIds: [existing.user_id] });
 
     return c.json({ success: true, is_active: true });
   } catch (err) {

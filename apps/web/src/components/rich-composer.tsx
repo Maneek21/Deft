@@ -8,6 +8,7 @@ import Link from '@tiptap/extension-link';
 import { createBaseExtensions } from '@/lib/editor/shared-config';
 import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
 import { registerChatCommands } from '@/lib/editor/chat-commands';
+import { forwardMenuCommand, interceptsBare, interceptsWithArgs, offersCommand } from '@/lib/slash-command-gate';
 import { CodeBlock } from '@/lib/editor/blocks/code-block';
 
 registerChatCommands();
@@ -105,6 +106,10 @@ type Props = {
   pendingFiles: PendingFile[];
   onRemovePendingFile: (id: string) => void;
   onFileSelect: () => void;
+  /** "Attach document" in the + menu (F13): opens the chat's document picker. */
+  onAttachDocument?: () => void;
+  /** Documents waiting to be posted: like pending files, they let a message send without text. */
+  pendingDocumentCount?: number;
   onPaste: (e: React.ClipboardEvent) => void;
   uploading: boolean;
   uploadProgress: number;
@@ -113,9 +118,14 @@ type Props = {
   onViewScheduled?: () => void;
   onClipRecord?: () => void;
   onSlashCommand?: (command: string, args: string) => void | Promise<void>;
+  /** Act on only these slash commands (a thread composer: `note`); the rest behave as if there were no handler. */
+  slashCommandsOnly?: readonly string[];
   onAskDefty?: () => void;
   spaceId?: string;
 };
+
+/** Why scheduling is off while documents are attached: scheduled messages don't carry them yet. */
+export const SCHEDULE_WITH_DOCUMENTS = 'Scheduling doesn’t support attached documents yet';
 
 function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -134,6 +144,8 @@ export function RichComposer({
   pendingFiles,
   onRemovePendingFile,
   onFileSelect,
+  onAttachDocument,
+  pendingDocumentCount = 0,
   onPaste,
   uploading,
   uploadProgress,
@@ -142,6 +154,7 @@ export function RichComposer({
   onViewScheduled,
   onClipRecord,
   onSlashCommand,
+  slashCommandsOnly,
   onAskDefty,
   spaceId,
 }: Props) {
@@ -190,6 +203,8 @@ export function RichComposer({
   const [showMentions, setShowMentions] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
+  const sendErrorRef = useRef<(message: string) => void>(() => {});
+  sendErrorRef.current = setSendError;
   const [, setContentVersion] = useState(0);
   // Anchor (start of @) + end (current cursor) at the moment the mention
   // autocomplete opened. Captured in onUpdate so handleMentionSelect can
@@ -204,6 +219,8 @@ export function RichComposer({
   // into the editor at mount) always sees the latest handler from props.
   const onSlashCommandRef = useRef(onSlashCommand);
   onSlashCommandRef.current = onSlashCommand;
+  const slashOnlyRef = useRef(slashCommandsOnly);
+  slashOnlyRef.current = slashCommandsOnly;
   // True while the BlockSlashMenu popup is open — `editorProps.handleKeyDown`
   // checks this to let Enter fall through to the Suggestion plugin so the
   // user's selected command actually fires.
@@ -236,7 +253,7 @@ export function RichComposer({
         surface: 'chat',
         placeholder: placeholder ?? 'Message #channel… Type / for commands.',
         disable: ['link', 'codeBlock', 'heading'],
-        onChatCommand: (name, args) => onSlashCommandRef.current?.(name, args),
+        onChatCommand: (name, args) => forwardMenuCommand(onSlashCommandRef.current, slashOnlyRef.current, name, args, (message) => sendErrorRef.current(message)),
         onMenuStateChange: (open) => { slashMenuOpenRef.current = open; },
       }),
       Link.configure({
@@ -362,15 +379,15 @@ export function RichComposer({
     if (!editor || sending || disabled) return;
     const html = editor.getHTML();
     const text = editor.getText();
-    if (!text.trim() && pendingFiles.length === 0) return;
+    if (!text.trim() && pendingFiles.length === 0 && pendingDocumentCount === 0) return;
 
     // Intercept slash commands with args: "/command args..."
     const cmdMatch = text.trim().match(/^\/(\w+)\s+(.+)$/s);
     if (cmdMatch && onSlashCommand) {
       const cmdName = cmdMatch[1]!.toLowerCase();
       const args = cmdMatch[2]!.trim();
-      const known = ['remind', 'task', 'status', 'note', 'mute', 'unmute', 'dnd', 'search'];
-      if (known.includes(cmdName)) {
+      const known = interceptsWithArgs(cmdName, slashCommandsOnly);
+      if (known) {
         setSending(true);
         setSendError('');
         try {
@@ -389,8 +406,8 @@ export function RichComposer({
     const bareCmd = text.trim().match(/^\/(\w+)$/);
     if (bareCmd && onSlashCommand) {
       const cmdName = bareCmd[1]!.toLowerCase();
-      const noArgCmds = ['mute', 'unmute', 'dnd', 'search'];
-      if (noArgCmds.includes(cmdName)) {
+      const noArg = interceptsBare(cmdName, slashCommandsOnly);
+      if (noArg) {
         setSending(true);
         setSendError('');
         try {
@@ -417,10 +434,14 @@ export function RichComposer({
     } finally {
       setSending(false);
     }
-  }, [disabled, editor, onSend, onSlashCommand, pendingFiles.length, sending]);
+  }, [disabled, editor, onSend, onSlashCommand, slashCommandsOnly, pendingDocumentCount, pendingFiles.length, sending]);
 
   const handleScheduleSend = useCallback(async (isoTime: string) => {
     if (!editor || !onScheduleSend || sending || disabled) return;
+    if (pendingDocumentCount > 0) {
+      setSendError(`${SCHEDULE_WITH_DOCUMENTS}.`);
+      return;
+    }
     const html = editor.getHTML();
     const text = editor.getText();
     if (!text.trim() && pendingFiles.length === 0) return;
@@ -439,7 +460,7 @@ export function RichComposer({
     } finally {
       setSending(false);
     }
-  }, [disabled, editor, onScheduleSend, pendingFiles.length, sending]);
+  }, [disabled, editor, onScheduleSend, pendingDocumentCount, pendingFiles.length, sending]);
 
   // Cmd+K for link
   useEffect(() => {
@@ -504,7 +525,7 @@ export function RichComposer({
 
   if (!editor) return null;
 
-  const hasContent = editor.getText().trim().length > 0 || pendingFiles.length > 0;
+  const hasContent = editor.getText().trim().length > 0 || pendingFiles.length > 0 || pendingDocumentCount > 0;
   const runSheetAction = (action: () => void | Promise<void>) => {
     setFormatSheetOpen(false);
     void Promise.resolve().then(action).catch((error) => {
@@ -646,18 +667,22 @@ export function RichComposer({
             )}
             {onSlashCommand && (
               <>
-                <SheetActionButton
-                  icon={<CheckSquare size={18} strokeWidth={1.6} />}
-                  label="Create task draft"
-                  description="Turn the current discussion into assigned work"
-                  onClick={() => runSheetAction(() => onSlashCommand('task', 'New task'))}
-                />
-                <SheetActionButton
-                  icon={<FileText size={18} strokeWidth={1.6} />}
-                  label="New note"
-                  description="Save a structured note from this conversation"
-                  onClick={() => runSheetAction(() => onSlashCommand('note', 'Chat note'))}
-                />
+                {offersCommand('task', slashCommandsOnly) && (
+                  <SheetActionButton
+                    icon={<CheckSquare size={18} strokeWidth={1.6} />}
+                    label="Create task draft"
+                    description="Turn the current discussion into assigned work"
+                    onClick={() => runSheetAction(() => onSlashCommand('task', 'New task'))}
+                  />
+                )}
+                {offersCommand('note', slashCommandsOnly) && (
+                  <SheetActionButton
+                    icon={<FileText size={18} strokeWidth={1.6} />}
+                    label="New note"
+                    description="Save a structured note from this conversation"
+                    onClick={() => runSheetAction(() => onSlashCommand('note', 'Chat note'))}
+                  />
+                )}
               </>
             )}
           </div>
@@ -675,6 +700,18 @@ export function RichComposer({
               <Paperclip size={18} strokeWidth={1.5} />
               <span className="text-[0.6875rem]">Attach</span>
             </button>
+            {onAttachDocument && (
+              <button
+                type="button"
+                onClick={() => { setFormatSheetOpen(false); onAttachDocument(); }}
+                aria-label="Attach document"
+                className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+                style={{ color: 'var(--on-surface-variant)' }}
+              >
+                <FileText size={18} strokeWidth={1.5} />
+                <span className="text-[0.6875rem]">Document</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => { setFormatSheetOpen(false); setEmojiOpen(true); }}
@@ -972,18 +1009,22 @@ export function RichComposer({
                     )}
                     {onSlashCommand && (
                       <>
-                        <DesktopActionButton
-                          icon={<CheckSquare size={16} strokeWidth={1.6} />}
-                          label="Create task draft"
-                          description="Turn this discussion into work"
-                          onClick={() => runDesktopAction(() => onSlashCommand('task', 'New task'))}
-                        />
-                        <DesktopActionButton
-                          icon={<FileText size={16} strokeWidth={1.6} />}
-                          label="New note"
-                          description="Capture a structured note"
-                          onClick={() => runDesktopAction(() => onSlashCommand('note', 'Chat note'))}
-                        />
+                        {offersCommand('task', slashCommandsOnly) && (
+                          <DesktopActionButton
+                            icon={<CheckSquare size={16} strokeWidth={1.6} />}
+                            label="Create task draft"
+                            description="Turn this discussion into work"
+                            onClick={() => runDesktopAction(() => onSlashCommand('task', 'New task'))}
+                          />
+                        )}
+                        {offersCommand('note', slashCommandsOnly) && (
+                          <DesktopActionButton
+                            icon={<FileText size={16} strokeWidth={1.6} />}
+                            label="New note"
+                            description="Capture a structured note"
+                            onClick={() => runDesktopAction(() => onSlashCommand('note', 'Chat note'))}
+                          />
+                        )}
                       </>
                     )}
                     <DesktopActionButton
@@ -992,6 +1033,14 @@ export function RichComposer({
                       description="Add an image, document, or context file"
                       onClick={() => runDesktopAction(onFileSelect)}
                     />
+                    {onAttachDocument && (
+                      <DesktopActionButton
+                        icon={<FileText size={16} strokeWidth={1.6} />}
+                        label="Attach document"
+                        description="Post a document from one of your drives"
+                        onClick={() => runDesktopAction(onAttachDocument)}
+                      />
+                    )}
                   </div>
                 </div>
               )}
@@ -1099,8 +1148,9 @@ export function RichComposer({
           <div className="flex items-center gap-1.5">
             {onScheduleSend && hasContent && (
               <div className="relative">
-                <button ref={scheduleBtnRef} onClick={() => setScheduleOpen(!scheduleOpen)} disabled={sending || disabled}
-                  className="flex h-8 w-8 items-center justify-center rounded-full" style={{ color: 'var(--outline)', background: 'var(--surface-container-high)' }} title="Schedule send">
+                <button ref={scheduleBtnRef} onClick={() => setScheduleOpen(!scheduleOpen)} disabled={sending || disabled || pendingDocumentCount > 0}
+                  className="flex h-8 w-8 items-center justify-center rounded-full disabled:opacity-50" style={{ color: 'var(--outline)', background: 'var(--surface-container-high)' }}
+                  title={pendingDocumentCount > 0 ? SCHEDULE_WITH_DOCUMENTS : 'Schedule send'}>
                   <Clock size={14} strokeWidth={1.5} />
                 </button>
                 {scheduleOpen && schedulePos && createPortal(

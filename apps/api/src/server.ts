@@ -6,6 +6,10 @@ import { serve } from '@hono/node-server';
 import type { Server } from 'node:http';
 import { app } from './index.js';
 import { getIO, setupSocket } from './socket.js';
+import { getCollabServer } from './collab/server.js';
+import { startDocumentVersioning } from './lib/document-versions.js';
+import { startDocumentCrossReferences } from './lib/document-cross-references.js';
+import { moveNotesBeforeListen } from './lib/drives-move/startup.js';
 import { assertPausedStartSettingValid, logPausedStart, serverStartupPlan } from './lib/paused-start.js';
 import { captureProcessError, flushErrorTelemetryBeforeExit, isErrorTelemetryEnabled } from './lib/telemetry/error-reporter.js';
 
@@ -33,6 +37,9 @@ let shuttingDown = false;
 assertPausedStartSettingValid();
 const startupPlan = serverStartupPlan();
 workerStartup.require();
+// Notes and canvases move into drives before the API listens, so it never
+// serves a half-moved workspace; skipped while paused (lib/drives-move/startup.ts).
+await moveNotesBeforeListen();
 const server = serve({ fetch: app.fetch, port }, async (info) => {
   console.log(`Deft API running on http://localhost:${logNumber(info.port)}`);
   logPausedStart();
@@ -108,6 +115,14 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
 });
 
 setupSocket(server as unknown as Server);
+// Live editing at /collab (collab/server.ts). Its upgrade listener runs next
+// to engine.io's and ends upgrades for any other path.
+getCollabServer().attach(server as unknown as Server);
+// Automatic document versions and document_attachments.in_current follow
+// every derived store (lib/document-versions.ts).
+startDocumentVersioning();
+// Task keys written in documents become backlinks (lib/document-cross-references.ts).
+startDocumentCrossReferences();
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
@@ -118,6 +133,12 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   console.log(`[shutdown] ${logSignal(signal)} received; draining HTTP and job workers`);
 
   const httpServer = server as unknown as Server;
+  // Live editing stops admitting connections, frames and writes, finishes what
+  // it took, and stores every changed document, retrying until 12 s from now
+  // (inside the 15 s hard deadline); then it closes its connections. A
+  // document it couldn't store makes this reject, so the exit is non-zero.
+  // The database closes only after that.
+  const collabStopped = getCollabServer().destroy({ retryUntil: Date.now() + 12_000 });
   const socketClosed = getIO()?.close() ?? Promise.resolve();
   const httpClosed = new Promise<void>((resolve) => {
     httpServer.close(() => resolve());
@@ -134,6 +155,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     const { stopWorkers } = await import('./workers/index.js');
     const results = await Promise.allSettled([
       stopWorkers({ timeoutMs: 10_000 }),
+      collabStopped,
       socketClosed,
       httpClosed,
     ]);

@@ -12,13 +12,19 @@ import {appIntegrationNotificationPolicies as notificationPolicies} from '../../
 import type {AppRunTransaction} from './app-run-repository.js';
 import type {AppIntegrationSourceCaller} from './app-integration-source.js';
 import {nativeChatForwardBroadcast} from './native-chat-forward.js';
+import {documents} from '@deft/db/documents';
+import {emitDocumentUpdated} from './document-access-events.js';
+import {emitDocumentEvent} from './document-events.js';
 import {getIO} from '../socket.js';
 let singleton:ReturnType<typeof createRuntime>|undefined;
 async function createRuntime(){const shared=await getAppIntegrationCaptureRuntime(),service=createAppIntegrationDestination<AppRunTransaction>({
  transaction:fn=>db.transaction(fn),source:{resolve:(caller,identity)=>shared.resolve(caller,identity,'transfer'),read:shared.source.read,guard:shared.source.guard},
  ...appIntegrationDestinationPostgres({task:appIntegrationTaskAdapter}),
  afterCommit:async result=>{if(result.destination_kind==='chat'){const value=await nativeChatForwardBroadcast(db,result.destination_id);if(value)await emitCurrentMessageToSpaceViewers(getIO(), value.space_id, 'message:new', value);}
-  if(result.destination_kind==='task'){const [row]=await db.select().from(tasks).where(eq(tasks.id,result.destination_id));if(row)await afterAppIntegrationTaskCommit(row);}},
+  if(result.destination_kind==='task'){const [row]=await db.select().from(tasks).where(eq(tasks.id,result.destination_id));if(row)await afterAppIntegrationTaskCommit(row);}
+  // A document made for a `document` or `note` destination (F15): its `created` lifecycle event and document:updated, after the commit.
+  if(result.destination_kind==='document'||result.destination_kind==='note'){const [row]=await db.select({id:documents.id,org_id:documents.org_id,drive_id:documents.drive_id,created_by:documents.created_by}).from(documents).where(eq(documents.id,result.destination_id));
+   if(row){emitDocumentEvent({type:'created',orgId:row.org_id,documentIds:[row.id],toDriveId:row.drive_id,actorId:row.created_by??''});await emitDocumentUpdated(row.org_id,[row.id]);}}},
 });return {...service,async openAttention(caller:AppIntegrationSourceCaller,id:string){
  if(caller.kind!=='human')throw Error('APP_INTEGRATION_DESTINATION_CHANGED_OR_DENIED');
  const predicate=and(eq(attentionItems.org_id,caller.org_id),eq(attentionItems.user_id,caller.user_id),eq(attentionItems.id,id));

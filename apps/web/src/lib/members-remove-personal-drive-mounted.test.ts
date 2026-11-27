@@ -1,0 +1,479 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+// The real Members settings page inside the real AuthProvider, mounted in
+// Chromium and viewed by the owner. When the person being removed has a
+// personal drive with documents in it (the offboarding preview says so), the
+// remove dialog shows the replacement picker even with no open work, and asks
+// explicitly: hand the drive to the replacement, or freeze it. Removal stays
+// disabled until a preview has loaded; a failed preview shows its error and a
+// retry. The test reads the DELETE /api/members/:id body the dialog actually
+// sends (spec 5.2, F6).
+const web = fileURLToPath(new URL('../..', import.meta.url));
+const require = createRequire(path.join(web, 'package.json'));
+const { chromium } = require('playwright');
+const { build } = require('esbuild');
+
+const NEXT_STUBS: Record<string, string> = {
+  'next/navigation': 'export const usePathname = () => window.location.pathname; export const useRouter = () => ({ push() {}, replace() {}, refresh() {}, back() {}, prefetch() {} });',
+  'next/link': "import { createElement } from 'react'; export default function Link({ href, children, prefetch, ...rest }) { return createElement('a', { href, ...rest }, children); }",
+  'next/image': "import { createElement } from 'react'; export default function Image({ priority, ...rest }) { return createElement('img', rest); }",
+};
+
+function token(claims: Record<string, string>): string {
+  return `header.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`;
+}
+
+const stats = { spaces: 0, assigned_tasks_open: 0, assigned_tasks_total: 0, led_projects: 0, wiki_pages: 0, active_mcp_tokens: 0, active_api_keys: 0, active_oauth_grants: 0 };
+function member(id: string, name: string) {
+  return {
+    id, name, email: `${id}@example.test`, kind: 'human', avatar_url: null, title: null, profile_summary: null,
+    expertise_tags: [], timezone: 'UTC', status_emoji: null, status_text: null, last_seen_at: null, email_verified: true,
+    role: 'member', owner_only: false, is_active: true, joined_at: null, lifecycle_status: 'active', pending_invite_id: null, pending_invite_expires_at: null,
+    stats, agent: null,
+  };
+}
+// The dialog's default replacement is the first other active member: the heir.
+const MEMBERS = [member('heir', 'Hal Heir'), member('leaver', 'Lea Leaver'), member('other', 'Ola Other')];
+
+function preview(openTasks: number, personalDriveWithDocuments: boolean) {
+  return {
+    personal_drive_with_documents: personalDriveWithDocuments,
+    revoke_now: { spaces: [], teams: [], groups: [], secondary_task_assignments: 0, active_mcp_tokens: 0, active_api_keys: 0, active_oauth_grants: 0 },
+    needs_reassignment: { primary_open_tasks: [], led_projects: [], led_teams: [] },
+    counts: {
+      spaces: 0, teams: 0, groups: 0, primary_open_tasks: openTasks, secondary_task_assignments: 0, led_projects: 0, led_teams: 0,
+      active_mcp_tokens: 0, active_api_keys: 0, active_oauth_grants: 0,
+    },
+  };
+}
+
+type Scenario = {
+  openTasks: number;
+  personalDrive: boolean;
+  /** 'hand_over' or 'freeze' clicks that radio; null clicks neither. */
+  choose: 'hand_over' | 'freeze' | null;
+  /** The first preview request fails with a 500; the dialog's retry loads it. */
+  failFirstPreview?: boolean;
+};
+type Seen = {
+  radios: boolean; picker: boolean; disabledBeforeChoice: boolean; line: string | null; body: Record<string, unknown>;
+  /** While the preview had failed: its error, the retry, Confirm disabled, no choice shown and nothing sent. */
+  failed?: { error: string | null; retry: boolean; confirmDisabled: boolean; radios: boolean; deletes: number };
+};
+
+let bundled: string | null = null;
+async function bundle(): Promise<string> {
+  if (bundled) return bundled;
+  const page = path.join(web, 'src/app/(app)/settings/members/page.tsx');
+  const auth = path.join(web, 'src/lib/auth-context.tsx');
+  const result = await build({
+    stdin: {
+      contents: `import { createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import MembersPage from ${JSON.stringify(page)};
+import { AuthProvider } from ${JSON.stringify(auth)};
+createRoot(document.getElementById('root')).render(createElement(AuthProvider, null, createElement(MembersPage)));`,
+      resolveDir: web,
+      loader: 'tsx',
+    },
+    bundle: true,
+    write: false,
+    platform: 'browser',
+    format: 'iife',
+    banner: { js: 'var process = { env: {} };' },
+    jsx: 'automatic',
+    alias: { '@': path.join(web, 'src') },
+    define: {
+      'process.env.NODE_ENV': '"test"',
+      'process.env.NEXT_PUBLIC_API_URL': '"http://127.0.0.1"',
+    },
+    plugins: [{
+      name: 'next-stubs',
+      setup(b: any) {
+        b.onResolve({ filter: /^next\/(navigation|link|image)$/ }, (args: any) => ({ path: args.path, namespace: 'next-stub' }));
+        b.onLoad({ filter: /.*/, namespace: 'next-stub' }, (args: any) => ({ contents: NEXT_STUBS[args.path], loader: 'js', resolveDir: web }));
+      },
+    }],
+  });
+  bundled = result.outputFiles[0].text as string;
+  return bundled;
+}
+
+async function removeLeaver(browser: any, scenario: Scenario): Promise<Seen> {
+  const tab = await browser.newPage();
+  tab.setDefaultTimeout(6000);
+  let deleteBody: Record<string, unknown> | null = null;
+  let deletes = 0;
+  let previews = 0;
+  await tab.route('**/*', (route: any) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (url.origin !== 'http://127.0.0.1') return route.abort();
+    if (url.pathname === '/settings/members') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' });
+    if (url.pathname === '/api/auth/me') {
+      return json({ user: { id: 'viewer', name: 'Viewer', email: 'viewer@example.test', timezone: 'UTC', role: 'owner' }, org: { id: 'org', name: 'Org', slug: 'org' } });
+    }
+    if (url.pathname === '/api/members/directory') return json({ members: MEMBERS, invites: [], summary: { active: 3, pending: 0, inactive: 0, agents: 0 } });
+    if (url.pathname === '/api/members/seats') return json({ hosted: false });
+    if (url.pathname === '/api/members/leaver/offboarding-preview') {
+      previews += 1;
+      if (scenario.failFirstPreview && previews === 1) {
+        return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Failed to load offboarding preview', code: 'INTERNAL_ERROR' }) });
+      }
+      return json(preview(scenario.openTasks, scenario.personalDrive));
+    }
+    if (url.pathname === '/api/members/leaver' && request.method() === 'DELETE') {
+      deletes += 1;
+      deleteBody = JSON.parse(request.postData() ?? '{}');
+      return json({ success: true, receipt: {} });
+    }
+    const detail = /^\/api\/members\/([^/]+)\/detail$/.exec(url.pathname);
+    if (detail) {
+      return json({ member: MEMBERS.find((m) => m.id === detail[1]), spaces: [], open_tasks: [], led_projects: [], pending_invites: [], mcp_tokens: [], oauth_grants: [] });
+    }
+    return route.abort();
+  });
+  await tab.goto('http://127.0.0.1/settings/members');
+  await tab.evaluate((access: string) => {
+    localStorage.setItem('deft-access-token', access);
+    localStorage.setItem('deft-refresh-token', access);
+  }, token({ id: 'viewer', org_id: 'org', sid: 'session', jti: 'v1' }));
+  await tab.addScriptTag({ content: await bundle() });
+
+  await tab.getByRole('button', { name: /Lea Leaver/ }).first().click();
+  await tab.getByText('Admin actions').waitFor();
+  await tab.getByRole('button', { name: 'Remove', exact: true }).click();
+  await tab.getByText('Remove Lea Leaver?').waitFor();
+  const confirm = tab.getByRole('button', { name: scenario.openTasks > 0 ? 'Transfer and remove' : 'Confirm remove' });
+  let failed: Seen['failed'];
+  if (scenario.failFirstPreview) {
+    const retryButton = tab.getByTestId('offboarding-preview-retry');
+    await retryButton.waitFor();
+    // Without a preview the button reads "Confirm remove" (no open work is known yet).
+    const confirmNow = tab.getByRole('button', { name: 'Confirm remove' });
+    failed = {
+      error: (await tab.getByText('Failed to load offboarding preview').textContent())?.trim() ?? null,
+      retry: await retryButton.isVisible(),
+      confirmDisabled: await confirmNow.isDisabled(),
+      radios: await tab.getByTestId('offboarding-drive-hand-over').count() > 0,
+      deletes,
+    };
+    await retryButton.click();
+  }
+  await tab.getByText(/Also revokes/).waitFor();
+
+  const radios = await tab.getByTestId('offboarding-drive-hand-over').count() > 0;
+  const picker = await tab.getByTestId('offboarding-replacement-select').count() > 0;
+  const disabledBeforeChoice = await confirm.isDisabled();
+  if (scenario.choose === 'hand_over') await tab.getByTestId('offboarding-drive-hand-over').check();
+  if (scenario.choose === 'freeze') await tab.getByTestId('offboarding-drive-freeze').check();
+  const lineLocator = tab.getByTestId('offboarding-personal-drive');
+  const line = await lineLocator.count() > 0 ? (await lineLocator.textContent())?.trim() ?? null : null;
+  await confirm.click();
+  await tab.waitForFunction(() => !document.body.textContent?.includes('Remove Lea Leaver?'));
+  await tab.close();
+  assert.ok(deleteBody, 'the dialog sent DELETE /api/members/leaver');
+  assert.equal(deletes, 1, 'one DELETE');
+  return { radios, picker, disabledBeforeChoice, line, body: deleteBody, failed };
+}
+
+test('Members page: the remove dialog hands My drive to the chosen replacement, or freezes it, and sends exactly that', async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  try {
+    // No open work, but a drive with documents: the picker and the choice show, and nothing is sent until one is made.
+    const handOver = await removeLeaver(browser, { openTasks: 0, personalDrive: true, choose: 'hand_over' });
+    assert.equal(handOver.radios, true);
+    assert.equal(handOver.picker, true);
+    assert.equal(handOver.disabledBeforeChoice, true, 'an explicit choice is required');
+    assert.equal(handOver.line, 'Their personal drive goes to Hal Heir.');
+    assert.deepEqual(handOver.body, { replacement_user_id: 'heir', personal_drive: 'hand_over' });
+
+    const freeze = await removeLeaver(browser, { openTasks: 0, personalDrive: true, choose: 'freeze' });
+    assert.equal(freeze.line, 'Their personal drive will be frozen until an owner hands it on.');
+    assert.deepEqual(freeze.body, { replacement_user_id: null, personal_drive: 'freeze' });
+
+    // Open work goes to the replacement whatever is chosen for the drive.
+    const workButFreeze = await removeLeaver(browser, { openTasks: 2, personalDrive: true, choose: 'freeze' });
+    assert.equal(workButFreeze.disabledBeforeChoice, true);
+    assert.deepEqual(workButFreeze.body, { replacement_user_id: 'heir', personal_drive: 'freeze' });
+
+    const workAndDrive = await removeLeaver(browser, { openTasks: 2, personalDrive: true, choose: 'hand_over' });
+    assert.deepEqual(workAndDrive.body, { replacement_user_id: 'heir', personal_drive: 'hand_over' });
+
+    // No documents in a personal drive and no open work: no picker, no choice, nothing handed over.
+    const nothing = await removeLeaver(browser, { openTasks: 0, personalDrive: false, choose: null });
+    assert.equal(nothing.radios, false);
+    assert.equal(nothing.picker, false);
+    assert.equal(nothing.disabledBeforeChoice, false);
+    assert.equal(nothing.line, null);
+    assert.deepEqual(nothing.body, { replacement_user_id: null, personal_drive: 'freeze' });
+
+    // A failed preview: an error and a retry, Confirm disabled, no choice offered and nothing sent;
+    // after the retry the explicit choice is required as usual.
+    const retried = await removeLeaver(browser, { openTasks: 0, personalDrive: true, choose: 'hand_over', failFirstPreview: true });
+    assert.deepEqual(retried.failed, { error: 'Failed to load offboarding preview', retry: true, confirmDisabled: true, radios: false, deletes: 0 });
+    assert.equal(retried.radios, true);
+    assert.equal(retried.disabledBeforeChoice, true);
+    assert.deepEqual(retried.body, { replacement_user_id: 'heir', personal_drive: 'hand_over' });
+
+    // Open work only: the replacement is sent for the work; the empty drive is frozen.
+    const workOnly = await removeLeaver(browser, { openTasks: 1, personalDrive: false, choose: null });
+    assert.equal(workOnly.radios, false);
+    assert.equal(workOnly.picker, true);
+    assert.deepEqual(workOnly.body, { replacement_user_id: 'heir', personal_drive: 'freeze' });
+  } finally {
+    await browser.close();
+  }
+});
+
+/**
+ * Open A's removal, cancel while its preview is still loading, open B's; B's
+ * preview fails, then A's slow preview arrives (no work, no drive: had it
+ * landed, Confirm would be enabled, aimed at B). It must change nothing.
+ */
+test('Members page: a late preview for a member the dialog has left never enables removing another', async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  try {
+    const tab = await browser.newPage();
+    tab.setDefaultTimeout(6000);
+    let heldA: any = null;
+    let bPreviews = 0;
+    const deletes: Array<{ path: string; body: Record<string, unknown> }> = [];
+    await tab.route('**/*', (route: any) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      if (url.origin !== 'http://127.0.0.1') return route.abort();
+      if (url.pathname === '/settings/members') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' });
+      if (url.pathname === '/api/auth/me') {
+        return json({ user: { id: 'viewer', name: 'Viewer', email: 'viewer@example.test', timezone: 'UTC', role: 'owner' }, org: { id: 'org', name: 'Org', slug: 'org' } });
+      }
+      if (url.pathname === '/api/members/directory') return json({ members: MEMBERS, invites: [], summary: { active: 3, pending: 0, inactive: 0, agents: 0 } });
+      if (url.pathname === '/api/members/seats') return json({ hosted: false });
+      // A's preview is held until the test lets it through.
+      if (url.pathname === '/api/members/leaver/offboarding-preview') { heldA = route; return undefined; }
+      if (url.pathname === '/api/members/other/offboarding-preview') {
+        bPreviews += 1;
+        if (bPreviews === 1) {
+          return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Failed to load offboarding preview', code: 'INTERNAL_ERROR' }) });
+        }
+        return json(preview(0, false));
+      }
+      if (request.method() === 'DELETE') {
+        deletes.push({ path: url.pathname, body: JSON.parse(request.postData() ?? '{}') });
+        return json({ success: true, receipt: {} });
+      }
+      const detail = /^\/api\/members\/([^/]+)\/detail$/.exec(url.pathname);
+      if (detail) {
+        return json({ member: MEMBERS.find((m) => m.id === detail[1]), spaces: [], open_tasks: [], led_projects: [], pending_invites: [], mcp_tokens: [], oauth_grants: [] });
+      }
+      return route.abort();
+    });
+    await tab.goto('http://127.0.0.1/settings/members');
+    await tab.evaluate((access: string) => {
+      localStorage.setItem('deft-access-token', access);
+      localStorage.setItem('deft-refresh-token', access);
+    }, token({ id: 'viewer', org_id: 'org', sid: 'session', jti: 'v1' }));
+    await tab.addScriptTag({ content: await bundle() });
+
+    // A: open the removal, and cancel while its preview is still loading.
+    await tab.getByRole('button', { name: /Lea Leaver/ }).first().click();
+    await tab.getByText('Admin actions').waitFor();
+    await tab.getByRole('button', { name: 'Remove', exact: true }).click();
+    await tab.getByText('Loading offboarding preview...').waitFor();
+    for (let waited = 0; !heldA && waited < 5000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(heldA, 'A’s preview request is in flight');
+    await tab.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await tab.getByText('Remove Lea Leaver?').waitFor({ state: 'detached' });
+
+    // B: open the removal; its preview fails.
+    await tab.getByRole('button', { name: /Ola Other/ }).first().click();
+    await tab.waitForFunction(() => Array.from(document.querySelectorAll('p,h2,h3')).some((el) => el.textContent?.trim() === 'Ola Other'));
+    await tab.getByRole('button', { name: 'Remove', exact: true }).click();
+    await tab.getByText('Remove Ola Other?').waitFor();
+    await tab.getByTestId('offboarding-preview-retry').waitFor();
+
+    // A's preview arrives late: no open work and no drive.
+    await heldA.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(preview(0, false)) });
+    await tab.waitForTimeout(300);
+    const confirm = tab.getByRole('button', { name: 'Confirm remove' });
+    assert.equal(await confirm.isDisabled(), true, 'Confirm stays disabled');
+    assert.equal(await tab.getByTestId('offboarding-preview-retry').isVisible(), true, 'B’s Retry is still shown');
+    assert.equal((await tab.getByText('Failed to load offboarding preview').textContent())?.trim(), 'Failed to load offboarding preview', 'B’s error is still shown');
+    assert.equal(await tab.getByText(/Also revokes/).count(), 0, 'A’s preview is not shown');
+    assert.deepEqual(deletes, []);
+
+    // B's retry loads B's own preview; only then can B be removed.
+    await tab.getByTestId('offboarding-preview-retry').click();
+    await tab.getByText(/Also revokes/).waitFor();
+    assert.equal(await confirm.isDisabled(), false);
+    await confirm.click();
+    await tab.waitForFunction(() => !document.body.textContent?.includes('Remove Ola Other?'));
+    assert.deepEqual(deletes, [{ path: '/api/members/other', body: { replacement_user_id: null, personal_drive: 'freeze' } }]);
+  } finally {
+    await browser.close();
+  }
+});
+
+/**
+ * The picker offers the drive only to people who can hold it (consult
+ * S-F10): the preview names a paused agent, listed first, and it is not
+ * offered. When the API still refuses (someone paused meanwhile), the error
+ * shows above the loaded choices, which stay, so another person can be
+ * picked and the removal sent again.
+ */
+test('Members page: the drive goes only to someone who can hold it, and a refusal keeps the choices to pick again', async () => {
+  const pausedAgent = {
+    ...member('paused-agent', 'Paused Pat'), kind: 'agent', email: null,
+    agent: { id: 'emp-paused', name: 'Paused Pat', role: 'project_manager', trust_level: 'standard', runtime_kind: 'custom', certification_status: null, is_active: false, unhealthy: false, last_mcp_call_at: null, last_heartbeat_at: null },
+  };
+  // The paused agent comes first, so it would be the default replacement.
+  const members = [pausedAgent, ...MEMBERS];
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  try {
+    const tab = await browser.newPage();
+    tab.setDefaultTimeout(6000);
+    const deletes: Array<Record<string, unknown>> = [];
+    await tab.route('**/*', (route: any) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+      if (url.origin !== 'http://127.0.0.1') return route.abort();
+      if (url.pathname === '/settings/members') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' });
+      if (url.pathname === '/api/auth/me') {
+        return json({ user: { id: 'viewer', name: 'Viewer', email: 'viewer@example.test', timezone: 'UTC', role: 'owner' }, org: { id: 'org', name: 'Org', slug: 'org' } });
+      }
+      if (url.pathname === '/api/members/directory') return json({ members, invites: [], summary: { active: 4, pending: 0, inactive: 0, agents: 1 } });
+      if (url.pathname === '/api/members/seats') return json({ hosted: false });
+      if (url.pathname === '/api/members/leaver/offboarding-preview') {
+        return json({ ...preview(0, true), cannot_hold_drive_ids: ['paused-agent'] });
+      }
+      if (url.pathname === '/api/members/leaver' && request.method() === 'DELETE') {
+        deletes.push(JSON.parse(request.postData() ?? '{}'));
+        if (deletes.length === 1) {
+          return json({ error: 'The replacement can’t be given this person’s personal drive; choose someone else', code: 'PRINCIPAL_CANNOT_HOLD_ACCESS' }, 400);
+        }
+        return json({ success: true, receipt: {} });
+      }
+      const detail = /^\/api\/members\/([^/]+)\/detail$/.exec(url.pathname);
+      if (detail) {
+        return json({ member: members.find((m) => m.id === detail[1]), spaces: [], open_tasks: [], led_projects: [], pending_invites: [], mcp_tokens: [], oauth_grants: [] });
+      }
+      return route.abort();
+    });
+    await tab.goto('http://127.0.0.1/settings/members');
+    await tab.evaluate((access: string) => {
+      localStorage.setItem('deft-access-token', access);
+      localStorage.setItem('deft-refresh-token', access);
+    }, token({ id: 'viewer', org_id: 'org', sid: 'session', jti: 'v1' }));
+    await tab.addScriptTag({ content: await bundle() });
+
+    await tab.getByRole('button', { name: /Lea Leaver/ }).first().click();
+    await tab.getByText('Admin actions').waitFor();
+    await tab.getByRole('button', { name: 'Remove', exact: true }).click();
+    await tab.getByText(/Also revokes/).waitFor();
+    const picker = tab.getByTestId('offboarding-replacement-select');
+    // "Hand My drive to" names the first who can hold it, not the paused agent listed first.
+    assert.match((await tab.getByText(/^Hand My drive to/).textContent()) ?? '', /Hand My drive to Hal Heir/);
+    await tab.getByTestId('offboarding-drive-hand-over').check();
+    const offered = await picker.locator('option').evaluateAll((options: HTMLOptionElement[]) => options.map((option) => option.value));
+    assert.deepEqual(offered, ['heir', 'other'], 'handing the drive over, the paused agent is not offered');
+    assert.equal(await picker.inputValue(), 'heir', 'the default falls to the first who can hold it');
+    const confirm = tab.getByRole('button', { name: 'Confirm remove' });
+    await confirm.click();
+    await tab.getByText('The replacement can’t be given this person’s personal drive; choose someone else').waitFor();
+    // The choices stay, with the error, so another person can be picked.
+    assert.equal(await picker.isVisible(), true);
+    assert.equal(await tab.getByTestId('offboarding-drive-hand-over').isChecked(), true);
+    assert.equal(await tab.getByTestId('offboarding-drive-freeze').isVisible(), true);
+    assert.equal(await confirm.isDisabled(), false);
+    await picker.selectOption('other');
+    assert.equal((await tab.getByTestId('offboarding-personal-drive').textContent())?.trim(), 'Their personal drive goes to Ola Other.');
+    await confirm.click();
+    await tab.waitForFunction(() => !document.body.textContent?.includes('Remove Lea Leaver?'));
+    assert.deepEqual(deletes, [
+      { replacement_user_id: 'heir', personal_drive: 'hand_over' },
+      { replacement_user_id: 'other', personal_drive: 'hand_over' },
+    ]);
+  } finally {
+    await browser.close();
+  }
+});
+
+/**
+ * The picker narrows to people who can hold the drive only when the remover
+ * hands it over (consult Sol-C1). With "Freeze it", anyone active can take
+ * the open work, a paused agent included, as the API accepts.
+ */
+test('Members page: with Freeze it, someone who can’t hold a drive is still offered for the open work; with Hand over, not', async () => {
+  const pausedAgent = {
+    ...member('paused-agent', 'Paused Pat'), kind: 'agent', email: null,
+    agent: { id: 'emp-paused', name: 'Paused Pat', role: 'project_manager', trust_level: 'standard', runtime_kind: 'custom', certification_status: null, is_active: false, unhealthy: false, last_mcp_call_at: null, last_heartbeat_at: null },
+  };
+  const members = [pausedAgent, ...MEMBERS];
+  const browser = await chromium.launch({ headless: true, ...(process.env.DEFT_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.DEFT_TEST_BROWSER_EXECUTABLE } : {}) });
+  try {
+    const tab = await browser.newPage();
+    tab.setDefaultTimeout(6000);
+    const deletes: Array<Record<string, unknown>> = [];
+    await tab.route('**/*', (route: any) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      if (url.origin !== 'http://127.0.0.1') return route.abort();
+      if (url.pathname === '/settings/members') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' });
+      if (url.pathname === '/api/auth/me') {
+        return json({ user: { id: 'viewer', name: 'Viewer', email: 'viewer@example.test', timezone: 'UTC', role: 'owner' }, org: { id: 'org', name: 'Org', slug: 'org' } });
+      }
+      if (url.pathname === '/api/members/directory') return json({ members, invites: [], summary: { active: 4, pending: 0, inactive: 0, agents: 1 } });
+      if (url.pathname === '/api/members/seats') return json({ hosted: false });
+      if (url.pathname === '/api/members/leaver/offboarding-preview') {
+        return json({ ...preview(2, true), cannot_hold_drive_ids: ['paused-agent'] });
+      }
+      if (url.pathname === '/api/members/leaver' && request.method() === 'DELETE') {
+        deletes.push(JSON.parse(request.postData() ?? '{}'));
+        return json({ success: true, receipt: {} });
+      }
+      const detail = /^\/api\/members\/([^/]+)\/detail$/.exec(url.pathname);
+      if (detail) {
+        return json({ member: members.find((m) => m.id === detail[1]), spaces: [], open_tasks: [], led_projects: [], pending_invites: [], mcp_tokens: [], oauth_grants: [] });
+      }
+      return route.abort();
+    });
+    await tab.goto('http://127.0.0.1/settings/members');
+    await tab.evaluate((access: string) => {
+      localStorage.setItem('deft-access-token', access);
+      localStorage.setItem('deft-refresh-token', access);
+    }, token({ id: 'viewer', org_id: 'org', sid: 'session', jti: 'v1' }));
+    await tab.addScriptTag({ content: await bundle() });
+
+    await tab.getByRole('button', { name: /Lea Leaver/ }).first().click();
+    await tab.getByText('Admin actions').waitFor();
+    await tab.getByRole('button', { name: 'Remove', exact: true }).click();
+    await tab.getByText(/Also revokes/).waitFor();
+    const picker = tab.getByTestId('offboarding-replacement-select');
+    const offered = () => picker.locator('option').evaluateAll((options: HTMLOptionElement[]) => options.map((option) => option.value));
+
+    await tab.getByTestId('offboarding-drive-freeze').check();
+    assert.deepEqual(await offered(), ['paused-agent', 'heir', 'other'], 'with Freeze it, everyone active is offered for the work');
+    await picker.selectOption('paused-agent');
+
+    await tab.getByTestId('offboarding-drive-hand-over').check();
+    assert.deepEqual(await offered(), ['heir', 'other'], 'with Hand over, only people who can hold the drive');
+    assert.equal(await picker.inputValue(), 'heir');
+
+    await tab.getByTestId('offboarding-drive-freeze').check();
+    assert.ok((await offered()).includes('paused-agent'));
+    await picker.selectOption('paused-agent');
+    await tab.getByRole('button', { name: 'Transfer and remove' }).click();
+    await tab.waitForFunction(() => !document.body.textContent?.includes('Remove Lea Leaver?'));
+    assert.deepEqual(deletes, [{ replacement_user_id: 'paused-agent', personal_drive: 'freeze' }]);
+  } finally {
+    await browser.close();
+  }
+});

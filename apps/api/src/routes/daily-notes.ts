@@ -1,91 +1,102 @@
-import { Hono } from 'hono';
-import { z } from 'zod';
-import { eq, and, desc, ilike } from 'drizzle-orm';
+// The old Notes routes, read-only since notes became documents (spec 5.12;
+// plan Task F15; lib/legacy-notes.ts).
+//
+// Every write answers 410 NOTES_MOVED and writes nothing. A write to one note
+// says where it went (`document_id`) only when the note moved and the caller
+// can open its document now; a note they can't open answers exactly like one
+// that doesn't exist.
+//
+// The reads stay for old links and clients (the web redirects /notes?id= to
+// the document, F16). The map only finds a note's document: each read is
+// authorized against that document's current access (lib/document-access.ts),
+// never the old note rule, and answers with the document's current title,
+// icon, template flag, times and content (HTML, the shape Notes had, from the
+// document as it is now), never the old row's. Each note it returns carries
+// its `document_id`:
+// - GET / and GET /templates: live notes whose document the caller can open
+//   (`q` searches the document's title);
+// - GET /:id: the note, when they can open its document;
+// - GET /:id/history and GET /:id/shares: history and sharing live on the
+//   document now, so a moved note answers 410 NOTES_MOVED with its
+//   document's id to someone who can open it, and 404 to anyone else;
+// - GET /folders: the caller's own folders, as before (folders carry no
+//   access of their own).
+import { Hono, type Context } from 'hono';
+import { eq, and, desc, ilike, type SQL } from 'drizzle-orm';
+import { documents, noteDocumentMap } from '@deft/db/documents';
 import { db } from '../lib/db.js';
-import { canSeePerson, emailFor, peopleViewer, personVisibleSql, visiblePersonIds } from '../lib/people-visibility.js';
-import { notes, noteFolders, noteVersions, noteShares, users, orgMembers } from '@deft/db/schema';
-import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
-import { requireSpaceMembership } from '../lib/space-membership.js';
-import { visibleNoteCondition } from '../lib/note-visibility.js';
-import { toPlainText } from '../lib/plain-text.js';
-import { createNativeNote } from '../lib/native-context-create.js';
-import { syncNoteFiles } from '../lib/note-file-claims.js';
-import { mentionsTaskKey } from '../lib/task-key.js';
-
-
-async function enqueueNoteCrossReference(
-  noteId: string,
-  content: string,
-  orgId: string,
-  userId: string,
-): Promise<void> {
-  if (!content) return;
-  const plain = toPlainText(content);
-  if (!mentionsTaskKey(plain)) return;
-  try {
-    await enqueue(QUEUE_NAMES.AGENT_JOBS, 'cross-reference', {
-      sourceType: 'note',
-      sourceId: noteId,
-      content,
-      orgId,
-      userId,
-    });
-  } catch (err) {
-    console.error('Failed to enqueue note cross-reference job:');
-  }
-}
+import { notes, noteFolders } from '@deft/db/schema';
+import { documentRoleFor, visibleDocumentCondition } from '../lib/document-access.js';
+import { documentHtml, documentJsonNow, mappedTargetId, NOTES_MOVED, type JSONContent } from '../lib/legacy-notes.js';
 
 export const dailyNoteRoutes = new Hono();
 
-const FOLDER_NOT_FOUND = { error: 'Folder not found', code: 'NOT_FOUND' } as const;
+const NOTE_NOT_FOUND = { error: 'Note not found', code: 'NOT_FOUND' } as const;
 
-/**
- * True when `folderId` is a live folder owned by the caller in the caller's
- * active org. Another user's folder, the caller's own folder in a different
- * org and a missing id are all indistinguishable (S4-a/S4-b).
- */
-async function ownsFolder(folderId: string, user: { id: string; org_id: string }): Promise<boolean> {
-  const [folder] = await db.select({ id: noteFolders.id }).from(noteFolders)
-    .where(and(
-      eq(noteFolders.id, folderId),
-      eq(noteFolders.org_id, user.org_id),
-      eq(noteFolders.user_id, user.id),
-      eq(noteFolders.is_deleted, false),
-    ))
-    .limit(1);
-  return !!folder;
+/** A note row joined to the document it moved to. */
+const mappedNoteJoin = and(
+  eq(noteDocumentMap.org_id, notes.org_id),
+  eq(noteDocumentMap.source_type, 'note'),
+  eq(noteDocumentMap.source_id, notes.id),
+);
+const mappedDocumentJoin = and(eq(documents.id, noteDocumentMap.target_id), eq(documents.org_id, noteDocumentMap.org_id));
+
+/** A live note of the caller's workspace whose document they can open now. */
+function visibleMovedNotes(user: { id: string; org_id: string }, ...conditions: Array<SQL | undefined>) {
+  return and(
+    eq(notes.org_id, user.org_id),
+    eq(notes.is_deleted, false),
+    visibleDocumentCondition(user.id, user.org_id),
+    ...conditions,
+  );
 }
 
-const visibilityEnum = z.enum(['private', 'org', 'space']).optional().default('private');
+/** A note as the old routes answered it, from its document: the old row gives only the id and its own placement. */
+const noteColumns = {
+  id: notes.id,
+  title: documents.title,
+  content_json: documents.content_json,
+  icon: documents.icon,
+  is_pinned: notes.is_pinned,
+  is_template: documents.is_template,
+  folder_id: notes.folder_id,
+  visibility: notes.visibility,
+  visibility_space_id: notes.visibility_space_id,
+  user_id: notes.user_id,
+  created_at: documents.created_at,
+  updated_at: documents.updated_at,
+  document_id: documents.id,
+};
 
-const createNoteSchema = z.object({
-  title: z.string().optional(),
-  content: z.string().optional(),
-  icon: z.string().nullable().optional(),
-  folder_id: z.string().nullable().optional(),
-  is_template: z.boolean().optional(),
-  visibility: visibilityEnum,
-  visibility_space_id: z.string().nullable().optional(),
-});
+/** The row with its document's content as HTML in place of the content's JSON. */
+function asNote<T extends { content_json: unknown }>(row: T, json: JSONContent = row.content_json as JSONContent) {
+  const { content_json: _json, ...rest } = row;
+  return { ...rest, content: documentHtml(json) };
+}
 
-const shareNoteSchema = z.object({
-  user_id: z.string().min(1),
-  permission: z.string().optional().default('view'),
-});
+/**
+ * A write to one note: 410, with its document only when the note moved and
+ * the caller can open that document now. A note they can't open and one that
+ * never existed get the same answer, so nothing says which.
+ */
+async function noteWriteRefusal(c: Context, noteId: string) {
+  const user = c.get('user');
+  const documentId = await mappedTargetId(user.org_id, 'note', noteId);
+  if (!documentId || !(await documentRoleFor(user.id, user.org_id, documentId))) return c.json(NOTES_MOVED, 410);
+  return c.json({ ...NOTES_MOVED, document_id: documentId }, 410);
+}
 
-const updateNoteSchema = z.object({
-  title: z.string().optional(),
-  content: z.string().optional(),
-  icon: z.string().nullable().optional(),
-  is_pinned: z.boolean().optional(),
-  folder_id: z.string().nullable().optional(),
-  visibility: z.enum(['private', 'org', 'space']).optional(),
-  visibility_space_id: z.string().nullable().optional(),
-});
+/** A read that lives on the document now: 410 with the document to someone who can open it, else 404. */
+async function movedToDocument(c: Context, noteId: string) {
+  const user = c.get('user');
+  const documentId = await mappedTargetId(user.org_id, 'note', noteId);
+  if (!documentId || !(await documentRoleFor(user.id, user.org_id, documentId))) return c.json(NOTE_NOT_FOUND, 404);
+  return c.json({ ...NOTES_MOVED, document_id: documentId }, 410);
+}
 
 // ── Folder endpoints ──
 
-// GET /folders — list all folders
+// GET /folders — the caller's own folders
 dailyNoteRoutes.get('/folders', async (c) => {
   const user = c.get('user');
   const rows = await db.select().from(noteFolders)
@@ -94,432 +105,79 @@ dailyNoteRoutes.get('/folders', async (c) => {
   return c.json({ folders: rows });
 });
 
-// POST /folders — create folder
-dailyNoteRoutes.post('/folders', async (c) => {
-  const user = c.get('user');
-  const body = await c.req.json();
-  const { name, icon, parent_folder_id } = body;
-  if (!name) return c.json({ error: 'Name required', code: 'VALIDATION_ERROR' }, 400);
-  // The value checked is the value written: only a string id is accepted.
-  if (parent_folder_id && typeof parent_folder_id !== 'string') {
-    return c.json({ error: 'parent_folder_id must be a string', code: 'VALIDATION_ERROR' }, 400);
-  }
-  if (parent_folder_id && !(await ownsFolder(parent_folder_id, user))) return c.json(FOLDER_NOT_FOUND, 404);
-
-  const [folder] = await db.insert(noteFolders).values({
-    org_id: user.org_id,
-    user_id: user.id,
-    name,
-    icon: icon || null,
-    parent_folder_id: parent_folder_id || null,
-  }).returning();
-
-  return c.json(folder, 201);
-});
-
-// PATCH /folders/:id — update folder
-dailyNoteRoutes.patch('/folders/:id', async (c) => {
-  const user = c.get('user');
-  const folderId = c.req.param('id');
-  const body = await c.req.json();
-
-  const updates: Record<string, any> = {};
-  if (body.name !== undefined) updates.name = body.name;
-  if (body.icon !== undefined) updates.icon = body.icon;
-  if (body.parent_folder_id !== undefined) {
-    // A folder may only be nested under another live folder the caller owns in
-    // this org; anything else answers exactly like a missing folder (S4-a).
-    if (body.parent_folder_id !== null) {
-      if (typeof body.parent_folder_id !== 'string' || body.parent_folder_id === '') {
-        return c.json({ error: 'parent_folder_id must be a string or null', code: 'VALIDATION_ERROR' }, 400);
-      }
-      if (body.parent_folder_id === folderId) {
-        return c.json({ error: 'A folder cannot be its own parent', code: 'VALIDATION_ERROR' }, 400);
-      }
-      if (!(await ownsFolder(body.parent_folder_id, user))) return c.json(FOLDER_NOT_FOUND, 404);
-    }
-    updates.parent_folder_id = body.parent_folder_id;
-  }
-  if (body.sort_order !== undefined) updates.sort_order = body.sort_order;
-
-  const [updated] = await db.update(noteFolders)
-    .set(updates)
-    .where(and(eq(noteFolders.id, folderId), eq(noteFolders.org_id, user.org_id), eq(noteFolders.user_id, user.id)))
-    .returning();
-
-  if (!updated) return c.json({ error: 'Folder not found', code: 'NOT_FOUND' }, 404);
-  return c.json(updated);
-});
-
-// DELETE /folders/:id — soft delete folder
-dailyNoteRoutes.delete('/folders/:id', async (c) => {
-  const user = c.get('user');
-  const folderId = c.req.param('id');
-
-  await db.update(noteFolders)
-    .set({ is_deleted: true })
-    .where(and(eq(noteFolders.id, folderId), eq(noteFolders.org_id, user.org_id), eq(noteFolders.user_id, user.id)));
-
-  // Child folders must not keep pointing at a deleted parent: move them to the top level.
-  await db.update(noteFolders)
-    .set({ parent_folder_id: null })
-    .where(and(eq(noteFolders.parent_folder_id, folderId), eq(noteFolders.org_id, user.org_id), eq(noteFolders.user_id, user.id)));
-
-  // Unset folder_id on notes in this folder
-  await db.update(notes)
-    .set({ folder_id: null })
-    .where(and(eq(notes.folder_id, folderId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)));
-
-  return c.json({ success: true });
-});
+dailyNoteRoutes.post('/folders', (c) => c.json(NOTES_MOVED, 410));
+dailyNoteRoutes.patch('/folders/:id', (c) => c.json(NOTES_MOVED, 410));
+dailyNoteRoutes.delete('/folders/:id', (c) => c.json(NOTES_MOVED, 410));
 
 // ── Templates ──
 
-// GET /templates — list note templates
+// GET /templates — note templates whose document the caller can open
 dailyNoteRoutes.get('/templates', async (c) => {
   const user = c.get('user');
   const rows = await db.select({
     id: notes.id,
-    title: notes.title,
-    content: notes.content,
-    icon: notes.icon,
+    title: documents.title,
+    content_json: documents.content_json,
+    icon: documents.icon,
+    document_id: documents.id,
   }).from(notes)
-    .where(and(
-      eq(notes.org_id, user.org_id),
-      eq(notes.is_template, true),
-      eq(notes.is_deleted, false),
-      visibleNoteCondition(user.id),
-    ))
-    .orderBy(notes.title);
-  return c.json({ templates: rows });
+    .innerJoin(noteDocumentMap, mappedNoteJoin)
+    .innerJoin(documents, mappedDocumentJoin)
+    .where(visibleMovedNotes(user, eq(documents.is_template, true)))
+    .orderBy(documents.title);
+  return c.json({ templates: rows.map((row) => asNote(row)) });
 });
 
-// ── Note CRUD ──
+// ── Notes ──
 
-// GET / — list all notes for user (own notes + org-visible notes)
+// GET / — notes whose document the caller can open
 dailyNoteRoutes.get('/', async (c) => {
   const user = c.get('user');
-  const q = c.req.query('q');
+  const q = c.req.query('q')?.trim();
   const folderId = c.req.query('folder_id');
 
-  // Base conditions that always apply
-  const baseConditions: any[] = [
-    eq(notes.org_id, user.org_id),
-    eq(notes.is_deleted, false),
-    eq(notes.is_template, false),
-  ];
-
-  if (q) baseConditions.push(ilike(notes.title, `%${q}%`));
-  if (folderId) baseConditions.push(eq(notes.folder_id, folderId));
-
-  const rows = await db.select({
-    id: notes.id,
-    title: notes.title,
-    content: notes.content,
-    icon: notes.icon,
-    is_pinned: notes.is_pinned,
-    folder_id: notes.folder_id,
-    visibility: notes.visibility,
-    visibility_space_id: notes.visibility_space_id,
-    user_id: notes.user_id,
-    created_at: notes.created_at,
-    updated_at: notes.updated_at,
-  }).from(notes)
-    .where(and(...baseConditions, visibleNoteCondition(user.id)))
-    .orderBy(desc(notes.is_pinned), desc(notes.updated_at))
+  const rows = await db.select(noteColumns).from(notes)
+    .innerJoin(noteDocumentMap, mappedNoteJoin)
+    .innerJoin(documents, mappedDocumentJoin)
+    .where(visibleMovedNotes(
+      user,
+      eq(documents.is_template, false),
+      q ? ilike(documents.title, `%${q.replace(/[\\%_]/g, '\\$&')}%`) : undefined,
+      folderId ? eq(notes.folder_id, folderId) : undefined,
+    ))
+    .orderBy(desc(notes.is_pinned), desc(documents.updated_at))
     .limit(100);
 
-  return c.json(rows);
+  return c.json(rows.map((row) => asNote(row)));
 });
 
-// POST / — create a new note (optionally from template)
-dailyNoteRoutes.post('/', async (c) => {
-  const user = c.get('user');
-  const body = await c.req.json().catch(() => ({}));
-  const parsed = createNoteSchema.safeParse(body);
-  const visibility = parsed.success && parsed.data.visibility ? parsed.data.visibility : 'private';
-  const visibilitySpaceId = parsed.success && parsed.data.visibility_space_id ? parsed.data.visibility_space_id : null;
+dailyNoteRoutes.post('/', (c) => c.json(NOTES_MOVED, 410));
 
-  if (visibility === 'space') {
-    if (!visibilitySpaceId) {
-      return c.json({ error: 'visibility_space_id required for space-visible notes', code: 'VALIDATION_ERROR' }, 400);
-    }
-    const isMember = await requireSpaceMembership(visibilitySpaceId, user.id, user.org_id);
-    if (!isMember) {
-      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
-    }
-  }
-
-  if (parsed.success && parsed.data.folder_id && !(await ownsFolder(parsed.data.folder_id, user))) {
-    return c.json(FOLDER_NOT_FOUND, 404);
-  }
-
-  // One transaction: the note and the links to its images (note-file-claims.ts).
-  const note = await db.transaction((tx) => createNativeNote(tx, user, {
-    ...(parsed.success ? parsed.data : {}),
-    visibility,
-    visibility_space_id: visibility === 'space' ? visibilitySpaceId : null,
-  }));
-
-  // Task 5.1 — scan note content for PREFIX-N task refs on create
-  if (note && note.content) {
-    await enqueueNoteCrossReference(note.id, note.content, user.org_id, user.id);
-  }
-
-  return c.json(note, 201);
-});
-
-// GET /:id — get a single note (own notes + org-visible notes)
+// GET /:id — one note, when the caller can open its document; its content as the document holds it now
 dailyNoteRoutes.get('/:id', async (c) => {
   const user = c.get('user');
   const noteId = c.req.param('id');
 
-  const [note] = await db.select().from(notes)
-    .where(and(
-      eq(notes.id, noteId),
-      eq(notes.org_id, user.org_id),
-      eq(notes.is_deleted, false),
-      visibleNoteCondition(user.id),
-    ))
+  const [note] = await db.select(noteColumns).from(notes)
+    .innerJoin(noteDocumentMap, mappedNoteJoin)
+    .innerJoin(documents, mappedDocumentJoin)
+    .where(and(eq(notes.id, noteId), visibleMovedNotes(user)))
     .limit(1);
 
-  if (!note) {
-    return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
-  }
-
-  return c.json(note);
+  if (!note) return c.json(NOTE_NOT_FOUND, 404);
+  return c.json(asNote(note, await documentJsonNow(user.org_id, note.document_id, note.content_json)));
 });
 
-// PATCH /:id — update a note
-dailyNoteRoutes.patch('/:id', async (c) => {
-  const user = c.get('user');
-  const noteId = c.req.param('id');
-  const body = await c.req.json();
-  const parsed = updateNoteSchema.safeParse(body);
+dailyNoteRoutes.patch('/:id', (c) => noteWriteRefusal(c, c.req.param('id')));
+dailyNoteRoutes.delete('/:id', (c) => noteWriteRefusal(c, c.req.param('id')));
 
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid request body', code: 'VALIDATION_ERROR' }, 400);
-  }
+// ── Version History and Sharing: on the document now ──
 
-  // Fetch full existing note (owner or org-visible for this org)
-  const [full] = await db.select().from(notes)
-    .where(and(
-      eq(notes.id, noteId),
-      eq(notes.org_id, user.org_id),
-      eq(notes.is_deleted, false),
-      visibleNoteCondition(user.id),
-    ))
-    .limit(1);
+// GET /:id/history
+dailyNoteRoutes.get('/:id/history', (c) => movedToDocument(c, c.req.param('id')));
 
-  if (!full) {
-    return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
-  }
+// GET /:id/shares
+dailyNoteRoutes.get('/:id/shares', (c) => movedToDocument(c, c.req.param('id')));
 
-  // Only the note owner can modify a note
-  if (full.user_id !== user.id) {
-    return c.json({ error: 'Only the note owner can edit this note', code: 'FORBIDDEN' }, 403);
-  }
-
-  const updates: Record<string, any> = {};
-  if (parsed.data.title !== undefined) updates.title = parsed.data.title;
-  if (parsed.data.content !== undefined) updates.content = parsed.data.content;
-  if (parsed.data.icon !== undefined) updates.icon = parsed.data.icon;
-  if (parsed.data.is_pinned !== undefined) updates.is_pinned = parsed.data.is_pinned;
-  if (parsed.data.folder_id !== undefined) {
-    if (parsed.data.folder_id && !(await ownsFolder(parsed.data.folder_id, user))) return c.json(FOLDER_NOT_FOUND, 404);
-    updates.folder_id = parsed.data.folder_id;
-  }
-  const nextVisibility = parsed.data.visibility ?? full.visibility;
-  const nextVisibilitySpaceId = parsed.data.visibility_space_id !== undefined
-    ? parsed.data.visibility_space_id
-    : full.visibility_space_id;
-  if (nextVisibility === 'space') {
-    if (!nextVisibilitySpaceId) {
-      return c.json({ error: 'visibility_space_id required for space-visible notes', code: 'VALIDATION_ERROR' }, 400);
-    }
-    const isMember = await requireSpaceMembership(nextVisibilitySpaceId, user.id, user.org_id);
-    if (!isMember) {
-      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
-    }
-  }
-  if (parsed.data.visibility !== undefined) updates.visibility = parsed.data.visibility;
-  if (parsed.data.visibility_space_id !== undefined || parsed.data.visibility !== undefined) {
-    updates.visibility_space_id = nextVisibility === 'space' ? nextVisibilitySpaceId : null;
-  }
-
-  if (Object.keys(updates).length === 0) {
-    return c.json(full);
-  }
-
-  // Snapshot version before content changes (max 1 per minute to avoid spam)
-  if (parsed.data.content !== undefined && parsed.data.content !== full.content) {
-    await db.insert(noteVersions).values({
-      note_id: noteId,
-      version: full.version,
-      title: full.title,
-      content: full.content,
-      edited_by: user.id,
-    }).onConflictDoNothing();
-    updates.version = full.version + 1;
-  }
-
-  // One transaction: the save and the links to the images the saved content
-  // shows (note-file-claims.ts).
-  const updated = await db.transaction(async (tx) => {
-    const [saved] = await tx.update(notes)
-      .set(updates)
-      .where(and(eq(notes.id, noteId), eq(notes.version, full.version)))
-      .returning();
-    if (saved && parsed.data.content !== undefined) await syncNoteFiles(tx, user, saved);
-    return saved;
-  });
-
-  if (!updated) {
-    return c.json({ error: 'Note was modified by another session. Please refresh and try again.', code: 'CONFLICT' }, 409);
-  }
-
-  // Task 5.1 — enqueue cross-reference scan whenever content changes
-  if (updated && parsed.data.content !== undefined) {
-    await enqueueNoteCrossReference(noteId, updated.content || '', user.org_id, user.id);
-  }
-
-  return c.json(updated);
-});
-
-// DELETE /:id — soft delete a note
-dailyNoteRoutes.delete('/:id', async (c) => {
-  const user = c.get('user');
-  const noteId = c.req.param('id');
-
-  const [existing] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
-    .limit(1);
-
-  if (!existing) {
-    return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
-  }
-
-  await db.update(notes)
-    .set({ is_deleted: true })
-    .where(eq(notes.id, noteId));
-
-  return c.json({ success: true });
-});
-
-// ── Version History ──
-
-// GET /:id/history — list versions
-dailyNoteRoutes.get('/:id/history', async (c) => {
-  const user = c.get('user');
-  const noteId = c.req.param('id');
-
-  const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
-    .limit(1);
-  if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
-
-  const versions = await db.select().from(noteVersions)
-    .where(eq(noteVersions.note_id, noteId))
-    .orderBy(desc(noteVersions.version));
-
-  return c.json({ versions });
-});
-
-// ── Sharing ──
-
-// GET /shared-with-me — notes shared with the current user (must be before /:id)
-// Note: this is registered but route ordering means /:id/shares catches first for UUIDs
-
-// GET /:id/shares — list who a note is shared with
-dailyNoteRoutes.get('/:id/shares', async (c) => {
-  const user = c.get('user');
-  const noteId = c.req.param('id');
-
-  const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
-    .limit(1);
-  if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
-
-  const shares = await db.select({
-    id: noteShares.id,
-    user_id: noteShares.shared_with_user_id,
-    permission: noteShares.permission,
-    user_name: users.name,
-    user_email: users.email,
-    created_at: noteShares.created_at,
-  })
-    .from(noteShares)
-    .innerJoin(users, eq(noteShares.shared_with_user_id, users.id))
-    // Only recipients who belong to this org are listed; a share row for a
-    // stranger never exposes their name or email (S4-c).
-    .innerJoin(orgMembers, and(
-      eq(orgMembers.user_id, users.id),
-      eq(orgMembers.org_id, user.org_id),
-      eq(orgMembers.is_active, true),
-    ))
-    .where(eq(noteShares.note_id, noteId));
-
-  // A guest sees no email address but their own, and no name of someone they
-  // no longer share a space with; the share itself stays listed so it can be
-  // removed (lib/people-visibility.ts).
-  const viewer = await peopleViewer(user.org_id, user.id);
-  const visible = await visiblePersonIds(viewer);
-  return c.json({ shares: shares.map((share) => ({
-    ...share,
-    user_name: canSeePerson(visible, share.user_id) ? share.user_name : null,
-    user_email: emailFor(viewer, share.user_id, share.user_email),
-  })) });
-});
-
-// POST /:id/shares — share note with a user
-dailyNoteRoutes.post('/:id/shares', async (c) => {
-  const user = c.get('user');
-  const noteId = c.req.param('id');
-  const parsedShare = shareNoteSchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsedShare.success) return c.json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
-  const { user_id: targetUserId, permission } = parsedShare.data;
-
-  const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
-    .limit(1);
-  if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
-
-  // The recipient must be an active member of the caller's active org. A user
-  // from another org answers exactly like an unknown id (S4-c), and so does,
-  // for a guest, someone they share no space with (lib/people-visibility.ts).
-  const viewer = await peopleViewer(user.org_id, user.id);
-  const [recipient] = await db.select({ id: orgMembers.user_id }).from(orgMembers)
-    .where(and(
-      eq(orgMembers.org_id, user.org_id),
-      eq(orgMembers.user_id, targetUserId),
-      eq(orgMembers.is_active, true),
-      personVisibleSql(viewer, orgMembers.user_id),
-    ))
-    .limit(1);
-  if (!recipient) return c.json({ error: 'Member not found or inactive', code: 'MEMBER_NOT_FOUND' }, 404);
-
-  const [share] = await db.insert(noteShares).values({
-    note_id: noteId,
-    shared_with_user_id: targetUserId,
-    permission,
-  }).onConflictDoNothing().returning();
-
-  return c.json(share || { already_shared: true }, 201);
-});
-
-// DELETE /:id/shares/:userId — unshare note
-dailyNoteRoutes.delete('/:id/shares/:userId', async (c) => {
-  const user = c.get('user');
-  const noteId = c.req.param('id');
-  const targetUserId = c.req.param('userId');
-
-  const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.org_id, user.org_id), eq(notes.user_id, user.id)))
-    .limit(1);
-  if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
-
-  await db.delete(noteShares)
-    .where(and(eq(noteShares.note_id, noteId), eq(noteShares.shared_with_user_id, targetUserId)));
-
-  return c.json({ success: true });
-});
+dailyNoteRoutes.post('/:id/shares', (c) => noteWriteRefusal(c, c.req.param('id')));
+dailyNoteRoutes.delete('/:id/shares/:userId', (c) => noteWriteRefusal(c, c.req.param('id')));

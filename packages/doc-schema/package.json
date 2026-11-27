@@ -1,0 +1,37 @@
+{
+  "name": "@deft/doc-schema",
+  "version": "0.0.1",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test test/convert.test.ts test/html.test.ts test/markdown.test.ts test/templates.test.ts",
+    "typecheck": "node ../../node_modules/ts7/bin/tsc --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./extensions": "./src/extensions.ts",
+    "./nodes/*": "./src/nodes/*.ts"
+  },
+  "dependencies": {
+    "@deft/shared": "workspace:*",
+    "@tiptap/core": "3.32.0",
+    "@tiptap/extension-details": "3.32.0",
+    "@tiptap/extension-highlight": "3.32.0",
+    "@tiptap/extension-image": "3.32.0",
+    "@tiptap/extension-list": "3.32.0",
+    "@tiptap/extension-table": "3.32.0",
+    "@tiptap/extension-unique-id": "3.32.0",
+    "@tiptap/markdown": "3.32.0",
+    "@tiptap/pm": "3.32.0",
+    "@tiptap/starter-kit": "3.32.0",
+    "@tiptap/y-tiptap": "3.3.1",
+    "happy-dom": "21.0.4",
+    "yjs": "13.6.33"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3"
+  }
+}

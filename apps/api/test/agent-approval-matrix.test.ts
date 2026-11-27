@@ -17,7 +17,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { shouldAutoExecute, isDestructiveAction, getApprovalTier, TOOL_APPROVAL_TIERS } from '../src/lib/agent-approval.js';
-import { SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../src/lib/agent-tools.js';
+import { ACTION_TOOLS, SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../src/lib/agent-tools.js';
+import { chatEditLanding, lowerTrustLevel } from '../src/lib/agent-document-write-tools.js';
+import type { EditLandingInput } from '../src/lib/document-edit-landing.js';
 
 test('Defty does not offer agent management without an executor', () => {
   assert.equal(SUPERINTENDENT_TOOLS.some((tool) => tool.name === 'manage_agent_employee'), false);
@@ -348,4 +350,93 @@ test('W2a1-d: remove_dependency and manage_triggers with action=delete are destr
   }
   // add_dependency keeps its quick tier.
   assert.equal(shouldAutoExecute('add_dependency', 'standard'), true);
+});
+
+// ─── 8. M7 — the chat exception for edit_document ──────────────────────────
+// Defty's chat writes wait for approval at every trust level, except an edit
+// to an existing document, which goes straight in only when the workspace
+// trust is Standard or Autonomous, the asker can edit, the landing is direct
+// (their setting, or their own words), the drive takes edits, and the call is
+// not destructive (lib/agent-document-write-tools.ts chatEditLanding).
+
+const ROLES = [null, 'view', 'comment', 'edit', 'full'] as const;
+const canEdit = (role: typeof ROLES[number]) => role === 'edit' || role === 'full';
+const editInput = (overrides: Partial<EditLandingInput>): EditLandingInput => ({
+  trustLevel: 'standard', askerId: 'asker', askerRole: 'edit',
+  drive: { kind: 'open', ownerUserId: null, agentSuggestOnly: false },
+  mode: 'suggest', requestOverride: null, askerMessageText: null, otherHumansOpen: false,
+  ...overrides,
+});
+/** The asker's setting and request, each with whether it lands direct on its own. */
+const LANDINGS: Array<{ name: string; input: Partial<EditLandingInput>; direct: boolean }> = [
+  { name: 'setting direct', input: { mode: 'direct' }, direct: true },
+  { name: 'suggest_when_open, nobody else in', input: { mode: 'suggest_when_open', otherHumansOpen: false }, direct: true },
+  { name: 'the asker said "just do it"', input: { mode: 'suggest', askerMessageText: 'Tidy the intro, just do it' }, direct: true },
+  { name: 'setting suggest', input: { mode: 'suggest' }, direct: false },
+  { name: 'suggest_when_open, someone else in', input: { mode: 'suggest_when_open', otherHumansOpen: true }, direct: false },
+  { name: 'the model asked to suggest', input: { mode: 'direct', requestOverride: 'suggest' }, direct: false },
+  { name: 'the model asked direct without the phrase', input: { mode: 'direct', requestOverride: 'direct' }, direct: false },
+  { name: 'a drive that takes suggestions only', input: { mode: 'direct', drive: { kind: 'open', ownerUserId: null, agentSuggestOnly: true } }, direct: false },
+  { name: 'the asker\'s own My drive, setting direct', input: { mode: 'direct', drive: { kind: 'personal', ownerUserId: 'asker', agentSuggestOnly: false } }, direct: true },
+];
+/** The call's own arguments: destructive ones never land direct (controller ruling 2). */
+const CALL_PARAMS: Array<{ params: Record<string, unknown>; destructive: boolean; requestOverride?: string }> = [
+  { params: { document_id: 'd', summary: 's', ops: [] }, destructive: false },
+  { params: { document_id: 'd', summary: 's', ops: [{ op: 'delete', block_id: 'b' }] }, destructive: false },
+  { params: { document_id: 'd', summary: 's', action: 'delete' }, destructive: true },
+  { params: { document_id: 'd', summary: 's', action: 'revoke' }, destructive: true },
+  { params: { document_id: 'd', summary: 's', mode: 'delete' }, destructive: true, requestOverride: 'delete' },
+  { params: { document_id: 'd', summary: 's', mode: 'pause' }, destructive: true, requestOverride: 'pause' },
+];
+
+test('matrix: edit_document in chat mode is direct only for standard/autonomous + can edit + direct landing; never for destructive params', () => {
+  let directs = 0;
+  for (const trust of TRUST_LEVELS) {
+    for (const role of ROLES) {
+      for (const landing of LANDINGS) {
+        for (const call of CALL_PARAMS) {
+          const input = editInput({
+            ...landing.input, trustLevel: trust, askerRole: role,
+            ...(call.requestOverride ? { requestOverride: call.requestOverride as EditLandingInput['requestOverride'] } : {}),
+          });
+          const got = chatEditLanding(input, call.params);
+          const label = `${trust} / ${role} / ${landing.name} / ${JSON.stringify(call.params)}`;
+          // A mode the model sends that isn't "suggest" lowers a landing that only the setting made direct (M5 rule 5).
+          // M5–M7 consult O-F7: any mode other than exactly "direct" lowers, before the asker's phrase is read.
+          const lowered = call.requestOverride !== undefined;
+          const expected = trust !== 'conservative' && canEdit(role) && landing.direct && !call.destructive && !lowered;
+          assert.equal(got.landing === 'direct', expected, label);
+          if (got.landing === 'direct') directs += 1;
+          if (!canEdit(role)) assert.deepEqual(got, { landing: 'refuse', reason: 'asker_cannot_edit' }, label);
+          if (call.destructive && canEdit(role) && trust !== 'conservative' && landing.direct && !lowered) {
+            assert.deepEqual(got, { landing: 'suggest', reason: 'destructive_call' }, label);
+          }
+        }
+      }
+    }
+  }
+  assert.ok(directs > 0, 'some edits do go straight in');
+  // The phrase with a destructive mode: the mode itself lowers it now (consult O-F7), so it never goes straight in.
+  assert.deepEqual(chatEditLanding(editInput({ mode: 'suggest', requestOverride: 'delete' as never, askerMessageText: 'just do it' }), { mode: 'delete' }),
+    { landing: 'suggest', reason: 'request_suggest' });
+});
+
+test('M7: edit_document and create_document are quick-tier registered actions; neither is destructive by name', () => {
+  for (const tool of ['edit_document', 'create_document']) {
+    assert.equal(ACTION_TOOLS.has(tool), true, tool);
+    assert.equal(getApprovalTier(tool), 'quick', tool);
+    assert.equal(isDestructiveAction(tool), false, tool);
+    // A call made destructive by its params waits at every trust level.
+    for (const trust of TRUST_LEVELS) assert.equal(shouldAutoExecute(tool, trust, { action: 'delete' }), false, `${trust} ${tool}`);
+  }
+});
+
+test('M7: the exception reads the lower of the workspace trust and an employee\'s own; anything else is Conservative', () => {
+  assert.equal(lowerTrustLevel('standard'), 'standard');
+  assert.equal(lowerTrustLevel('autonomous', 'standard'), 'standard');
+  assert.equal(lowerTrustLevel('standard', 'autonomous'), 'standard');
+  assert.equal(lowerTrustLevel('autonomous', 'conservative'), 'conservative');
+  assert.equal(lowerTrustLevel('autonomous', 'autonomous'), 'autonomous');
+  assert.equal(lowerTrustLevel(undefined), 'conservative');
+  assert.equal(lowerTrustLevel('autonomous', 'root'), 'conservative');
 });

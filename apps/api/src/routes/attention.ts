@@ -8,6 +8,7 @@ import {
   attentionItems,
 } from '@deft/db/schema';
 import { db } from '../lib/db.js';
+import { documentTextParamsForViewer } from '../lib/document-draft-params.js';
 import { readReviewGateScope } from '../lib/agent-action-review-gate.js';
 import {
   currentApprovalRecipientSql,
@@ -15,6 +16,8 @@ import {
   lockedAttentionIdsSql,
   filterVisibleAttentionItems,
   projectAttentionItem,
+  projectAttentionItemsForReader,
+  withReaderDraftItemBodies,
   recordAttentionFeedback,
   transitionAttentionItem,
   readAttentionWithSourceTypes,
@@ -89,8 +92,10 @@ async function hasVisibleItem(orgId: string, userId: string, itemId: string) {
  */
 async function hydrateApprovals(
   viewer: { id: string; org_id: string; role?: string },
-  rows: Array<typeof attentionItems.$inferSelect>,
+  storedRows: Array<typeof attentionItems.$inferSelect>,
 ) {
+  // M7 fix round 5: a draft's item body only for its requester (an item raised before says it too).
+  const rows = await withReaderDraftItemBodies(storedRows);
   const actionIds = rows
     .filter((item) => item.source_type === 'agent_action')
     .map((item) => item.source_id);
@@ -102,6 +107,7 @@ async function hydrateApprovals(
   const actions = await db.transaction(async (tx) => tx
     .select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       source: agentActions.source,
       has_receipt: sql<boolean>`EXISTS (SELECT 1 FROM action_receipts r WHERE r.action_id = ${agentActions.id})`,
@@ -126,9 +132,11 @@ async function hydrateApprovals(
   // can tell. The ids keep the page's order.
   const visible = new Set(actions.map((action) => action.id));
   const reviewAuthority = await viewerReviewAuthority(viewer, actionIds.filter((id) => visible.has(id)));
-  const byId = new Map(actions.map((action) => [action.id, {...action,proposer:attentionActionProposer(action),
-    ...reviewAuthority.get(action.id),
-  }]));
+  const byId = new Map(actions.map((action) => {
+    // M7 fix round 3: a document draft's text only for the person who asked (a fallback reviewer sees its size).
+    const { user_id: _requester, ...shown } = documentTextParamsForViewer(action, viewer.id);
+    return [action.id, { ...shown, proposer: attentionActionProposer(action), ...reviewAuthority.get(action.id) }] as const;
+  }));
   return rows.filter((item) => item.source_type !== 'agent_action' || byId.has(item.source_id)).map((item) => ({
     ...projectAttentionItem(item),
     approval: item.source_type === 'agent_action' ? byId.get(item.source_id) ?? null : null,
@@ -193,7 +201,8 @@ attentionRoutes.get('/', async (c) => {
   const finalRows = await filterVisibleAttentionItems(user.id, hydrated);
 
   return c.json({
-    items: finalRows.map(projectAttentionItem),
+    // M7 fix round 5: after the visibility re-read, which reloads each stored body.
+    items: await projectAttentionItemsForReader(finalRows),
     counts: {
       needs_you: byLane.needs_you ?? { count: 0, unseen: 0 },
       updates: byLane.updates ?? { count: 0, unseen: 0 },
@@ -219,7 +228,7 @@ attentionRoutes.get('/:id', async (c) => {
   if (visible.length === 0) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   const [hydrated] = await filterVisibleAttentionItems(user.id, await hydrateApprovals(user, visible));
   if (!hydrated) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(hydrated) });
+  return c.json({ item: (await projectAttentionItemsForReader([hydrated]))[0] });
 });
 
 attentionRoutes.post('/:id/seen', async (c) => {
@@ -236,7 +245,7 @@ attentionRoutes.post('/:id/seen', async (c) => {
     viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(item) });
+  return c.json({ item: (await projectAttentionItemsForReader([item]))[0] });
 });
 
 attentionRoutes.post('/:id/acknowledge', async (c) => {
@@ -253,7 +262,7 @@ attentionRoutes.post('/:id/acknowledge', async (c) => {
     viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(item) });
+  return c.json({ item: (await projectAttentionItemsForReader([item]))[0] });
 });
 
 attentionRoutes.post('/:id/snooze', async (c) => {
@@ -276,7 +285,7 @@ attentionRoutes.post('/:id/snooze', async (c) => {
     viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(item) });
+  return c.json({ item: (await projectAttentionItemsForReader([item]))[0] });
 });
 
 attentionRoutes.post('/:id/resolve', async (c) => {
@@ -295,7 +304,7 @@ attentionRoutes.post('/:id/resolve', async (c) => {
     viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(item) });
+  return c.json({ item: (await projectAttentionItemsForReader([item]))[0] });
 });
 
 attentionRoutes.post('/:id/feedback', async (c) => {
@@ -314,7 +323,7 @@ attentionRoutes.post('/:id/feedback', async (c) => {
     feedback: body.feedback,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(item) });
+  return c.json({ item: (await projectAttentionItemsForReader([item]))[0] });
 });
 
 attentionRoutes.post('/mark-all-seen', async (c) => {

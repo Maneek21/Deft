@@ -11,6 +11,8 @@ import {
   MODULE_OPERATION_NAMES,
 } from '@deft/shared/modules';
 import { sanitizeModuleActionParamsForHistory } from './module-service.js';
+import { createDocumentInputForStorage, storableRef } from './document-audience.js';
+import { draftOutcomeReferences, draftToolInputForStorage, editParamsWithSummarySize, isDraftTextAction } from './document-draft-params.js';
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
   MODULE_OPERATION_NAMES.filter(
@@ -131,14 +133,61 @@ function redactSensitiveReceiptValue(value: unknown): unknown {
 }
 
 /**
- * Single receipt representation: module scrub, then secret-key redaction.
- * Callers must not use this object for action execution.
+ * create_note and write_canvas write a document: their content is read
+ * through the document's own access once it exists (review F15 B-I1), so a
+ * receipt names the document and the size, never the content.
+ */
+const DOCUMENT_CONTENT_ACTIONS: ReadonlySet<string> = new Set(['create_note', 'write_canvas']);
+
+/**
+ * M7's document tools: an edit's receipt names the document and the summary's size,
+ * never its operations; a created document's names where it went and the
+ * sizes, never the title or the Markdown (rule C4).
+ */
+function withoutDocumentToolText(action: string, params: Record<string, unknown>, resultValue: unknown): Record<string, unknown> {
+  const result = resultValue && typeof resultValue === 'object' ? resultValue as Record<string, unknown> : {};
+  const documentId = storableRef(result.document_id) ?? storableRef(params.document_id);
+  // M7 consult O-F4: the document and the suggestion, and the summary's size (rebuilt every time, fix round 1, I1).
+  if (action === 'edit_document') return editParamsWithSummarySize(params);
+  return createDocumentInputForStorage(params, documentId) as Record<string, unknown>;
+}
+
+function withoutDocumentContent(action: string, paramsValue: unknown, resultValue: unknown): unknown {
+  if ((action === 'edit_document' || action === 'create_document') && paramsValue && typeof paramsValue === 'object' && !Array.isArray(paramsValue)) {
+    return withoutDocumentToolText(action, paramsValue as Record<string, unknown>, resultValue);
+  }
+  if (!DOCUMENT_CONTENT_ACTIONS.has(action) || !paramsValue || typeof paramsValue !== 'object' || Array.isArray(paramsValue)) {
+    return paramsValue;
+  }
+  const result = resultValue && typeof resultValue === 'object' ? resultValue as Record<string, unknown> : {};
+  const documentId = storableRef(result.document_id) ?? storableRef(result.canvas_document_id) ?? storableRef(result.note_id);
+  // M7 fix round 5: references only. The title is draft text (the controller's
+  // rule), so it is kept as its size like the content; the receipt names the
+  // document, where it went, and the sizes (draftToolInputForStorage).
+  return draftToolInputForStorage(action, paramsValue, documentId);
+}
+
+/**
+ * A draft tool's result as a receipt signs and stores it (M7 fix round 5):
+ * references only (draftOutcomeReferences), whatever the caller passed. Any
+ * other action's result is returned as it is.
+ */
+export function sanitizeActionResultForReceipt(action: string, resultValue: unknown): unknown {
+  return isDraftTextAction(action) ? draftOutcomeReferences(action, resultValue) : resultValue;
+}
+
+/**
+ * Single receipt representation: a document's content left out, module
+ * scrub, then secret-key redaction. `resultValue` is the action's result,
+ * which names the document. Callers must not use this object for action
+ * execution.
  */
 export function sanitizeActionParamsForReceipt(
   action: string,
   paramsValue: unknown,
+  resultValue?: unknown,
 ): Record<string, unknown> {
-  const moduleSafe = sanitizeModuleActionParamsForReceipt(action, paramsValue);
+  const moduleSafe = sanitizeModuleActionParamsForReceipt(action, withoutDocumentContent(action, paramsValue, resultValue));
   const redacted = redactSensitiveReceiptValue(moduleSafe);
   return recordValue(redacted);
 }

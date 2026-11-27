@@ -32,6 +32,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { actionPlanRoomsReadableSql } from '../plan-room-access.js';
 import { db } from '../db.js';
 import { currentAgentActionSourceAuthoritySql } from '../agent-channel-authority.js';
+import { documentTextParamsForViewer } from '../document-draft-params.js';
 import {
   agentActions,
   agentChannelEvents,
@@ -540,6 +541,7 @@ export async function pollPendingWork(
   const pending = await db
     .select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       params: agentActions.params,
       status: agentActions.approval_status,
@@ -559,9 +561,21 @@ export async function pollPendingWork(
     )
     .orderBy(desc(agentActions.created_at))
     .limit(25);
+  // M7 fix round 5: a draft's text reaches only its requester. The employee
+  // reads as its own user (none found: as nobody), so a person's draft is
+  // "Document draft, N bytes".
+  const [employee] = await db
+    .select({ user_id: agentEmployees.user_id })
+    .from(agentEmployees)
+    .where(and(eq(agentEmployees.id, ctx.employee_id), eq(agentEmployees.org_id, ctx.org_id)))
+    .limit(1);
+  const reader = employee?.user_id ?? '';
 
   return textResult({
-    pending_actions: pending,
+    pending_actions: pending.map((row) => {
+      const { user_id: _requester, ...shown } = documentTextParamsForViewer(row, reader);
+      return shown;
+    }),
   });
 }
 

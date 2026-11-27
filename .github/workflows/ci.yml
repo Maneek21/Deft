@@ -155,6 +155,8 @@ jobs:
         run: pnpm --filter @deft/app-kit test
       - name: Test shared authority and resource contracts
         run: pnpm --filter @deft/shared test
+      - name: Test document schema conversions
+        run: pnpm --filter @deft/doc-schema test
       - name: Verify release publishing contract
         run: pnpm test:release-workflow
       - name: Verify container process supervision
@@ -199,9 +201,6 @@ jobs:
           src/lib/calendar-event-form.test.ts
           src/lib/app-experience-connection-action.test.ts
           src/lib/app-connection-reconnect.test.ts
-          'src/app/(app)/notes/note-save-coordinator.test.ts'
-          'src/app/(app)/notes/protected-note-image.test.ts'
-          'src/app/(app)/notes/note-load-state.test.ts'
           src/lib/approval-failure-retention.test.ts
           src/lib/thread-parent.test.ts
           src/lib/link-token.test.ts
@@ -215,6 +214,15 @@ jobs:
           src/lib/buy-seats.test.ts
           src/lib/error-telemetry.test.ts
           src/hooks/use-room-pending-approvals-refresh.test.ts
+          'src/app/(app)/settings/members/personal-drive-note.test.tsx'
+          src/lib/drive-tree.test.ts
+          src/lib/drive-actions.test.ts
+          src/components/drive/drive-sidebar.test.tsx
+          src/components/documents/posting-prompt.test.tsx
+          src/lib/collab-status.test.ts
+          src/lib/legacy-notes-redirect.test.ts
+          src/components/documents/document-header.test.tsx
+          src/lib/meeting-notes.test.ts
       - name: Install locked browser for mounted App contracts
         run: pnpm exec playwright install --with-deps chromium
       - name: Test public space preview reads
@@ -250,12 +258,16 @@ jobs:
           src/lib/invite-two-step-mounted.test.ts
           src/lib/members-admin-actions-mounted.test.ts
           src/lib/members-buy-seats-mounted.test.ts
+          src/lib/members-remove-personal-drive-mounted.test.ts
+          src/lib/chat-documents-mounted.test.ts
+          src/lib/thread-slash-commands-mounted.test.ts
+          src/lib/drive-page-mounted.test.ts
+          src/lib/document-page-mounted.test.ts
           src/lib/error-telemetry-mounted.test.ts
           src/lib/report-problem-mounted.test.ts
           src/lib/report-problem-reopen-mounted.test.ts
           src/lib/signup-install-ping-mounted.test.ts
           src/lib/welcome-first-message-mounted.test.ts
-          src/lib/note-share-dialog-mounted.test.ts
           src/lib/calendar-event-readonly-mounted.test.ts
           src/lib/two-step-recovery-mounted.test.ts
           src/lib/agent-management-mounted.test.ts
@@ -686,6 +698,71 @@ jobs:
               THEN
                 RAISE EXCEPTION 'note file links table missing or different after upgrade';
               END IF;
+              -- Same definitions as apps/api/test/documents-schema-db.test.ts (fresh install):
+              -- foreign keys and CHECKs, then indexes, of documents, drive_members and document_shares.
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.documents'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'documents_drive_fk: FOREIGN KEY (org_id, drive_id) REFERENCES drives(org_id, id) | documents_folder_fk: FOREIGN KEY (org_id, drive_id, folder_id) REFERENCES doc_folders(org_id, drive_id, id) DEFERRABLE | documents_folder_or_parent: CHECK ((NOT ((folder_id IS NOT NULL) AND (parent_document_id IS NOT NULL)))) | documents_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id) | documents_parent_fk: FOREIGN KEY (org_id, drive_id, parent_document_id) REFERENCES documents(org_id, drive_id, id) DEFERRABLE'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.documents'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE UNIQUE INDEX documents_org_drive_id_key ON public.documents USING btree (org_id, drive_id, id) | CREATE INDEX documents_org_drive_live_idx ON public.documents USING btree (org_id, drive_id) WHERE (NOT is_deleted) | CREATE UNIQUE INDEX documents_org_id_id_key ON public.documents USING btree (org_id, id) | CREATE INDEX documents_parent_idx ON public.documents USING btree (parent_document_id) | CREATE INDEX documents_search_idx ON public.documents USING gin (search_vector)'
+              THEN
+                RAISE EXCEPTION 'documents table missing or different after upgrade';
+              END IF;
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.drive_members'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'drive_members_drive_fk: FOREIGN KEY (org_id, drive_id) REFERENCES drives(org_id, id) | drive_members_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id) | drive_members_principal_type_check: CHECK ((principal_type = ANY (ARRAY[''user''::text, ''space''::text]))) | drive_members_role_check: CHECK ((role = ANY (ARRAY[''full''::text, ''edit''::text, ''comment''::text, ''view''::text])))'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.drive_members'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE UNIQUE INDEX drive_members_drive_principal_key ON public.drive_members USING btree (drive_id, principal_type, principal_id) | CREATE INDEX drive_members_principal_idx ON public.drive_members USING btree (principal_type, principal_id) | CREATE UNIQUE INDEX drive_members_space_link_uidx ON public.drive_members USING btree (org_id, principal_id) WHERE ((principal_type = ''space''::text) AND is_link)'
+              THEN
+                RAISE EXCEPTION 'drive members table missing or different after upgrade';
+              END IF;
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.document_shares'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'document_shares_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id) | document_shares_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id) | document_shares_principal_type_check: CHECK ((principal_type = ANY (ARRAY[''user''::text, ''space''::text]))) | document_shares_role_check: CHECK ((role = ANY (ARRAY[''edit''::text, ''comment''::text, ''view''::text])))'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.document_shares'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE UNIQUE INDEX document_shares_document_principal_key ON public.document_shares USING btree (document_id, principal_type, principal_id) | CREATE INDEX document_shares_principal_idx ON public.document_shares USING btree (principal_type, principal_id)'
+              THEN
+                RAISE EXCEPTION 'document shares table missing or different after upgrade';
+              END IF;
+              -- Same definitions as apps/api/test/documents-schema-db.test.ts (fresh install): meeting-notes links (.156).
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.document_event_links'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'document_event_links_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id) | document_event_links_event_id_fkey: FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE | document_event_links_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id)'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.document_event_links'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE INDEX document_event_links_document_idx ON public.document_event_links USING btree (org_id, document_id) | CREATE UNIQUE INDEX document_event_links_event_document_key ON public.document_event_links USING btree (event_id, document_id)'
+              THEN
+                RAISE EXCEPTION 'document event links table missing or different after upgrade';
+              END IF;
+              -- Same definitions as apps/api/test/documents-schema-db.test.ts (fresh install): each person's agent edit setting (.156).
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.document_user_settings'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'document_user_settings_agent_edit_mode_check: CHECK ((agent_edit_mode = ANY (ARRAY[''direct''::text, ''suggest''::text, ''suggest_when_open''::text]))) | document_user_settings_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id) | document_user_settings_user_id_fkey: FOREIGN KEY (user_id) REFERENCES users(id)'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.document_user_settings'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE UNIQUE INDEX document_user_settings_org_user_key ON public.document_user_settings USING btree (org_id, user_id)'
+              THEN
+                RAISE EXCEPTION 'document user settings table missing or different after upgrade';
+              END IF;
+              -- Same definitions as apps/api/test/documents-schema-db.test.ts (fresh install): agent edit suggestions (.156).
+              IF (SELECT string_agg(conname || ': ' || pg_get_constraintdef(oid), ' | ' ORDER BY conname)
+                  FROM pg_constraint WHERE conrelid = 'public.document_suggestions'::regclass AND contype IN ('c', 'f'))
+                IS DISTINCT FROM 'document_suggestions_action_id_fkey: FOREIGN KEY (action_id) REFERENCES agent_actions(id) ON DELETE CASCADE | document_suggestions_agent_user_id_fkey: FOREIGN KEY (agent_user_id) REFERENCES users(id) | document_suggestions_asker_user_id_fkey: FOREIGN KEY (asker_user_id) REFERENCES users(id) | document_suggestions_document_fk: FOREIGN KEY (org_id, document_id) REFERENCES documents(org_id, id) | document_suggestions_org_id_fkey: FOREIGN KEY (org_id) REFERENCES orgs(id) | document_suggestions_status_check: CHECK ((status = ANY (ARRAY[''pending''::text, ''applying''::text, ''accepted''::text, ''partially_accepted''::text, ''rejected''::text, ''expired''::text, ''cancelled''::text])))'
+                OR (SELECT string_agg(pg_get_indexdef(i.indexrelid), ' | ' ORDER BY c.relname)
+                  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                  WHERE i.indrelid = 'public.document_suggestions'::regclass AND NOT i.indisprimary)
+                IS DISTINCT FROM 'CREATE UNIQUE INDEX document_suggestions_action_key ON public.document_suggestions USING btree (action_id) | CREATE INDEX document_suggestions_asker_status_idx ON public.document_suggestions USING btree (org_id, asker_user_id, status) | CREATE INDEX document_suggestions_document_status_idx ON public.document_suggestions USING btree (org_id, document_id, status) | CREATE INDEX document_suggestions_open_created_idx ON public.document_suggestions USING btree (created_at) WHERE (status = ANY (ARRAY[''pending''::text, ''applying''::text]))'
+              THEN
+                RAISE EXCEPTION 'document suggestions table missing or different after upgrade';
+              END IF;
             END \$\$;
           "
           bash scripts/ci/snapshot-upgrade-data.sh "$RUNNER_TEMP/upgrade-after"
@@ -693,7 +770,10 @@ jobs:
       - name: Compare a fresh install's tables with the upgraded database's
         # db:push-full (fresh installs, dev and test databases) and db:upgrade
         # (every existing install) must build the same set of tables, including
-        # those that only upgrades create (ics_publish_tokens, user_two_step, note_files).
+        # those that only upgrades create (ics_publish_tokens, user_two_step,
+        # note_files, drives, documents, document_event_links, document_user_settings, document_suggestions), and the same enum labels, functions,
+        # triggers and columns: enum labels and trigger functions also come only
+        # from upgrades.
         run: |
           set -euo pipefail
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE deft_fresh_compare_test'
@@ -702,10 +782,68 @@ jobs:
           tables_sql="SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1"
           psql "$fresh_url" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-fresh.txt"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "$tables_sql" > "$RUNNER_TEMP/tables-upgraded.txt"
-          for table in ics_publish_tokens seat_statements user_two_step note_files deft_schema_migrations; do
+          for table in ics_publish_tokens seat_statements user_two_step note_files drives documents document_event_links document_user_settings document_suggestions deft_schema_migrations; do
             grep -qx "$table" "$RUNNER_TEMP/tables-fresh.txt" || { echo "fresh install is missing $table" >&2; exit 1; }
           done
           diff --unified --label fresh-install --label upgraded "$RUNNER_TEMP/tables-fresh.txt" "$RUNNER_TEMP/tables-upgraded.txt"
+          # Every public object is compared, each list as a set: enum labels by
+          # name (not sort position); functions by signature and settings, and by
+          # full definition (extension members excluded; ordinary, window and
+          # procedure kinds; aggregates can't be deparsed by pg_get_functiondef,
+          # so they are compared by the signature list only); triggers by
+          # definition; every column of every public base table by type,
+          # nullability and default (the unmodified column_default expression, or
+          # a generated column's, kept on one line by a lossless escape: a
+          # backslash becomes \\ and a newline \n).
+          #
+          # Allow-lists: objects whose definition legitimately differs between a
+          # fresh install and an upgraded one, one per line, quoted, followed by
+          # a comment giving the reason. A function is written as regprocedure
+          # prints it, for example
+          #   'enforce_app_runtime_session()'  # reason
+          # and a column as 'table.column'. An entry replaces only that column's
+          # default, or only that function's body (prosrc, probin or a
+          # SQL-standard body), with a fixed marker. Everything else is still
+          # compared: the column's presence, type and nullability; the
+          # function's signature, arguments (names, modes, defaults), result,
+          # kind, language, transforms, volatility, STRICT, SECURITY DEFINER,
+          # LEAKPROOF, PARALLEL, set-returning flag, COST, ROWS, SUPPORT and
+          # SET options, each from pg_proc.
+          allowed_function_differences=(
+            'wiki_pages_search_update()'  # body differs only in line ends: fresh installs create it from packages/db/drizzle/0020_wiki_search_vector.sql (LF in git) through apply-extras; upgraded installs keep the CRLF body their first release created (lineages/public61/artifacts/public-git-db.tar holds that CRLF body); no upgrade redefines it
+          )
+          allowed_column_differences=(
+            'users.notification_preferences'  # fresh installs carry the newer default with push settings; upgraded installs keep the older default; add-only upgrades can't change a default; reported to the orchestrator, 26 Nov
+          )
+          sql_text_array() {
+            local items=() item ok='^[]A-Za-z0-9_.(),[ ]+$'
+            for item in "$@"; do
+              [[ $item =~ $ok ]] || { echo "unusable allow-list entry: $item" >&2; return 1; }
+              items+=("'$item'")
+            done
+            local IFS=,
+            printf 'ARRAY[%s]::text[]' "${items[*]-}"
+          }
+          function_allow="$(sql_text_array ${allowed_function_differences[@]+"${allowed_function_differences[@]}"})"
+          column_allow="$(sql_text_array ${allowed_column_differences[@]+"${allowed_column_differences[@]}"})"
+          public_functions="FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')"
+          enums_sql="SELECT t.typname || ': ' || e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public' ORDER BY 1"
+          functions_sql="SELECT p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ') ' || coalesce(array_to_string(p.proconfig, ','), '') $public_functions ORDER BY 1"
+          function_defs_sql="SELECT CASE WHEN p.oid::regprocedure::text = ANY ($function_allow) THEN format('ALLOW-LISTED BODY %s kind=%s arguments=%L result=%L language=%s transforms=%L volatility=%s strict=%s security_definer=%s leakproof=%s parallel=%s returns_set=%s cost=%s rows=%s support=%s config=%L', p.oid::regprocedure, p.prokind, pg_get_function_arguments(p.oid), pg_get_function_result(p.oid), (SELECT l.lanname FROM pg_language l WHERE l.oid = p.prolang), p.protrftypes::regtype[], p.provolatile, p.proisstrict, p.prosecdef, p.proleakproof, p.proparallel, p.proretset, p.procost, p.prorows, p.prosupport, p.proconfig) ELSE pg_get_functiondef(p.oid) END $public_functions AND p.prokind IN ('f', 'p', 'w') ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)"
+          triggers_sql="SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND NOT t.tgisinternal ORDER BY 1"
+          columns_sql="SELECT c.relname || '.' || a.attname || ': ' || format_type(a.atttypid, a.atttypmod) || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END || CASE WHEN a.attgenerated <> '' THEN ' GENERATED ' ELSE ' DEFAULT ' END || CASE WHEN (c.relname || '.' || a.attname) = ANY ($column_allow) THEN '(allow-listed)' WHEN d.adbin IS NULL THEN '(none)' ELSE replace(replace(pg_get_expr(d.adbin, d.adrelid), chr(92), chr(92) || chr(92)), chr(10), chr(92) || 'n') END FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped ORDER BY 1"
+          catalog_differs=0
+          for part in enums functions function_defs triggers columns; do
+            part_sql="${part}_sql"
+            psql "$fresh_url" -v ON_ERROR_STOP=1 -Atc "${!part_sql}" > "$RUNNER_TEMP/$part-fresh.txt"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "${!part_sql}" > "$RUNNER_TEMP/$part-upgraded.txt"
+            diff --unified --label "fresh-install $part" --label "upgraded $part" "$RUNNER_TEMP/$part-fresh.txt" "$RUNNER_TEMP/$part-upgraded.txt" || catalog_differs=1
+          done
+          grep -qx 'notification_type: document_shared' "$RUNNER_TEMP/enums-fresh.txt" || { echo 'fresh install is missing notification_type document_shared' >&2; exit 1; }
+          grep -q '^doc_principal_check() ' "$RUNNER_TEMP/functions-fresh.txt" || { echo 'fresh install is missing doc_principal_check' >&2; exit 1; }
+          test "$(grep -cE '^CREATE OR REPLACE FUNCTION public\.(doc_member_user_check|doc_principal_check|documents_search_update)\(\)' "$RUNNER_TEMP/function_defs-fresh.txt")" = 3 || { echo 'fresh install is missing a drives function' >&2; exit 1; }
+          grep -qx 'document_attachments.in_current: boolean NOT NULL DEFAULT true' "$RUNNER_TEMP/columns-fresh.txt" || { echo 'fresh install has the wrong document_attachments.in_current default' >&2; exit 1; }
+          test "$catalog_differs" = 0
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'DROP DATABASE deft_fresh_compare_test'
       - name: Rehearse both database restore routes with stored consent data
         run: |

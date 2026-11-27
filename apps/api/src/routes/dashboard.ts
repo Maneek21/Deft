@@ -2,6 +2,7 @@ import {visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gte, inArray, count } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { documentTextParamsForViewer } from '../lib/document-draft-params.js';
 import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, peopleExpertise, peopleInteractions, peoplePatterns, agentActions, agentEmployees, wikiPages } from '@deft/db/schema';
 import { generateDailyStandup, standupReadableBy } from '../lib/standup-automation.js';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
@@ -10,7 +11,7 @@ import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js'
 import { liveHumanCalendarEventCondition } from '../lib/calendar-event-visibility.js';
 import { getDayBoundaries, resolveViewerTimezone } from '../lib/task-dates.js';
 import { visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
-import { noticeNamesGuestHiddenTaskSql } from '../lib/native-mention-visibility.js';
+import { nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
 import { peopleViewer } from '../lib/people-visibility.js';
 
 /** Full workspace members; guests and unresolved roles are excluded from org-wide standups. */
@@ -279,12 +280,13 @@ dashboardRoutes.get('/', async (c) => {
     }
 
     // 8. Unread notification count
-    // A guest's count leaves out notices of tasks hidden from them, as their
-    // notification list does (lib/native-mention-visibility.ts).
+    // The notification list's own rule (lib/native-mention-visibility.ts): a
+    // guest's count leaves out notices of tasks hidden from them, and nobody's
+    // counts a notice of a chat, message or drive they can no longer read.
     const [notifCount] = await db.select({ count: sql<number>`count(*)::int` })
       .from(notifications)
       .where(and(eq(notifications.org_id, user.org_id), eq(notifications.user_id, user.id), eq(notifications.is_read, false),
-        sql`NOT ${noticeNamesGuestHiddenTaskSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`, sql`${notifications.link}`)}`));
+        nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`)));
 
     // 8b. Recent/pending agent activity for the cockpit surface. This keeps
     // the dashboard useful even when the frontend only renders a subset.
@@ -650,9 +652,10 @@ dashboardRoutes.get('/my-insights', async (c) => {
 dashboardRoutes.get('/agent-activity', async (c) => {
   const user = c.get('user');
 
-  const recentActions = await db
+  const activityRows = await db
     .select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       params: agentActions.params,
       result: agentActions.result,
@@ -674,6 +677,11 @@ dashboardRoutes.get('/agent-activity', async (c) => {
     )
     .orderBy(desc(agentActions.created_at))
     .limit(20);
+  // M7 fix round 3: a document draft's text only for the person who asked.
+  const recentActions = activityRows.map((row) => {
+    const { user_id: _requester, ...shown } = documentTextParamsForViewer(row, user.id);
+    return shown;
+  });
 
   return c.json(await withViewerCanReview(user, recentActions));
 });

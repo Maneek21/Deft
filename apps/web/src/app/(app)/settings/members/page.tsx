@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Bot,
@@ -25,6 +25,7 @@ import {
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { buySeatsHref, buySeatsHrefForRefusal } from '@/lib/buy-seats';
+import { PersonalDriveNote } from './personal-drive-note';
 
 const ROLE_OPTIONS = ['admin', 'member', 'guest'] as const;
 const FILTERS = ['all', 'humans', 'agents', 'pending', 'inactive'] as const;
@@ -121,6 +122,10 @@ type ShareLink = {
 };
 
 type OffboardingPreview = {
+  /** A live, unfrozen personal drive with a document in it: the remover chooses to hand it on or freeze it. */
+  personal_drive_with_documents?: boolean;
+  /** Active members who can't be given a drive (a paused agent, for one): never offered to receive it. */
+  cannot_hold_drive_ids?: string[];
   revoke_now: {
     spaces: Array<{ id: string; name: string; type: string }>;
     teams: Array<{ id: string; name: string; handle: string; role: string }>;
@@ -311,8 +316,18 @@ export default function MembersPage() {
   const [copied, setCopied] = useState(false);
   const [roleDropdown, setRoleDropdown] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
-  const [offboardingPreview, setOffboardingPreview] = useState<OffboardingPreview | null>(null);
+  // The loaded preview and the member it is for. Each request has a number
+  // (offboardingPreviewRequest); only the latest one writes the preview, the
+  // error or the loading flag, so a slow answer for someone the dialog has
+  // moved on from never lands. Closing the dialog supersedes them all.
+  const [offboardingPreviewState, setOffboardingPreviewState] = useState<{ memberId: string; preview: OffboardingPreview } | null>(null);
+  const offboardingPreviewRequest = useRef(0);
+  // The preview counts only for the member the dialog is removing.
+  const offboardingPreview = offboardingPreviewState && offboardingPreviewState.memberId === confirmRemove
+    ? offboardingPreviewState.preview
+    : null;
   const [offboardingReplacementId, setOffboardingReplacementId] = useState('');
+  const [offboardingDriveChoice, setOffboardingDriveChoice] = useState<'hand_over' | 'freeze' | null>(null);
   const [offboardingLoading, setOffboardingLoading] = useState(false);
   const [offboardingError, setOffboardingError] = useState('');
   const [removingId, setRemovingId] = useState<string | null>(null);
@@ -397,6 +412,30 @@ export default function MembersPage() {
   const offboardingHandoffCount = offboardingPreview
     ? offboardingPreview.counts.primary_open_tasks + offboardingPreview.counts.led_projects + offboardingPreview.counts.led_teams
     : 0;
+  // The person's personal drive (spec 5.2): when it holds documents the
+  // remover chooses to hand it to the replacement or freeze it until the
+  // owner hands it on. The replacement picker shows for open work or for that
+  // drive, and a replacement is sent only for one of them.
+  const offboardingHasDrive = offboardingPreview?.personal_drive_with_documents === true;
+  // Who can be handed the drive: everyone offered, less those the preview
+  // says can't hold it. The picker narrows to them only when the remover
+  // chooses to hand the drive over; with "Freeze it", or before a choice, any
+  // active member can take the open work, as the API accepts. A choice that
+  // isn't offered falls back to the first who is.
+  const offboardingDriveHolders = useMemo(() => {
+    if (!offboardingHasDrive) return offboardingReplacementOptions;
+    const cannotHold = new Set(offboardingPreview?.cannot_hold_drive_ids ?? []);
+    return offboardingReplacementOptions.filter((member) => !cannotHold.has(member.id));
+  }, [offboardingHasDrive, offboardingPreview, offboardingReplacementOptions]);
+  const offboardingPickerOptions = offboardingHasDrive && offboardingDriveChoice === 'hand_over'
+    ? offboardingDriveHolders
+    : offboardingReplacementOptions;
+  const offboardingSelected = offboardingPickerOptions.find((member) => member.id === offboardingReplacementId)
+    ?? offboardingPickerOptions[0] ?? null;
+  // Who "Hand My drive to" names: the current choice if they can hold it, else the first who can.
+  const offboardingDriveHeir = offboardingDriveHolders.find((member) => member.id === offboardingReplacementId)
+    ?? offboardingDriveHolders[0] ?? null;
+  const offboardingSendsReplacement = offboardingHandoffCount > 0 || (offboardingHasDrive && offboardingDriveChoice === 'hand_over');
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -443,30 +482,45 @@ export default function MembersPage() {
 
   const openRemovePreview = async (memberId: string) => {
     setConfirmRemove(memberId);
-    setOffboardingPreview(null);
+    setOffboardingPreviewState(null);
     const defaultReplacement = members.find((member) => (
       member.id !== memberId &&
       member.lifecycle_status === 'active'
     ));
     setOffboardingReplacementId(defaultReplacement?.id ?? '');
+    setOffboardingDriveChoice(null);
+    await loadOffboardingPreview(memberId);
+  };
+
+  // The preview says what the removal hands over, the personal drive
+  // included: removal stays disabled until one has loaded, and a failed load
+  // offers a retry.
+  const loadOffboardingPreview = async (memberId: string) => {
+    const request = ++offboardingPreviewRequest.current;
+    const latest = () => request === offboardingPreviewRequest.current;
+    setOffboardingPreviewState(null);
     setOffboardingError('');
     setOffboardingLoading(true);
     try {
       const res = await api.get(`/api/members/${memberId}/offboarding-preview`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Failed to load offboarding preview');
-      setOffboardingPreview(data);
+      if (latest()) setOffboardingPreviewState({ memberId, preview: data });
     } catch (err: any) {
-      setOffboardingError(err.message);
+      if (latest()) setOffboardingError(err.message || 'Failed to load offboarding preview');
     } finally {
-      setOffboardingLoading(false);
+      if (latest()) setOffboardingLoading(false);
     }
   };
 
   const closeRemovePreview = () => {
+    // Any preview still on its way is for a dialog that is gone.
+    offboardingPreviewRequest.current += 1;
     setConfirmRemove(null);
-    setOffboardingPreview(null);
+    setOffboardingPreviewState(null);
+    setOffboardingLoading(false);
     setOffboardingReplacementId('');
+    setOffboardingDriveChoice(null);
     setOffboardingError('');
   };
 
@@ -475,7 +529,9 @@ export default function MembersPage() {
     setOffboardingError('');
     try {
       const res = await api.delete(`/api/members/${memberId}`, {
-        replacement_user_id: offboardingReplacementId || null,
+        replacement_user_id: offboardingSendsReplacement ? offboardingSelected?.id ?? null : null,
+        // Without documents in it, an empty personal drive is just frozen.
+        personal_drive: offboardingHasDrive && offboardingDriveChoice === 'hand_over' ? 'hand_over' : 'freeze',
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -933,9 +989,26 @@ export default function MembersPage() {
 
                             {offboardingLoading ? (
                               <p className="mt-3 text-[12px]" style={{ color: 'var(--muted)' }}>Loading offboarding preview...</p>
-                            ) : offboardingError ? (
-                              <p className="mt-3 rounded px-2 py-1.5 text-[12px]" style={{ color: 'var(--error)', background: 'rgba(147,0,10,0.16)' }}>{offboardingError}</p>
-                            ) : offboardingPreview && (
+                            ) : (
+                              <>
+                              {/* A refused removal keeps the loaded choices, so another can be picked. */}
+                              {offboardingError && (
+                              <div className="mt-3 grid gap-2">
+                                <p className="rounded px-2 py-1.5 text-[12px]" style={{ color: 'var(--error)', background: 'rgba(147,0,10,0.16)' }}>{offboardingError}</p>
+                                {!offboardingPreview && (
+                                  <button
+                                    type="button"
+                                    data-testid="offboarding-preview-retry"
+                                    onClick={() => loadOffboardingPreview(detail.member.id)}
+                                    className="h-8 justify-self-start rounded-md px-2 text-[11px] font-semibold"
+                                    style={{ color: 'var(--foreground)', border: '1px solid var(--border)' }}
+                                  >
+                                    Try again
+                                  </button>
+                                )}
+                              </div>
+                              )}
+                              {offboardingPreview && (
                               <div className="mt-3 grid gap-2">
                                 <div className="grid grid-cols-3 gap-2">
                                   <StatCard icon={Users} label="Spaces" value={offboardingPreview.counts.spaces} />
@@ -945,30 +1018,65 @@ export default function MembersPage() {
                                 <div className="rounded-md px-2 py-2 text-[11px]" style={{ background: 'var(--card-bg)', color: 'var(--muted)' }}>
                                   Also revokes {offboardingPreview.counts.active_mcp_tokens} MCP token(s), {offboardingPreview.counts.active_api_keys} API key(s), {offboardingPreview.counts.active_oauth_grants} app grant(s), and {offboardingPreview.counts.secondary_task_assignments} secondary task assignment(s).
                                 </div>
-                                {offboardingHandoffCount > 0 && (
+                                {(offboardingHandoffCount > 0 || offboardingHasDrive) && (
                                   <div className="grid gap-2 rounded-md px-2 py-2 text-[11px]" style={{ background: 'rgba(234,179,8,0.12)', color: 'var(--warning)' }}>
-                                    <p>
-                                      Transfer ownership for {offboardingPreview.counts.primary_open_tasks} open primary task(s), {offboardingPreview.counts.led_projects} led project(s), and {offboardingPreview.counts.led_teams} team lead role(s).
-                                    </p>
+                                    {offboardingHandoffCount > 0 && (
+                                      <p>
+                                        Transfer ownership for {offboardingPreview.counts.primary_open_tasks} open primary task(s), {offboardingPreview.counts.led_projects} led project(s), and {offboardingPreview.counts.led_teams} team lead role(s).
+                                      </p>
+                                    )}
                                     <select
                                       data-testid="offboarding-replacement-select"
-                                      value={offboardingReplacementId}
+                                      value={offboardingSelected?.id ?? ''}
                                       onChange={(e) => setOffboardingReplacementId(e.target.value)}
                                       className="h-8 rounded-md px-2 text-[12px] outline-none"
                                       style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
-                                      disabled={offboardingReplacementOptions.length === 0}
+                                      disabled={offboardingPickerOptions.length === 0}
                                     >
-                                      {offboardingReplacementOptions.length === 0 ? (
+                                      {offboardingPickerOptions.length === 0 ? (
                                         <option value="">No active replacement available</option>
-                                      ) : offboardingReplacementOptions.map((member) => (
+                                      ) : offboardingPickerOptions.map((member) => (
                                         <option key={member.id} value={member.id}>
                                           {member.name}{member.title ? ` - ${member.title}` : ''}
                                         </option>
                                       ))}
                                     </select>
+                                    {offboardingHasDrive && (
+                                      <div role="radiogroup" aria-label="Their personal drive" className="grid gap-1">
+                                        <label className="flex items-center gap-2">
+                                          <input
+                                            type="radio"
+                                            name="offboarding-personal-drive"
+                                            data-testid="offboarding-drive-hand-over"
+                                            checked={offboardingDriveChoice === 'hand_over'}
+                                            onChange={() => {
+                                              setOffboardingDriveChoice('hand_over');
+                                              if (offboardingDriveHeir) setOffboardingReplacementId(offboardingDriveHeir.id);
+                                            }}
+                                            disabled={!offboardingDriveHeir}
+                                          />
+                                          <span>Hand My drive to {offboardingDriveHeir?.name ?? 'the replacement'}</span>
+                                        </label>
+                                        <label className="flex items-center gap-2">
+                                          <input
+                                            type="radio"
+                                            name="offboarding-personal-drive"
+                                            data-testid="offboarding-drive-freeze"
+                                            checked={offboardingDriveChoice === 'freeze'}
+                                            onChange={() => setOffboardingDriveChoice('freeze')}
+                                          />
+                                          <span>Freeze it</span>
+                                        </label>
+                                      </div>
+                                    )}
                                   </div>
                                 )}
+                                {offboardingHasDrive && offboardingDriveChoice && (
+                                  <PersonalDriveNote replacementName={offboardingDriveChoice === 'hand_over' ? offboardingSelected?.name ?? null : null} />
+                                )}
                               </div>
+                              )}
+                              </>
                             )}
 
                             <div className="mt-3 grid grid-cols-2 gap-2">
@@ -982,7 +1090,12 @@ export default function MembersPage() {
                               </button>
                               <button
                                 onClick={() => handleRemove(detail.member.id)}
-                                disabled={offboardingLoading || removingId === detail.member.id || (offboardingHandoffCount > 0 && !offboardingReplacementId)}
+                                disabled={
+                                  offboardingLoading || removingId === detail.member.id || !offboardingPreview
+                                  || (offboardingHandoffCount > 0 && !offboardingSelected)
+                                  || (offboardingHasDrive && !offboardingDriveChoice)
+                                  || (offboardingHasDrive && offboardingDriveChoice === 'hand_over' && !offboardingSelected)
+                                }
                                 className="h-8 rounded-md px-2 text-[11px] font-semibold disabled:opacity-50"
                                 style={{ background: 'var(--error)', color: 'white' }}
                               >

@@ -1,13 +1,16 @@
+import { createHash } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sql } from 'drizzle-orm';
+import { jsonToMarkdown } from '@deft/doc-schema';
 import { archiveFileName, visibleFilesSql } from './attachments.js';
-import { col } from './datasets.js';
+import { BODY_FETCH_LIMIT, col } from './datasets.js';
 import { exportableMessage } from './datasets-content.js';
+import { documentMarkdownQuery } from './datasets-documents.js';
 import type { ExportManifest } from './format.js';
 import { spaceReadable, type ExportContext } from './scope.js';
 import type { Snapshot } from './snapshot.js';
-import type { ArchiveFile, ArchiveWriter } from './writer.js';
+import { assertArchivePath, type ArchiveFile, type ArchiveWriter } from './writer.js';
 
 /** Escapes text for HTML. Content is always shown as text, never as markup. */
 export function escapeHtml(value: unknown): string {
@@ -36,6 +39,9 @@ const LABELS: Record<string, string> = {
   'data/projects.jsonl': 'Projects', 'data/labels.jsonl': 'Labels', 'data/tasks.jsonl': 'Tasks', 'data/task_comments.jsonl': 'Task comments',
   'data/notes.jsonl': 'Notes', 'data/note_folders.jsonl': 'Note folders', 'data/wiki_pages.jsonl': 'Wiki pages',
   'data/events.jsonl': 'Calendar and tool events', 'data/files.jsonl': 'Attachments listed', 'data/modules.jsonl': 'Installed modules (such as Contacts)',
+  'data/drives.jsonl': 'Drives', 'data/drive_members.jsonl': 'Drive members', 'data/doc_folders.jsonl': 'Folders in drives',
+  'data/documents.jsonl': 'Documents', 'data/document_shares.jsonl': 'Document shares', 'data/document_versions.jsonl': 'Saved versions of documents',
+  'data/document_attachments.jsonl': 'Files documents use',
 };
 
 const ATTACHMENTS_NOT_COPIED = 'Attachment files were not copied: they are copied only when the operator states that this database holds exactly one workspace (--single-workspace-database). Each file is still listed in data/files.jsonl, with the reason in omissions.jsonl.';
@@ -47,7 +53,8 @@ function scopeSentence(manifest: ExportManifest, memberName: string | null): str
 }
 
 /** README.txt and README.html: what is in this archive, how much of each, and what is not. */
-export async function writeReadme(writer: ArchiveWriter, manifest: ExportManifest, memberName: string | null, filesIncluded: number): Promise<void> {
+export async function writeReadme(writer: ArchiveWriter, manifest: ExportManifest, memberName: string | null, filesIncluded: number,
+  documentsWritten = 0): Promise<void> {
   const omissions = [...writer.omissionSummary.values()];
   const counts = manifest.datasets.map((dataset) => [LABELS[dataset.path] ?? dataset.path, dataset.records, dataset.path] as const);
   const text = [
@@ -58,6 +65,7 @@ export async function writeReadme(writer: ArchiveWriter, manifest: ExportManifes
     `As of: ${manifest.as_of} (UTC)`,
     `Complete: ${manifest.complete ? 'yes' : `no, ${manifest.omissions} item(s) could not be included (see below and omissions.jsonl)`}`,
     `Attachment files included: ${filesIncluded}`,
+    `Documents as Markdown: ${documentsWritten}, one file per document in the documents folder`,
     `Workspace key: ${manifest.workspace_key === 'not_supplied' ? 'not supplied' : 'supplied, but this version does not decrypt'}; encrypted private assistant conversations are listed without their text.`,
     ...(manifest.attachments.single_workspace_declared ? [] : [ATTACHMENTS_NOT_COPIED]),
     `Database schema read: ${manifest.database_schema}`,
@@ -81,7 +89,8 @@ export async function writeReadme(writer: ArchiveWriter, manifest: ExportManifes
   await writer.writeText('README.html', page(`Export of ${manifest.workspace.name}`, `<h1>Export of ${escapeHtml(manifest.workspace.name)}</h1>
 <p>${escapeHtml(scopeSentence(manifest, memberName))}<br>As of ${escapeHtml(manifest.as_of)} (UTC).
 ${manifest.complete ? 'Everything in scope is included.' : `<strong>${manifest.omissions} item(s) could not be included</strong>; see below.`}</p>
-<p><a href="conversations/index.html">Read the conversations</a> · ${filesIncluded} attachment files are in the <code>attachments</code> folder.</p>
+<p><a href="conversations/index.html">Read the conversations</a> · ${filesIncluded} attachment files are in the <code>attachments</code> folder
+· ${documentsWritten} documents are in the <code>documents</code> folder as Markdown.</p>
 ${manifest.attachments.single_workspace_declared ? '' : `<p><strong>${escapeHtml(ATTACHMENTS_NOT_COPIED)}</strong></p>`}
 <h2>What is in it</h2><table><tr><th>Kind</th><th>Count</th><th>File</th></tr>${counts.map(([label, records, path]) =>
   `<tr><td>${escapeHtml(label)}</td><td>${records}</td><td><a href="${href(path, 0)}">${escapeHtml(path)}</a></td></tr>`).join('')}</table>
@@ -97,6 +106,52 @@ ${manifest.attachments.single_workspace_declared ? '' : `<p><strong>${escapeHtml
     'If this folder holds only this file, the archive contains no mail.',
     '',
   ].join('\n'));
+}
+
+/**
+ * documents/<id>.md. An id that isn't a plain name, or whose file name the
+ * archive refuses (a name Windows reserves, such as `con.md` or `COM1.md`;
+ * assertArchivePath), is hashed instead (`h.`, which no plain id can start
+ * with), so one odd id never stops the export.
+ */
+export function documentMarkdownPath(id: string): string {
+  const plain = `documents/${id}.md`;
+  if (/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    try {
+      assertArchivePath(plain);
+      return plain;
+    } catch {
+      // A reserved name: hashed below.
+    }
+  }
+  return `documents/h.${createHash('sha256').update(id).digest('hex')}.md`;
+}
+
+type DocumentMarkdownRow = { id: string; title: string; content_json: Parameters<typeof jsonToMarkdown>[0] };
+
+/**
+ * documents/<id>.md for every exported document, read from the snapshot
+ * BODY_FETCH_LIMIT rows at a time: its title as the first heading, then its content as Markdown
+ * (jsonToMarkdown, @deft/doc-schema). An image of a Deft file is written as
+ * `deft-file:<file id>`, which files.jsonl lists. A document whose content
+ * can't be written as Markdown is listed in omissions.jsonl; its JSON is in
+ * data/documents.jsonl all the same.
+ */
+export async function writeDocumentMarkdown(snapshot: Snapshot, writer: ArchiveWriter, ctx: ExportContext): Promise<number> {
+  let written = 0;
+  for await (const row of snapshot.rows<DocumentMarkdownRow>(documentMarkdownQuery(ctx), { fetchLimit: BODY_FETCH_LIMIT })) {
+    let body: string;
+    try {
+      body = jsonToMarkdown(row.content_json);
+    } catch {
+      await writer.omit({ kind: 'document', id: row.id, reason: 'Its content could not be written as Markdown; it is in data/documents.jsonl as JSON.' });
+      continue;
+    }
+    const title = row.title.replace(/\s+/g, ' ').trim();
+    await writer.writeText(documentMarkdownPath(row.id), `${[title ? `# ${title}` : '', body].filter(Boolean).join('\n\n')}\n`);
+    written += 1;
+  }
+  return written;
 }
 
 /** One row per message, or a single row with a null id for a space with none. */

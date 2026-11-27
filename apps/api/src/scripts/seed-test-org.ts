@@ -11,7 +11,7 @@
  *   - 1 project "Deft v1" (DEFT prefix) with ~20 tasks across all statuses
  *   - 6 wiki pages (decisions, preferences, entities)
  *   - 3 calendar events
- *   - 2 personal notes for the admin
+ *   - 2 personal notes for the admin (documents in their My drive, F15)
  *
  * Idempotent-ish: checks for existing seed users by email and skips creating
  * them again, but message / task / wiki seeding always appends. Run once.
@@ -269,9 +269,34 @@ const SEED_WIKI: SeedWiki[] = [
 
 // ─── Seed runner ──────────────────────────────────────────────────────
 
-async function main() {
+/** A personal note to seed: a document since notes became documents (F15). */
+type SeedNoteDocument = { orgId: string; userId: string; title: string; icon: string; content: string };
+
+/**
+ * Notes are documents (spec 5.12): each is created in its author's My drive,
+ * where a private note moves, through the documents library
+ * (lib/legacy-notes.ts), after the seed's transaction has committed.
+ */
+async function seedNoteDocuments(notes: SeedNoteDocument[]): Promise<void> {
+  if (notes.length === 0) return;
+  const { createNoteDocument, noteContentJson } = await import('../lib/legacy-notes.js');
+  const { closeDb } = await import('../lib/db.js');
+  try {
+    for (const note of notes) {
+      await createNoteDocument({
+        orgId: note.orgId, userId: note.userId, title: note.title, icon: note.icon, json: noteContentJson(note.content), visibility: 'private',
+      });
+    }
+    console.log(`  notes seeded (documents): ${notes.length}`);
+  } finally {
+    await closeDb();
+  }
+}
+
+async function main(): Promise<SeedNoteDocument[]> {
   console.log('Seeding trusted-tester org with vibrant content…');
   const client = await pool.connect();
+  const noteDocuments: SeedNoteDocument[] = [];
   try {
     await client.query('BEGIN');
 
@@ -512,14 +537,8 @@ async function main() {
           '<h1>Feedback capture</h1><p>Loop with each tester via DM. Friday summary goes to #launch.</p><h2>Questions to ask</h2><ul><li>What was the first thing that felt broken?</li><li>What felt magical (even if unfinished)?</li><li>What did they reach for that wasn\'t there?</li></ul>',
       },
     ];
-    for (const n of notes) {
-      await client.query(
-        `insert into notes (id, org_id, user_id, title, content, icon, created_at, updated_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $7)`,
-        [randomUUID(), orgId, adminId, n.title, n.content, n.icon, hoursAgo(3)],
-      );
-    }
-    console.log(`  notes seeded: ${notes.length}`);
+    // Created as documents once this transaction commits (seedNoteDocuments).
+    for (const n of notes) noteDocuments.push({ orgId, userId: adminId, title: n.title, icon: n.icon, content: n.content });
 
     // 8. Calendar events (via events table with source='native')
     const upcomingEvents = [
@@ -578,9 +597,10 @@ async function main() {
     client.release();
     await pool.end();
   }
+  return noteDocuments;
 }
 
-main().catch((e) => {
+main().then(seedNoteDocuments).catch((e) => {
   console.error(e);
   process.exit(1);
 });

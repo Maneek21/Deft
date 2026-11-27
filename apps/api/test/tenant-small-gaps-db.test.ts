@@ -32,6 +32,9 @@ const FOLDER_CALLER_B = `s4-folder-caller-b-${stamp}`;
 const FOLDER_FOREIGN_B = `s4-folder-foreign-b-${stamp}`;
 const MISSING = `s4-missing-${stamp}`;
 const NOTE_OWN_A = `s4-note-own-a-${stamp}`;
+// The notes move (F14) moved NOTE_OWN_A into CALLER's My drive in org A (F15: notes are documents).
+const DRIVE_OWN_A = `s4-drive-own-a-${stamp}`;
+const DOC_OWN_A = `s4-doc-own-a-${stamp}`;
 
 const SPACE_OWN_A = `s4-space-own-a-${stamp}`;
 const SPACE_PRIV_A = `s4-space-priv-a-${stamp}`;
@@ -87,6 +90,14 @@ before(async () => {
       `INSERT INTO notes (id, org_id, user_id, title, created_at, updated_at) VALUES ($1, $2, $3, 's4 own note', NOW(), NOW())`,
       [NOTE_OWN_A, ORG_A, CALLER],
     );
+    await c.query(`INSERT INTO drives (id, org_id, name, kind, owner_user_id, created_by) VALUES ($1, $2, 'My drive', 'personal', $3, $3)`,
+      [DRIVE_OWN_A, ORG_A, CALLER]);
+    await c.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role, added_by)
+      VALUES (gen_random_uuid()::text, $1, $2, 'user', $3, 'full', $3)`, [ORG_A, DRIVE_OWN_A, CALLER]);
+    await c.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, created_by)
+      VALUES ($1, $2, $3, 's4 own note', '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb, $4)`, [DOC_OWN_A, ORG_A, DRIVE_OWN_A, CALLER]);
+    await c.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+      VALUES (gen_random_uuid()::text, $1, 'note', $2, 'document', $3)`, [ORG_A, NOTE_OWN_A, DOC_OWN_A]);
 
     for (const [space, org, creator, members] of [
       [SPACE_OWN_A, ORG_A, CALLER, [CALLER, OTHER]],
@@ -159,6 +170,9 @@ after(async () => {
     await q(`DELETE FROM tasks WHERE org_id = ANY($1)`, [[ORG_A, ORG_B]]);
     await q(`DELETE FROM projects WHERE org_id = ANY($1)`, [[ORG_A, ORG_B]]);
     await q(`DELETE FROM standups WHERE org_id = ANY($1)`, [[ORG_A, ORG_B]]);
+    for (const table of ['note_document_map', 'document_shares', 'documents', 'drive_members', 'drives']) {
+      await q(`DELETE FROM ${table} WHERE org_id = ANY($1)`, [[ORG_A, ORG_B]]);
+    }
     await q(`DELETE FROM note_shares WHERE note_id IN (SELECT id FROM notes WHERE user_id = ANY($1))`, [USERS]);
     await q(`DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE user_id = ANY($1))`, [USERS]);
     await q(`DELETE FROM notes WHERE user_id = ANY($1)`, [USERS]);
@@ -211,79 +225,75 @@ function assertSameAsMissing(probe: { status: number; json: unknown; text: strin
   assert.ok(!probe.text.includes(SECRET), `${label}: leaked foreign data`);
 }
 
-test('S4-a: folder create refuses a parent folder the caller does not own in the active org', async () => {
-  const missing = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 child', parent_folder_id: MISSING });
-  for (const parent of [FOLDER_OTHER_A, FOLDER_CALLER_B, FOLDER_FOREIGN_B]) {
-    const res = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 child', parent_folder_id: parent });
-    assertSameAsMissing(res, missing, `create under ${parent}`);
+// S4-a, S4-b and S4-c guarded note and folder writes. Since notes became
+// documents (F15) every one of them answers 410 NOTES_MOVED and writes
+// nothing, so a foreign or missing id still tells nothing: the answer names a
+// document only for a note whose document the caller can open now.
+const NOTES_MOVED = { error: 'Notes are documents now. Open it in Drive.', code: 'NOTES_MOVED' };
+
+test('S4-a: folder writes answer 410 NOTES_MOVED and change no folder, in any org', async () => {
+  for (const parent of [MISSING, FOLDER_OTHER_A, FOLDER_CALLER_B, FOLDER_FOREIGN_B, FOLDER_OWN_A]) {
+    const created = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 child', parent_folder_id: parent });
+    assert.equal(created.status, 410, created.text);
+    assert.deepEqual(created.json, NOTES_MOVED);
+    const moved = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/folders/${FOLDER_OWN_A}`, { parent_folder_id: parent });
+    assert.equal(moved.status, 410, moved.text);
+    assert.deepEqual(moved.json, NOTES_MOVED);
   }
+  assert.equal((await call('daily-notes', callerA, 'DELETE', `/api/daily-notes/folders/${FOLDER_OWN_A}`)).status, 410);
   assert.equal(await scalar(`SELECT count(*)::int AS v FROM note_folders WHERE user_id = $1 AND name = 's4 child'`, [CALLER]), 0);
-
-  const ok = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 owned child', parent_folder_id: FOLDER_OWN_A });
-  assert.equal(ok.status, 201, ok.text);
-  const okRoot = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 owned root' });
-  assert.equal(okRoot.status, 201, okRoot.text);
-});
-
-test('S4-a: folder reparenting refuses a parent folder the caller does not own in the active org', async () => {
-  const missing = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/folders/${MISSING}`, { name: 'x' });
-  for (const parent of [FOLDER_OTHER_A, FOLDER_CALLER_B, FOLDER_FOREIGN_B, MISSING]) {
-    const res = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/folders/${FOLDER_OWN_A}`, { parent_folder_id: parent });
-    assertSameAsMissing(res, missing, `reparent under ${parent}`);
-  }
-  const self = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/folders/${FOLDER_OWN_A}`, { parent_folder_id: FOLDER_OWN_A });
-  assert.ok(self.status >= 400, `self-parent must be refused: ${self.text}`);
   assert.equal(await scalar(`SELECT parent_folder_id AS v FROM note_folders WHERE id = $1`, [FOLDER_OWN_A]), null);
-
-  const sibling = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 sibling' });
-  const ok = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/folders/${(sibling.json as { id: string }).id}`, { parent_folder_id: FOLDER_OWN_A });
-  assert.equal(ok.status, 200, ok.text);
-  const unset = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/folders/${(sibling.json as { id: string }).id}`, { parent_folder_id: null });
-  assert.equal(unset.status, 200, unset.text);
+  assert.equal(await scalar(`SELECT is_deleted AS v FROM note_folders WHERE id = $1`, [FOLDER_OWN_A]), false);
+  // The caller's own folders are still listed, for old links.
+  const list = await call('daily-notes', callerA, 'GET', '/api/daily-notes/folders');
+  assert.deepEqual((list.json as { folders: Array<{ id: string }> }).folders.map((f) => f.id), [FOLDER_OWN_A]);
 });
 
-test('S4-b: note create and update refuse a folder the caller does not own in the active org', async () => {
-  const missingCreate = await call('daily-notes', callerA, 'POST', '/api/daily-notes', { title: 's4 foldered', folder_id: MISSING });
-  for (const folder of [FOLDER_OTHER_A, FOLDER_CALLER_B, FOLDER_FOREIGN_B]) {
-    const res = await call('daily-notes', callerA, 'POST', '/api/daily-notes', { title: 's4 foldered', folder_id: folder });
-    assertSameAsMissing(res, missingCreate, `create note in ${folder}`);
+test('S4-b: note create and update answer 410 NOTES_MOVED and write no note', async () => {
+  for (const folder of [MISSING, FOLDER_OTHER_A, FOLDER_CALLER_B, FOLDER_OWN_A]) {
+    const created = await call('daily-notes', callerA, 'POST', '/api/daily-notes', { title: 's4 foldered', folder_id: folder });
+    assert.equal(created.status, 410, created.text);
+    assert.deepEqual(created.json, NOTES_MOVED);
   }
   assert.equal(await scalar(`SELECT count(*)::int AS v FROM notes WHERE user_id = $1 AND title = 's4 foldered'`, [CALLER]), 0);
 
-  const missingUpdate = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/${NOTE_OWN_A}`, { folder_id: MISSING });
-  for (const folder of [FOLDER_OTHER_A, FOLDER_CALLER_B, FOLDER_FOREIGN_B]) {
-    const res = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/${NOTE_OWN_A}`, { folder_id: folder });
-    assertSameAsMissing(res, missingUpdate, `move note to ${folder}`);
-  }
+  const own = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/${NOTE_OWN_A}`, { folder_id: FOLDER_OWN_A });
+  assert.equal(own.status, 410, own.text);
+  assert.deepEqual(own.json, { ...NOTES_MOVED, document_id: DOC_OWN_A });
   assert.equal(await scalar(`SELECT folder_id AS v FROM notes WHERE id = $1`, [NOTE_OWN_A]), null);
-
-  const created = await call('daily-notes', callerA, 'POST', '/api/daily-notes', { title: 's4 own foldered', folder_id: FOLDER_OWN_A });
-  assert.equal(created.status, 201, created.text);
-  const moved = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/${NOTE_OWN_A}`, { folder_id: FOLDER_OWN_A });
-  assert.equal(moved.status, 200, moved.text);
-  const unfiled = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/${NOTE_OWN_A}`, { folder_id: null });
-  assert.equal(unfiled.status, 200, unfiled.text);
+  // From org B, or as someone who can't open its document, the note answers like a missing one.
+  const missing = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/${MISSING}`, { folder_id: null });
+  assert.equal(missing.status, 410, missing.text);
+  assert.deepEqual(missing.json, NOTES_MOVED);
+  const fromB = await call('daily-notes', callerB, 'PATCH', `/api/daily-notes/${NOTE_OWN_A}`, { folder_id: null });
+  assertSameAsMissing(fromB, missing, 'a note of the other org');
+  const other = await call('daily-notes', { id: OTHER, org: ORG_A }, 'PATCH', `/api/daily-notes/${NOTE_OWN_A}`, { folder_id: null });
+  assertSameAsMissing(other, missing, 'a note whose document the caller cannot open');
 });
 
-test('S4-c: note sharing requires an active member of the active org and the listing hides strangers', async () => {
-  const missing = await call('daily-notes', callerA, 'POST', `/api/daily-notes/${NOTE_OWN_A}/shares`, { user_id: MISSING });
-  const foreign = await call('daily-notes', callerA, 'POST', `/api/daily-notes/${NOTE_OWN_A}/shares`, { user_id: FOREIGN });
-  assertSameAsMissing(foreign, missing, 'share with a foreign user');
-  assert.equal(await scalar(`SELECT count(*)::int AS v FROM note_shares WHERE note_id = $1 AND shared_with_user_id = $2`, [NOTE_OWN_A, FOREIGN]), 0);
+test('S4-c: note sharing answers 410 NOTES_MOVED, and the old share listing hides strangers', async () => {
+  for (const userId of [MISSING, FOREIGN, OTHER]) {
+    const shared = await call('daily-notes', callerA, 'POST', `/api/daily-notes/${NOTE_OWN_A}/shares`, { user_id: userId });
+    assert.equal(shared.status, 410, shared.text);
+    assert.deepEqual(shared.json, { ...NOTES_MOVED, document_id: DOC_OWN_A });
+  }
+  assert.equal(await scalar(`SELECT count(*)::int AS v FROM note_shares WHERE note_id = $1`, [NOTE_OWN_A]), 0);
 
-  const ok = await call('daily-notes', callerA, 'POST', `/api/daily-notes/${NOTE_OWN_A}/shares`, { user_id: OTHER });
-  assert.equal(ok.status, 201, ok.text);
-
-  // A share row for a stranger that predates the check must not expose that user's name or email.
-  await withClient((c) => c.query(
-    `INSERT INTO note_shares (id, note_id, shared_with_user_id, permission, created_at) VALUES (gen_random_uuid()::text, $1, $2, 'view', NOW())`,
-    [NOTE_OWN_A, FOREIGN],
-  ));
+  // Share rows from before the move, one to a stranger, are never listed: sharing lives on the document (F15
+  // fix round 1), so the old listing points its owner there and names nobody.
+  await withClient(async (c) => {
+    for (const userId of [OTHER, FOREIGN]) {
+      await c.query(`INSERT INTO note_shares (id, note_id, shared_with_user_id, permission, created_at)
+        VALUES (gen_random_uuid()::text, $1, $2, 'view', NOW())`, [NOTE_OWN_A, userId]);
+    }
+  });
   const list = await call('daily-notes', callerA, 'GET', `/api/daily-notes/${NOTE_OWN_A}/shares`);
-  assert.equal(list.status, 200, list.text);
-  const shares = (list.json as { shares: Array<{ user_id: string }> }).shares;
-  assert.deepEqual(shares.map((s) => s.user_id), [OTHER]);
-  assert.ok(!list.text.includes(email(FOREIGN)), 'listing leaked a stranger email');
+  assert.equal(list.status, 410, list.text);
+  assert.deepEqual(list.json, { ...NOTES_MOVED, document_id: DOC_OWN_A });
+  assert.ok(!list.text.includes(email(FOREIGN)) && !list.text.includes(email(OTHER)), 'listing named a person');
+  // Someone who can't open its document, or from org B, finds nothing.
+  assert.equal((await call('daily-notes', { id: OTHER, org: ORG_A }, 'GET', `/api/daily-notes/${NOTE_OWN_A}/shares`)).status, 404);
+  assert.equal((await call('daily-notes', callerB, 'GET', `/api/daily-notes/${NOTE_OWN_A}/shares`)).status, 404);
 });
 
 test('S4-d: mark-unread checks membership before looking at the message', async () => {
@@ -362,30 +372,11 @@ test('S4-f: dashboard recent activity hides restricted tasks and the notificatio
   assert.equal((inB.json as { unread_notifications: number }).unread_notifications, 1);
 });
 
-test('S4-a/c review: parent ids must be strings, deleting a folder detaches its children, removed members leave the share list', async () => {
-  const arr = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 array parent', parent_folder_id: [FOLDER_OWN_A] });
-  assert.equal(arr.status, 400, arr.text);
-  assert.equal(await scalar(`SELECT count(*)::int AS v FROM note_folders WHERE user_id = $1 AND name = 's4 array parent'`, [CALLER]), 0);
-
-  const parent = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 doomed parent' });
-  const parentId = (parent.json as { id: string }).id;
-  const child = await call('daily-notes', callerA, 'POST', '/api/daily-notes/folders', { name: 's4 orphan', parent_folder_id: parentId });
-  const childId = (child.json as { id: string }).id;
-  const arrPatch = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/folders/${childId}`, { parent_folder_id: [FOLDER_OWN_A] });
-  assert.equal(arrPatch.status, 400, arrPatch.text);
-  assert.equal(await scalar(`SELECT parent_folder_id AS v FROM note_folders WHERE id = $1`, [childId]), parentId);
-
-  const del = await call('daily-notes', callerA, 'DELETE', `/api/daily-notes/folders/${parentId}`);
-  assert.equal(del.status, 200, del.text);
-  assert.equal(await scalar(`SELECT parent_folder_id AS v FROM note_folders WHERE id = $1`, [childId]), null);
-  const deadParent = await call('daily-notes', callerA, 'PATCH', `/api/daily-notes/folders/${childId}`, { parent_folder_id: parentId });
-  assert.equal(deadParent.status, 404, deadParent.text);
-
-  await call('daily-notes', callerA, 'POST', `/api/daily-notes/${NOTE_OWN_A}/shares`, { user_id: OTHER });
+test('S4-a/c review: removed members leave the old share list', async () => {
   await withClient((c) => c.query(`UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2`, [ORG_A, OTHER]));
   try {
     const list = await call('daily-notes', callerA, 'GET', `/api/daily-notes/${NOTE_OWN_A}/shares`);
-    assert.equal(list.status, 200, list.text);
+    assert.equal(list.status, 410, list.text);
     assert.ok(!list.text.includes(email(OTHER)), 'listing shows a removed member');
   } finally {
     await withClient((c) => c.query(`UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`, [ORG_A, OTHER]));

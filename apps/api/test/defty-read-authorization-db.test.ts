@@ -12,6 +12,7 @@ import {
   actionReceipts, agentActions, agentEmployees, agentMemory, canvases, mcpConnections, mcpToolOverrides, notes, orgMembers, orgs, spaceMembers,
   spaces, users, wikiPages,
 } from '@deft/db/schema';
+import { documentShares, documents, driveMembers, drives, noteDocumentMap } from '@deft/db/documents';
 import { db, closeDb } from '../src/lib/db.js';
 import { env } from '../src/lib/env.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
@@ -45,6 +46,23 @@ const wildCanary = `zqwildcanary${run}`;
 
 function text(value: unknown): string {
   return JSON.stringify(value) ?? '';
+}
+
+/**
+ * A chat's canvas as the notes move (F14) leaves it: the old row and its
+ * document (Alice's), shared with the chat, mapped. read_canvas reads the
+ * document since F15.
+ */
+async function movedCanvas(spaceId: string, title: string, canary: string): Promise<void> {
+  const canvasId = randomUUID(), driveId = randomUUID(), documentId = randomUUID();
+  const content = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: canary }] }] };
+  await db.insert(canvases).values({ id: canvasId, org_id: orgA, space_id: spaceId, title, content }).onConflictDoNothing();
+  await db.insert(drives).values({ id: driveId, org_id: orgA, name: 'Canvases', kind: 'private', created_by: alice });
+  await db.insert(driveMembers).values({ org_id: orgA, drive_id: driveId, principal_type: 'user', principal_id: alice, role: 'full' });
+  await db.insert(documents).values({ id: documentId, org_id: orgA, drive_id: driveId, title, content_json: content, content_text: canary, created_by: alice });
+  await db.insert(documentShares).values({ org_id: orgA, document_id: documentId, principal_type: 'space', principal_id: spaceId, role: 'edit' });
+  await db.insert(noteDocumentMap).values({ org_id: orgA, source_type: 'canvas', source_id: canvasId, target_type: 'document', target_id: documentId })
+    .onConflictDoNothing();
 }
 
 describe('W1-b Defty read authorization', { skip: !canRun }, () => {
@@ -82,12 +100,37 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
       { org_id: orgA, scope: 'space', space_id: privateSpace, type: 'decision', title: `Private decision ${run}`,
         slug: `w1b-private-decision-${run}`, content: `We decided ${decisionCanary}.`, user_id: alice },
     ]);
-    await db.insert(canvases).values({ org_id: orgA, space_id: privateSpace, title: 'Private canvas',
+    const canvasId = randomUUID();
+    await db.insert(canvases).values({ id: canvasId, org_id: orgA, space_id: privateSpace, title: 'Private canvas',
       content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: canvasCanary }] }] } });
     await db.insert(notes).values([
       { id: privateNoteId, org_id: orgA, user_id: alice, title: `Alice private ${run}`, content: noteCanary, visibility: 'private' },
       { id: spaceNoteId, org_id: orgA, user_id: alice, title: `Alice space note ${run}`, content: spaceNoteCanary,
         visibility: 'space', visibility_space_id: privateSpace },
+    ]);
+    // The notes move (F14): each note and the canvas is a document in Alice's My drive (a note's document here
+    // keeps its note's id), shared with the private room as the move shares them. Readers read the documents (F15).
+    const myDrive = randomUUID();
+    const paragraph = (text: string) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+    await db.insert(drives).values({ id: myDrive, org_id: orgA, name: 'My drive', kind: 'personal', owner_user_id: alice, created_by: alice });
+    await db.insert(driveMembers).values({ org_id: orgA, drive_id: myDrive, principal_type: 'user', principal_id: alice, role: 'full' });
+    const canvasDocument = randomUUID();
+    await db.insert(documents).values([
+      { id: privateNoteId, org_id: orgA, drive_id: myDrive, title: `Alice private ${run}`, content_json: paragraph(noteCanary),
+        content_text: noteCanary, created_by: alice },
+      { id: spaceNoteId, org_id: orgA, drive_id: myDrive, title: `Alice space note ${run}`, content_json: paragraph(spaceNoteCanary),
+        content_text: spaceNoteCanary, created_by: alice },
+      { id: canvasDocument, org_id: orgA, drive_id: myDrive, title: 'Private canvas', content_json: paragraph(canvasCanary),
+        content_text: canvasCanary, created_by: alice },
+    ]);
+    await db.insert(documentShares).values([
+      { org_id: orgA, document_id: spaceNoteId, principal_type: 'space', principal_id: privateSpace, role: 'view' },
+      { org_id: orgA, document_id: canvasDocument, principal_type: 'space', principal_id: privateSpace, role: 'edit' },
+    ]);
+    await db.insert(noteDocumentMap).values([
+      { org_id: orgA, source_type: 'note', source_id: privateNoteId, target_type: 'document', target_id: privateNoteId },
+      { org_id: orgA, source_type: 'note', source_id: spaceNoteId, target_type: 'document', target_id: spaceNoteId },
+      { org_id: orgA, source_type: 'canvas', source_id: canvasId, target_type: 'document', target_id: canvasDocument },
     ]);
   });
 
@@ -96,6 +139,11 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
     await db.delete(agentActions).where(inArray(agentActions.org_id, [orgA, orgB]));
     await db.delete(agentEmployees).where(eq(agentEmployees.id, employeeId));
     await db.delete(agentMemory).where(inArray(agentMemory.org_id, [orgA, orgB]));
+    await db.delete(noteDocumentMap).where(inArray(noteDocumentMap.org_id, [orgA, orgB]));
+    await db.delete(documentShares).where(inArray(documentShares.org_id, [orgA, orgB]));
+    await db.delete(documents).where(inArray(documents.org_id, [orgA, orgB]));
+    await db.delete(driveMembers).where(inArray(driveMembers.org_id, [orgA, orgB]));
+    await db.delete(drives).where(inArray(drives.org_id, [orgA, orgB]));
     await db.delete(notes).where(inArray(notes.org_id, [orgA, orgB]));
     await db.delete(canvases).where(inArray(canvases.org_id, [orgA, orgB]));
     await db.delete(wikiPages).where(inArray(wikiPages.org_id, [orgA, orgB]));
@@ -498,8 +546,7 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
     ];
     await db.insert(spaces).values(rooms.map((room) => ({ id: room.id, org_id: orgA, name: room.name, type: 'private' as const, created_by: alice })));
     await db.insert(spaceMembers).values(rooms.map((room) => ({ space_id: room.id, user_id: alice })));
-    await db.insert(canvases).values(rooms.map((room) => ({ org_id: orgA, space_id: room.id, title: 'Norm canvas',
-      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: room.canary }] }] } })));
+    for (const room of rooms) await movedCanvas(room.id, 'Norm canvas', room.canary);
     try {
       for (const room of rooms) {
         const viaDispatcher = await executeToolCall('read_canvas', { space_name: room.name }, orgA, alice);
@@ -538,8 +585,7 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
     await db.insert(spaceMembers).values([...plain, exact].map((room) => ({ space_id: room.id, user_id: alice })));
     // The canary must not occur in any room name, or a wrong room would match it.
     const canary = `exact-canvas-${randomUUID()}`;
-    await db.insert(canvases).values({ org_id: orgA, space_id: exact.id, title: 'Crowd canvas',
-      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: canary }] }] } });
+    await movedCanvas(exact.id, 'Crowd canvas', canary);
     try {
       const one = await executeToolCall('read_canvas', { space_name: exact.name }, orgA, alice);
       assert.equal((one.result as any).space, exact.name, 'the exactly named room must resolve despite 30 fallback-name rooms');
@@ -560,12 +606,8 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
   });
 
   test('R5: the read_canvas action handler uses the same literal, unambiguous room resolution', async () => {
-    await db.insert(canvases).values({ org_id: orgA, space_id: wildSpace, title: 'Wild canvas',
-      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: wildCanary }] }] } })
-      .onConflictDoNothing();
-    await db.insert(canvases).values({ org_id: orgA, space_id: dupSpaceA, title: 'Dup canvas',
-      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: dupCanary }] }] } })
-      .onConflictDoNothing();
+    await movedCanvas(wildSpace, 'Wild canvas', wildCanary);
+    await movedCanvas(dupSpaceA, 'Dup canvas', dupCanary);
     for (const pattern of [wildName.replace('x', '_'), `%${run}%`, `%ops${run}`]) {
       const viaAction = await executeActionDirect('read_canvas', { space_name: pattern }, orgA, alice, null, 'auto');
       assert.equal(viaAction.success, false, pattern);

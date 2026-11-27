@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
-import { eq, and, ilike, desc, or, gte, lte, isNotNull } from 'drizzle-orm';
+import { eq, and, ilike, desc, or, gte, lte, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tasks, projects, spaces, users, messages, orgMembers, tags, notes, spaceMembers } from '@deft/db/schema';
+import { tasks, projects, spaces, users, messages, orgMembers, tags, spaceMembers } from '@deft/db/schema';
+import { documents } from '@deft/db/documents';
 import { retrieveContext, type ContextResult } from '../lib/retrieve-context.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
-import { visibleNoteCondition } from '../lib/note-visibility.js';
+import { visibleDocumentCondition } from '../lib/document-access.js';
 import { visibleLiveMemberForOrg } from '../lib/member-visibility.js';
 import { emailFor, peopleViewer, personVisibleSql } from '../lib/people-visibility.js';
 import { unjoinedPublicSpaceReadableSql } from '../lib/space-membership.js';
@@ -21,7 +22,7 @@ searchRoutes.get('/', async (c) => {
 
     if (q.length < 1) {
       return c.json({
-        spaces: [], tasks: [], people: [], messages: [], tags: [], notes: [],
+        spaces: [], tasks: [], people: [], messages: [], tags: [], documents: [], notes: [],
         wiki: [], privateNotes: [], decisions: [], modules: [],
       });
     }
@@ -137,17 +138,19 @@ searchRoutes.get('/', async (c) => {
       .where(and(eq(tags.org_id, user.org_id), ilike(tags.name, `%${tagQuery}%`)))
       .limit(5);
 
-    // Search notes: the one note rule (lib/note-visibility.ts).
-    const noteResults = await db.select({
-      id: notes.id, title: notes.title, icon: notes.icon, updated_at: notes.updated_at,
-    }).from(notes)
+    // Documents (a temporary group until H2's search, F15): full-text search
+    // over search_vector, as the access check lets the caller open them
+    // (lib/document-access.ts), documents shared only with them included.
+    // `notes` stays, empty, for clients that still read it.
+    const documentResults = await db.select({
+      id: documents.id, title: documents.title, icon: documents.icon, drive_id: documents.drive_id, updated_at: documents.updated_at,
+    }).from(documents)
       .where(and(
-        eq(notes.org_id, user.org_id),
-        eq(notes.is_deleted, false),
-        or(ilike(notes.title, pattern), ilike(notes.content, pattern)),
-        visibleNoteCondition(user.id),
+        eq(documents.org_id, user.org_id),
+        visibleDocumentCondition(user.id, user.org_id),
+        sql`${documents.search_vector} @@ websearch_to_tsquery('simple', ${q})`,
       ))
-      .orderBy(desc(notes.updated_at))
+      .orderBy(sql`ts_rank(${documents.search_vector}, websearch_to_tsquery('simple', ${q})) DESC`)
       .limit(5);
 
     // ── Knowledge groups: wiki, notes (private), decisions ─────────────────────
@@ -174,13 +177,15 @@ searchRoutes.get('/', async (c) => {
         source_id: r.source_id,
       }));
 
+    // The notes group of Knowledge reads documents since the move (F15).
     const notesGroup = knowledgeResults
-      .filter((r) => r.source_type === 'note')
+      .filter((r) => r.source_type === 'document')
       .map((r) => ({
         id: r.source_id,
         title: r.title,
         summary: r.content ? r.content.slice(0, 120) : null,
         source_id: r.source_id,
+        url: `/d/${r.source_id}`,
       }));
 
     const decisionsGroup = knowledgeResults
@@ -222,7 +227,8 @@ searchRoutes.get('/', async (c) => {
       people: peopleResults,
       messages: messageResults,
       tags: tagResults,
-      notes: noteResults,
+      documents: documentResults.map((row) => ({ ...row, url: `/d/${row.id}` })),
+      notes: [],
       wiki: wikiGroup,
       privateNotes: notesGroup,
       decisions: decisionsGroup,

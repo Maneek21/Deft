@@ -73,14 +73,12 @@ test('native writes, agent replies and failed writes never log customer content'
     const task = await send('/api/tasks', { project_id: project, title: markers.title, description: markers.description });
     assert.equal(task.status, 201, await task.clone().text());
     assert.ok((await task.text()).includes(markers.description));
+    // Notes and canvases are documents since F15: their old writes answer 410, and still log nothing they were sent.
     const note = await send('/api/notes', { title: markers.note, content: markers.note });
-    assert.equal(note.status, 201, await note.clone().text());
-    assert.ok((await note.text()).includes(markers.note));
-    // GET creates the initial canvas; PATCH exercises the actual content write.
-    assert.equal((await app.request(`/api/spaces/${space}/canvas`)).status, 201);
+    assert.equal(note.status, 410, await note.clone().text());
+    assert.equal((await app.request(`/api/spaces/${space}/canvas`)).status, 404, 'reading a canvas creates none');
     const canvas = await send(`/api/spaces/${space}/canvas`, { content: markers.canvas, title: markers.canvas }, 'PATCH');
-    assert.equal(canvas.status, 200);
-    assert.ok((await canvas.text()).includes(markers.canvas));
+    assert.equal(canvas.status, 410);
 
     const mention = await send(`/api/messages/${space}`, { content: `@defty ${markers.prompt}` });
     assert.equal(mention.status, 201, await mention.clone().text());

@@ -1,208 +1,117 @@
 /**
- * Task 5.1 — notes cross-reference worker
+ * Task 5.1 — notes cross-reference worker, since notes became documents (F15)
  *
  * Covers:
- *   1. A note containing PREFIX-N creates a cross_references row with
- *      source_type='note' pointing at the task.
- *   2. Private source text is not copied into task comments.
- *   3. The handler is idempotent — same (note, task) pair does not
+ *   1. A queued job cannot write after its human actor is offboarded.
+ *   2. A private document containing PREFIX-N creates a cross_references row
+ *      with source_type='document', and copies no text into task comments.
+ *   3. The handler is idempotent — same (document, task) pair does not
  *      insert a second row or duplicate comment.
- *   4. A queued job cannot write after its human actor is offboarded.
+ *   4. A note job queued before the move reads the document the note moved
+ *      to, and records the reference from that document.
+ *   5. Only a document in an open drive leaves the org-wide task comment.
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import pg from 'pg';
+import { randomUUID } from 'node:crypto';
+import { closeDb } from '../src/lib/db.js';
+import { handleCrossReference } from '../src/workers/handlers/cross-reference.js';
+import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
+const skip = !safeTestDatabaseUrl();
+let fx: DrivesFixture;
+let user: string;
+let prefix: string;
+let projectId: string;
+let taskId: string;
+let documentId: string;
 
-const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
-const USER_ID = 'test-notes-xref-user';
-const USER_EMAIL = 'notes-xref@test.local';
-
-function randomLetters(n: number): string {
-  let s = '';
-  for (let i = 0; i < n; i++) s += String.fromCharCode(65 + Math.floor(Math.random() * 26));
-  return s;
-}
-
-let projectPrefix: string | null = null;
-let projectId: string | null = null;
-let taskId: string | null = null;
-let noteId: string | null = null;
-
-async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
-  const c = new pg.Client({ connectionString: DATABASE_URL });
-  await c.connect();
-  try { return await fn(c); } finally { await c.end(); }
-}
+const doc = (text: string) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+const job = (data: Record<string, unknown>) => handleCrossReference({ id: randomUUID(), name: 'cross-reference', data: { content: '', orgId: fx.orgId, userId: user, ...data } } as never);
+const refsFrom = async (sourceId: string) => (await fx.client.query(
+  `SELECT source_type, target_id, context FROM cross_references WHERE org_id = $1 AND source_id = $2`, [fx.orgId, sourceId])).rows;
+const comments = async () => (await fx.client.query('SELECT content FROM task_comments WHERE task_id = $1', [taskId])).rows;
 
 before(async () => {
-  projectPrefix = `NXREF${randomLetters(4)}`;
-  await withClient(async (c) => {
-    await c.query(
-      `INSERT INTO users (id, email, name, is_agent)
-       VALUES ($1, $2, 'Notes Xref User', false)
-       ON CONFLICT (id) DO NOTHING`,
-      [USER_ID, USER_EMAIL],
-    );
-    await c.query(
-      `INSERT INTO org_members (id, org_id, user_id, role, is_active)
-       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
-       ON CONFLICT (org_id, user_id) DO NOTHING`,
-      [ORG_ID, USER_ID],
-    );
-
-    const p = await c.query(
-      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
-       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, 0)
-       RETURNING id`,
-      [ORG_ID, `Notes Xref ${projectPrefix}`, projectPrefix, USER_ID],
-    );
-    projectId = p.rows[0].id as string;
-
-    const t = await c.query(
-      `INSERT INTO tasks (id, org_id, project_id, number, title, status, priority, created_by, is_deleted)
-       VALUES (gen_random_uuid()::text, $1, $2, 7, 'Cross-ref target', 'todo', 'p2', $3, false)
-       RETURNING id`,
-      [ORG_ID, projectId, USER_ID],
-    );
-    taskId = t.rows[0].id as string;
-
-    const n = await c.query(
-      `INSERT INTO notes (id, org_id, user_id, title, content, visibility, is_template, is_deleted, is_pinned)
-       VALUES (gen_random_uuid()::text, $1, $2, 'Design doc', $3, 'private', false, false, false)
-       RETURNING id`,
-      [ORG_ID, USER_ID, `<p>see ${projectPrefix}-7 for context</p>`],
-    );
-    noteId = n.rows[0].id as string;
-  });
-});
-
-test('cross-reference worker rejects a stale job after actor deactivation', async () => {
-  const { handleCrossReference } = await import('../src/workers/handlers/cross-reference.js');
-
-  await withClient(async (c) => {
-    await c.query(
-      `DELETE FROM cross_references WHERE source_type = 'note' AND source_id = $1`,
-      [noteId],
-    );
-    await c.query(
-      `UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2`,
-      [ORG_ID, USER_ID],
-    );
-  });
-
-  try {
-    await handleCrossReference({
-      id: 'test-job-stale-actor',
-      name: 'cross-reference',
-      data: {
-        sourceType: 'note',
-        sourceId: noteId!,
-        content: `<p>see ${projectPrefix}-7 after offboarding</p>`,
-        orgId: ORG_ID,
-        userId: USER_ID,
-      },
-    });
-
-    await withClient(async (c) => {
-      const refs = await c.query(
-        `SELECT id FROM cross_references WHERE source_type = 'note' AND source_id = $1`,
-        [noteId],
-      );
-      assert.equal(refs.rows.length, 0, 'offboarded actor must not create a cross-reference');
-    });
-  } finally {
-    await withClient(async (c) => {
-      await c.query(
-        `UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`,
-        [ORG_ID, USER_ID],
-      );
-    });
-  }
+  if (skip) return;
+  fx = await setupDrivesFixture('notes-xref');
+  user = fx.people.member;
+  prefix = `NX${randomUUID().replace(/[^a-f]/g, '').slice(0, 4).toUpperCase()}`;
+  projectId = randomUUID();
+  taskId = randomUUID();
+  await fx.client.query(`INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter) VALUES ($1, $2, $3, $4, $5, 0)`,
+    [projectId, fx.orgId, `Notes Xref ${prefix}`, prefix, user]);
+  await fx.client.query(`INSERT INTO tasks (id, org_id, project_id, number, title, status, priority, created_by)
+    VALUES ($1, $2, $3, 7, 'Cross-ref target', 'todo', 'p2', $4)`, [taskId, fx.orgId, projectId, user]);
+  const myDrive = await fx.insertDrive({ kind: 'personal', ownerUserId: user, name: 'My drive' });
+  documentId = await fx.insertDocument({ driveId: myDrive, title: 'Design doc', json: doc(`see ${prefix}-7 for context`) });
 });
 
 after(async () => {
-  await withClient(async (c) => {
-    if (taskId) {
-      await c.query(`DELETE FROM task_comments WHERE task_id = $1`, [taskId]);
-      await c.query(`DELETE FROM task_activity WHERE task_id = $1`, [taskId]);
-    }
-    if (noteId) {
-      await c.query(
-        `DELETE FROM cross_references WHERE source_type = 'note' AND source_id = $1`,
-        [noteId],
-      );
-      await c.query(`DELETE FROM notes WHERE id = $1`, [noteId]);
-    }
-    if (taskId) await c.query(`DELETE FROM tasks WHERE id = $1`, [taskId]);
-    if (projectId) await c.query(`DELETE FROM projects WHERE id = $1`, [projectId]);
-    await c.query(`DELETE FROM org_members WHERE user_id = $1`, [USER_ID]);
-    await c.query(`DELETE FROM users WHERE id = $1`, [USER_ID]);
-  });
+  if (skip) return;
+  if (fx) {
+    await fx.client.query('DELETE FROM cross_references WHERE org_id = $1', [fx.orgId]);
+    for (const table of ['task_comments', 'task_activity']) await fx.client.query(`DELETE FROM ${table} WHERE task_id = $1`, [taskId]);
+    await fx.client.query('DELETE FROM tasks WHERE id = $1', [taskId]);
+    await fx.client.query('DELETE FROM projects WHERE id = $1', [projectId]);
+    await fx.client.query('DELETE FROM notes WHERE org_id = $1', [fx.orgId]);
+    await fx.teardown();
+  }
+  await closeDb();
 });
 
-test('cross-reference worker links a private note without leaking its content', async () => {
-  const { handleCrossReference } = await import('../src/workers/handlers/cross-reference.js');
-
-  await handleCrossReference({
-    id: 'test-job-1',
-    name: 'cross-reference',
-    data: {
-      sourceType: 'note',
-      sourceId: noteId!,
-      content: `<p>see ${projectPrefix}-7 for context</p>`,
-      orgId: ORG_ID,
-      userId: USER_ID,
-    },
-  });
-
-  await withClient(async (c) => {
-    const refs = await c.query(
-      `SELECT source_type, source_id, target_type, target_id, context
-       FROM cross_references
-       WHERE source_type = 'note' AND source_id = $1 AND target_id = $2`,
-      [noteId, taskId],
-    );
-    assert.equal(refs.rows.length, 1, 'expected exactly 1 xref row');
-    assert.equal(refs.rows[0].target_type, 'task');
-    assert.equal(refs.rows[0].context, null, 'xref must not denormalize private note text');
-
-    const comments = await c.query(
-      `SELECT content FROM task_comments WHERE task_id = $1`,
-      [taskId],
-    );
-    assert.equal(comments.rows.length, 0, 'private note must not create a task-visible comment');
-  });
+test('cross-reference worker rejects a stale job after actor deactivation', { skip }, async () => {
+  await fx.client.query('UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2', [fx.orgId, user]);
+  try {
+    await job({ sourceType: 'document', sourceId: documentId });
+    assert.deepEqual(await refsFrom(documentId), [], 'offboarded actor must not create a cross-reference');
+  } finally {
+    await fx.client.query('UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2', [fx.orgId, user]);
+  }
 });
 
-test('cross-reference worker is idempotent — second call adds no new rows', async () => {
-  const { handleCrossReference } = await import('../src/workers/handlers/cross-reference.js');
+test('cross-reference worker links a private document without leaking its content', { skip }, async () => {
+  await job({ sourceType: 'document', sourceId: documentId });
+  assert.deepEqual(await refsFrom(documentId), [{ source_type: 'document', target_id: taskId, context: null }]);
+  assert.deepEqual(await comments(), [], 'a private document must not create a task-visible comment');
+});
 
-  await handleCrossReference({
-    id: 'test-job-2',
-    name: 'cross-reference',
-    data: {
-      sourceType: 'note',
-      sourceId: noteId!,
-      content: `<p>see ${projectPrefix}-7 again</p>`,
-      orgId: ORG_ID,
-      userId: USER_ID,
-    },
-  });
+test('cross-reference worker is idempotent — second call adds no new rows', { skip }, async () => {
+  await job({ sourceType: 'document', sourceId: documentId });
+  assert.equal((await refsFrom(documentId)).length, 1, 'xref should remain 1 after re-run');
+  assert.deepEqual(await comments(), []);
+});
 
-  await withClient(async (c) => {
-    const refs = await c.query(
-      `SELECT id FROM cross_references WHERE source_type='note' AND source_id=$1`,
-      [noteId],
-    );
-    assert.equal(refs.rows.length, 1, 'xref should remain 1 after re-run');
+test('a note job queued before the move reads the note\'s document and records the reference from it', { skip }, async () => {
+  const noteId = randomUUID();
+  const myDrive = (await fx.client.query(`SELECT drive_id FROM documents WHERE id = $1`, [documentId])).rows[0].drive_id;
+  const moved = await fx.insertDocument({ driveId: myDrive, title: 'Moved note', json: doc(`also ${prefix}-7`) });
+  // The old row says nothing about the task: the document is what is read.
+  await fx.client.query(`INSERT INTO notes (id, org_id, user_id, title, content) VALUES ($1, $2, $3, 'Moved note', '<p>no reference</p>')`,
+    [noteId, fx.orgId, user]);
+  await fx.client.query(`INSERT INTO note_document_map (id, org_id, source_type, source_id, target_type, target_id)
+    VALUES ($1, $2, 'note', $3, 'document', $4)`, [randomUUID(), fx.orgId, noteId, moved]);
+  await job({ sourceType: 'note', noteId });
+  assert.deepEqual(await refsFrom(moved), [{ source_type: 'document', target_id: taskId, context: null }]);
+  assert.deepEqual(await refsFrom(noteId), [], 'nothing names the old note');
+  // A note that never moved is skipped.
+  const unmoved = randomUUID();
+  await fx.client.query(`INSERT INTO notes (id, org_id, user_id, title, content) VALUES ($1, $2, $3, 'Unmoved', $4)`,
+    [unmoved, fx.orgId, user, `<p>${prefix}-7</p>`]);
+  await job({ sourceType: 'note', sourceId: unmoved });
+  assert.deepEqual(await refsFrom(unmoved), []);
+});
 
-    const comments = await c.query(
-      `SELECT id FROM task_comments WHERE task_id = $1`,
-      [taskId],
-    );
-    assert.equal(comments.rows.length, 0, 'private note must remain absent from task comments');
-  });
+test('only a document in an open drive leaves the org-wide task comment', { skip }, async () => {
+  const open = await fx.insertDocument({ driveId: fx.workspaceDriveId, title: 'Open doc', json: doc(`${prefix}-7 is next`) });
+  await job({ sourceType: 'document', sourceId: open });
+  assert.equal((await refsFrom(open)).length, 1);
+  assert.deepEqual(await comments(), [{ content: 'Referenced from a document in an open drive' }]);
+  // Someone who can't open the document records nothing.
+  const hidden = await fx.insertDocument({ driveId: (await fx.client.query(`SELECT drive_id FROM documents WHERE id = $1`, [documentId])).rows[0].drive_id,
+    title: 'Hidden', json: doc(`${prefix}-7`) });
+  await handleCrossReference({ id: randomUUID(), name: 'cross-reference',
+    data: { sourceType: 'document', sourceId: hidden, content: '', orgId: fx.orgId, userId: fx.people.member2 } } as never);
+  assert.deepEqual(await refsFrom(hidden), []);
 });

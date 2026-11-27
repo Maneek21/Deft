@@ -4,7 +4,7 @@ import { projectAgentReadDiagnostics } from '../../lib/agent-read-diagnostics.js
 // Handler: process @agent/@deft mentions in chat and generate AI replies in-thread
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { messages, users, spaces, spaceMembers, orgMembers, projects, tasks, wikiPages, notes } from '@deft/db/schema';
+import { agentActions, messages, users, spaces, spaceMembers, orgMembers, projects, tasks, wikiPages } from '@deft/db/schema';
 import { getApprovalTier } from '../../lib/agent-approval.js';
 import { eq, and, desc, sql, ne, lt, inArray } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
@@ -36,9 +36,18 @@ import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-impo
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
 import { loadPendingDeftyDraft, pendingDeftyDraftContext, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
 import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../../lib/agent-message-run-details.js';
-import { promotableNoteSql } from '../../lib/agent-action-visibility.js';
+import { promotableNoteDocument } from '../../lib/legacy-notes.js';
 import { visibleTaskCondition, visibleTaskSql } from '../../lib/task-visibility.js';
 import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, isDatabaseWaitTimeout, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
+import {
+  AUDIENCE_CHANGED_REPLY, DocumentAudienceChangedError, documentsNoLongerShown, enqueueWithheldDocumentNotice, type WithheldRef,
+} from '../../lib/document-audience.js';
+import {
+  chatEditsOfTrigger, CREATE_DOCUMENT_ACTION, DOCUMENT_EDIT_ACTION, documentEditActionParams, EDIT_REFUSAL_COPY,
+} from '../../lib/agent-document-write-tools.js';
+import { documentRoleFor, driveRoleFor, roleAtLeast } from '../../lib/document-access.js';
+import { syncApprovalToAttention } from '../../lib/attention.js';
+import { loadActionReviewers } from '../../lib/agent-action-requester.js';
 
 export async function withAgentWorkingSignal<T>(input: {
   spaceId: string; threadId: string | null; agentUserId: string;
@@ -115,6 +124,17 @@ export function hasAppBindingInvokeAttempt(
   return (actions ?? []).some((action) => action?.action === 'app_binding_invoke');
 }
 
+/**
+ * A write the runner settled itself: an App binding call, or a document edit
+ * (M7: applied under the chat exception, queued as a suggestion, or refused).
+ * No compiler recovery or deterministic fallback proposes another write for it.
+ */
+export function hasRunnerSettledWrite(
+  actions: Array<{ action?: unknown }> | null | undefined,
+): boolean {
+  return hasAppBindingInvokeAttempt(actions) || (actions ?? []).some((action) => action?.action === DOCUMENT_EDIT_ACTION);
+}
+
 export function shouldRecoverWithActionCompiler({
   readOnlyRequest,
   wantsDiscussionTask,
@@ -132,7 +152,7 @@ export function shouldRecoverWithActionCompiler({
     && !wantsDiscussionTask
     && hasWriteIntent
     && runnerPendingActions.length === 0
-    && !hasAppBindingInvokeAttempt([...runnerPendingActions, ...runnerExecutedActions]);
+    && !hasRunnerSettledWrite([...runnerPendingActions, ...runnerExecutedActions]);
 }
 
 export function shouldAttemptActionCompiler({
@@ -172,7 +192,7 @@ export function selectGroundedOrFallbackActions({
 }): any[] {
   if (readOnlyRequest) return [];
   if (runnerPendingActions.length > 0) return runnerPendingActions;
-  if (hasAppBindingInvokeAttempt(runnerExecutedActions)) return [];
+  if (hasRunnerSettledWrite(runnerExecutedActions)) return [];
   return fallbackActions;
 }
 
@@ -525,15 +545,46 @@ export async function resolvePendingActionTargets(
       continue;
     }
 
+    if (action.action === DOCUMENT_EDIT_ACTION) {
+      // M7: an edit stays a proposal only while its asker can edit the document;
+      // it keeps the document, the summary and the operations its suggestion is
+      // made from (persistAgentReplyWithActions stores { document_id, summary }).
+      const documentId = typeof action.params.document_id === 'string' ? action.params.document_id : '';
+      const role = documentId ? await documentRoleFor(userId, orgId, documentId) : null;
+      if (!role) {
+        warnings.push('I could not find that document.');
+        continue;
+      }
+      if (!roleAtLeast(role, 'edit')) {
+        warnings.push(EDIT_REFUSAL_COPY.asker_cannot_edit);
+        continue;
+      }
+      resolvedActions.push({ ...action, params: { ...documentEditActionParams(action.params), ops: action.params.ops } });
+      continue;
+    }
+
+    if (action.action === CREATE_DOCUMENT_ACTION) {
+      // M7: a drive or a parent page named must be one the asker can add to;
+      // the executor checks again under its locks (createDocumentInTx).
+      const driveId = typeof action.params.drive_id === 'string' && action.params.drive_id ? action.params.drive_id : null;
+      const parentId = typeof action.params.parent_document_id === 'string' && action.params.parent_document_id ? action.params.parent_document_id : null;
+      if (driveId && !roleAtLeast(await driveRoleFor(userId, orgId, driveId), 'edit')) {
+        warnings.push('I could not find that drive, or you can\'t add documents to it.');
+        continue;
+      }
+      if (parentId && !roleAtLeast(await documentRoleFor(userId, orgId, parentId), 'edit')) {
+        warnings.push('I could not find that page, or you can\'t add sub-pages to it.');
+        continue;
+      }
+      resolvedActions.push(action);
+      continue;
+    }
+
     if (action.action === 'note_to_wiki') {
       const noteId = typeof action.params.note_id === 'string' ? action.params.note_id : '';
-      // Same rule as the executor: a space note's space is in the note's org.
-      const [visibleNote] = noteId ? await db.select({ id: notes.id, title: notes.title }).from(notes).where(and(
-        eq(notes.id, noteId),
-        eq(notes.org_id, orgId),
-        eq(notes.is_deleted, false),
-        promotableNoteSql(userId),
-      )).limit(1) : [];
+      // Same rule as the executor: the note's document (F15), one the
+      // requester may publish (promotableDocumentSql, lib/legacy-notes.ts).
+      const visibleNote = noteId ? await promotableNoteDocument(orgId, userId, noteId) : null;
       if (!visibleNote) {
         warnings.push('I could not find that note or you do not have access to it.');
         continue;
@@ -1731,6 +1782,8 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     const AGENT_TIMEOUT_MS = 60_000;
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort(new Error('agent-reply: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS);
+    // M7 consult O-F3: set when the run failed or timed out and its reply is the error text.
+    let runFailed = false;
     // A09: the worker aborts job.signal on lease loss or job timeout.
     const forwardJobAbort = () => abort.abort(job.signal?.reason);
     if (job.signal?.aborted) forwardJobAbort();
@@ -1776,6 +1829,8 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
               // create_task can inherit source_message_id without the LLM having
               // to know about it.
               sourceMessageId: requestMessageId,
+              // M7: only the triggering message's own text can ask for a direct edit.
+              askerMessageText: content,
               conversationId: spaceId,
               spaceContext: space ? {
                 type: space.type as 'dm' | 'group_dm' | 'agent_conversation' | 'public' | 'private',
@@ -1825,6 +1880,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         compiledActionDraft = recovered.compiledActionDraft;
       }
     } catch (err) {
+      runFailed = true;
       if (!wantsDiscussionTask || discussionSourceMessages.length === 0) {
         result = {
           text: deftyReplyForProviderError(err),
@@ -1863,6 +1919,25 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     // runner's abstention before deterministic fallbacks can draft any writes.
     if (followed && result.text.trim() === 'NO_REPLY') return;
 
+    // M7 consult O-F3: a run that failed or timed out may already have made a
+    // document edit (the chat exception writes during the run). The reply says
+    // what landed, with its undo id, and links an edit left as a suggestion
+    // (its card and Inbox item), naming no document; and no fallback drafts a
+    // second write for the same request.
+    // The run threw or timed out (runFailed), or its provider failed mid-run (its text is the failure notice).
+    const triggerEdits = runFailed || result.providerFailed === true
+      ? await chatEditsOfTrigger(orgId, userId, [requestMessageId, messageId]) : null;
+    if (triggerEdits) {
+      // What the run already holds is not added twice.
+      const executedIds = new Set(result.executedActions.map((action: { actionId?: unknown }) => action.actionId));
+      const pendingIds = new Set(result.pendingActions.map((action: { existing_action_id?: unknown }) => action.existing_action_id));
+      triggerEdits.executed = triggerEdits.executed.filter((action) => !executedIds.has(action.actionId));
+      triggerEdits.pending = triggerEdits.pending.filter((action) => !pendingIds.has(action.existing_action_id));
+      if (triggerEdits.executed.length > 0) {
+        result = { ...result, executedActions: [...result.executedActions, ...triggerEdits.executed] as typeof result.executedActions };
+      }
+    }
+
     if (!result.text) {
       if (!wantsDiscussionTask || discussionSourceMessages.length === 0) {
         result = { ...result, text: 'I could not finish this lookup with the available tool results. Please retry with a narrower question. This does not mean the records are missing.', assistantBlocks: [] };
@@ -1898,12 +1973,13 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         callerName: callerUser?.name ?? null,
       })
       : null;
-    const runnerHasAppBindingInvoke = hasAppBindingInvokeAttempt([
+    const runnerSettledWrite = hasRunnerSettledWrite([
       ...result.pendingActions,
       ...result.executedActions,
+      ...(triggerEdits?.pending ?? []),
     ]);
     const providerUnavailable = result.model === 'agent-unconfigured';
-    const allowDeterministicFallbacks = !providerUnavailable && result.pendingActions.length === 0 && !runnerHasAppBindingInvoke;
+    const allowDeterministicFallbacks = !providerUnavailable && result.pendingActions.length === 0 && !runnerSettledWrite;
     if (fallbackProjectName === null && allowDeterministicFallbacks && !wantsDiscussionTask) {
       fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent, userId);
     }
@@ -2054,6 +2130,8 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       );
       pendingActions = [];
     }
+    // M7 consult O-F3: an edit left as a suggestion by a run that failed is linked to this reply (its card and Inbox item).
+    if (triggerEdits?.pending.length) pendingActions.push(...triggerEdits.pending);
     if (fallbackCreateTask) {
       console.warn('[agent-reply] Added deterministic create_task fallback for explicit task-create prompt');
     }
@@ -2067,7 +2145,8 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       console.warn('[agent-reply] Added deterministic post_message fallback for explicit message prompt');
     }
     const targetClarificationMessage = buildTargetClarificationMessage(pendingActionTargetWarnings);
-    const writeIntentClarificationMessage = !providerUnavailable && !readOnlyRequest && pendingActions.length === 0 && !wantsDiscussionTask
+    // M7 consult O-F3: a request whose edit already went in asks for no clarification.
+    const writeIntentClarificationMessage = !providerUnavailable && !readOnlyRequest && pendingActions.length === 0 && !wantsDiscussionTask && !triggerEdits?.lines.length
       ? (compiledActionDraft?.clarification || buildWriteIntentClarification(promptContent, result.text))
       : '';
     const referentialApprovalReplyText = fallbackReferentialStatusUpdates?.length
@@ -2090,7 +2169,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     const approvalReplyText = concreteApprovalReplyText ?? referentialApprovalReplyText ?? literalPostApprovalReplyText ?? (compiledActions && compiledActionDraft?.summary
       ? normalizeApprovalSurfaceCopy(compiledActionDraft.summary)
       : normalizeApprovalSurfaceCopy(result.text));
-    const agentReplyContent = targetClarificationMessage && pendingActions.length === 0
+    const replyText = targetClarificationMessage && pendingActions.length === 0
       ? targetClarificationMessage
       : pendingActions.length > 0
         ? [
@@ -2098,6 +2177,8 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
           targetClarificationMessage || null,
         ].filter(Boolean).join('\n\n')
         : writeIntentClarificationMessage || result.text;
+    // M7 consult O-F3: what this request's edits already did, after the failure text (no document named).
+    const agentReplyContent = triggerEdits?.lines.length ? [replyText, ...triggerEdits.lines].filter(Boolean).join('\n\n') : replyText;
 
     // Insert the agent's reply as a message in the space.
     // Phase 2 — populate agent_blocks / model / tokens so <AgentMessageBlocks/>
@@ -2129,7 +2210,17 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     };
 
     let agentMessage: typeof messages.$inferSelect;
-    const replyGuard = (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => claimDeftyReplySlot(tx, replyTrigger, delivery);
+    type ReplyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+    const replyGuard = (tx: ReplyTx) => claimDeftyReplySlot(tx, replyTrigger, delivery);
+    // M3 (lib/document-audience.ts): what the model read is checked against
+    // the chat's audience as it is now, under the reply guard, and the asker's
+    // notice of what was left out is queued with the reply, so a reply that
+    // isn't written sends none.
+    const shownDocuments = result.documents?.shown ?? [];
+    const withheldDocuments = result.documents?.withheld ?? [];
+    const queueDocumentNotice = (tx: ReplyTx, withheld: readonly WithheldRef[]) => enqueueWithheldDocumentNotice(tx, {
+      orgId, askerId: userId, spaceId, withheld: [...withheld], replyKey: `${spaceId}:${messageId}`,
+    });
     try {
       const persisted = await persistAgentReplyWithActions({
         orgId,
@@ -2142,7 +2233,12 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         pendingActions,
         resolvePendingMessageId: pendingClarification?.messageId,
         replyGuard,
-        beforeCommit: (tx) => assertDeliveryOwnedBeforeCommit(tx, delivery),
+        beforeCommit: async (tx) => {
+          const changed = await documentsNoLongerShown(orgId, spaceId, userId, shownDocuments, tx);
+          if (changed.length > 0) throw new DocumentAudienceChangedError(changed);
+          await queueDocumentNotice(tx, withheldDocuments);
+          await assertDeliveryOwnedBeforeCommit(tx, delivery);
+        },
       });
       if (persisted.replayed) {
         console.log(`[agent-reply] Reply to ${logId(messageId)} already posted as ${logId(persisted.message.id)}; skipping`);
@@ -2150,6 +2246,54 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       }
       agentMessage = persisted.message;
     } catch (err) {
+      if (err instanceof DocumentAudienceChangedError) {
+        // Who can see something the model read changed after it read it: the
+        // generated reply (and anything it proposed) is dropped, not
+        // regenerated. The room gets a reply with no document content.
+        console.warn('[agent-reply] The conversation\'s audience changed after its documents were read; reply withheld');
+        // M7 consult O-F3: what this request's edits already did is still told
+        // (no document named), and an edit left as a suggestion is linked here.
+        const editsNow = await chatEditsOfTrigger(orgId, userId, [requestMessageId, messageId]);
+        const audienceChanged = await db.transaction(async (tx) => {
+          const existing = await replyGuard(tx);
+          if (existing) return { message: existing, replayed: true, linked: [] as Array<typeof agentActions.$inferSelect> };
+          const [inserted] = await tx.insert(messages).values({
+            org_id: orgId,
+            space_id: spaceId,
+            user_id: agentUserId,
+            content: [AUDIENCE_CHANGED_REPLY, ...editsNow.lines].join('\n\n'),
+            parent_id: threadParentId,
+            metadata: { is_agent_reply: true, reply_to_message_id: messageId, model: result.model } as never,
+          }).returning();
+          const linked = inserted && editsNow.pending.length > 0 ? await tx.update(agentActions)
+            .set({ conversation_id: spaceId, message_id: inserted.id })
+            .where(and(eq(agentActions.org_id, orgId), eq(agentActions.user_id, userId), eq(agentActions.approval_status, 'pending'),
+              inArray(agentActions.id, editsNow.pending.map((edit) => edit.existing_action_id))))
+            .returning() : [];
+          if (inserted && linked.length > 0) {
+            await tx.update(messages).set({ metadata: { is_agent_reply: true, reply_to_message_id: messageId, model: result.model,
+              pending_actions: linked.map((action) => ({ id: action.id, action: action.action, approval_tier: action.approval_tier, status: action.approval_status })) } as never })
+              .where(eq(messages.id, inserted.id));
+          }
+          await queueDocumentNotice(tx, [...withheldDocuments, ...err.refs]);
+          await assertDeliveryOwnedBeforeCommit(tx, delivery);
+          return { message: inserted, replayed: false, linked };
+        });
+        if (!audienceChanged.message) throw err;
+        if (audienceChanged.replayed) return;
+        agentMessage = audienceChanged.message;
+        if (audienceChanged.linked.length > 0) {
+          const reviewers = await loadActionReviewers(audienceChanged.linked).catch(() => null);
+          await Promise.all(audienceChanged.linked.map((action) => syncApprovalToAttention(action, reviewers?.has(action.id) ? { reviewers: reviewers.get(action.id)! } : undefined)
+            .catch(() => console.warn('[agent-reply] Approval attention dual-write failed'))));
+        }
+        try {
+          await broadcastAgentReply({ dependencies, agentUserId, agentMessage, spaceId, threadParentId });
+        } catch {
+          console.warn('[agent-reply] Reply committed but its broadcast failed');
+        }
+        return;
+      }
       if (pendingActions.length === 0 || err instanceof DeftyDeliveryLostError || isDatabaseWaitTimeout(err)) throw err;
       console.error('[agent-reply] Failed to persist agent reply with pending actions:');
       const failedApprovalContent = [
@@ -2172,6 +2316,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
             pending_actions_error: 'APPROVAL_CARD_NOT_CREATED',
           } as never,
         }).returning();
+        await queueDocumentNotice(tx, withheldDocuments);
         await assertDeliveryOwnedBeforeCommit(tx, delivery);
         return { message: inserted, replayed: false };
       });

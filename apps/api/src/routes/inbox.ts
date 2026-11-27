@@ -4,6 +4,7 @@ import { withoutUnverifiableReplyText } from '../lib/reply-notification-text.js'
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gt, inArray, or } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { documentTextParamsForViewer } from '../lib/document-draft-params.js';
 import {
   notifications,
   spaces,
@@ -17,6 +18,7 @@ import { viewerReviewAuthority } from '../lib/agent-approval-resolver.js';
 import { actionRequesterIdSql } from '../lib/agent-action-requester.js';
 import { visibleCaptureActionSql } from '../lib/agent-action-visibility.js';
 import { ordinaryPendingApprovalSql, specialApprovalActionSql } from '../lib/pending-approval-audience.js';
+import { asStoredNotificationType, type AnyNotificationType, type NotificationType } from '../lib/notification-types.js';
 
 export const inboxRoutes = new Hono();
 
@@ -61,9 +63,11 @@ export type InboxItem = {
   dm?: { space_id: string; unread_count: number; last_message_preview: string | null };
 };
 
-type NotificationType = typeof notifications.$inferSelect.type;
-
-const NOTIF_KIND_MAP: Record<NotificationType, InboxItemKind> = {
+/**
+ * Every notification type, the labels only upgrade SQL adds included
+ * (lib/notification-types.ts): a new label won't compile until it is mapped.
+ */
+const NOTIF_KIND_MAP: Record<AnyNotificationType, InboxItemKind> = {
   mention: 'mention',
   task_assigned: 'task_assigned',
   task_updated: 'task_updated',
@@ -80,6 +84,8 @@ const NOTIF_KIND_MAP: Record<NotificationType, InboxItemKind> = {
   // This includes bundled overdue, stalled, and upcoming-due nudges.
   agent_suggestion: 'task_updated',
   skill_update_available: 'system',
+  // A document or drive shared with the reader (F4, F6, F9).
+  document_shared: 'system',
 };
 
 const ATTENTION_INBOX_KINDS = new Set<InboxItemKind>([
@@ -113,11 +119,11 @@ function parseKindFilter(value: string | undefined): Set<InboxItemKind> | null {
   return new Set(values as InboxItemKind[]);
 }
 
-function notificationTypesForKinds(kinds: Set<InboxItemKind> | null) {
-  if (!kinds) return Object.keys(NOTIF_KIND_MAP) as NotificationType[];
-  return (Object.entries(NOTIF_KIND_MAP) as Array<[NotificationType, InboxItemKind]>)
-    .filter(([, kind]) => kinds.has(kind))
-    .map(([type]) => type);
+/** The stored notification types of `kinds` (every type when null), for filtering `notifications.type`. */
+function notificationTypesForKinds(kinds: Set<InboxItemKind> | null): NotificationType[] {
+  return (Object.entries(NOTIF_KIND_MAP) as Array<[AnyNotificationType, InboxItemKind]>)
+    .filter(([, kind]) => !kinds || kinds.has(kind))
+    .map(([type]) => asStoredNotificationType(type));
 }
 
 /**
@@ -257,6 +263,7 @@ inboxRoutes.get('/', async (c) => {
     }).from(agentActions).where(approvalWhere);
     const approvalRows = !wantsApprovals || countOnly ? [] : await db.select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       params: agentActions.params,
       action_source: agentActions.source,
@@ -297,7 +304,8 @@ inboxRoutes.get('/', async (c) => {
         approval: {
           action_id: r.id,
           action: r.action,
-          params: (r.params ?? {}) as Record<string, unknown>,
+          // M7 fix round 3: a document draft's text only for the person who asked (a fallback reviewer sees its size).
+          params: (documentTextParamsForViewer(r, user.id).params ?? {}) as Record<string, unknown>,
           approval_tier: r.approval_tier as 'auto' | 'quick' | 'full',
           agent_employee_id: r.agent_employee_id,
           employee_name: r.employee_name,

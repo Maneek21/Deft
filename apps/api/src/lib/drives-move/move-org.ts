@@ -1,0 +1,122 @@
+// The notes move (plan Task F14, spec 5.11): one workspace's notes, note
+// folders and chat canvases into drives and documents, once.
+//
+// Where it runs (consult change): in the upgrade container right after
+// `db:upgrade` (`pnpm drives:move`, scripts/drives-move.ts), and inline when
+// the API starts, before it listens, unless the start is paused
+// (startup.ts). There is no background job: the app never serves a
+// half-moved workspace.
+//
+// moveOrg makes sure the Workspace drive exists, then moves folders (parents
+// first), notes and canvases, each source in its own transaction under the
+// workspace's advisory lock, pg_advisory_xact_lock(hashtext('drives-move:' ||
+// orgId)), with its note_document_map row (move-notes.ts, move-canvases.ts).
+// Then, whenever Shared notes exists, it gives every eligible agent its view
+// row there (idempotent, consult C2: a rerun after an agent became eligible
+// passes the check even when nothing more moves into Shared notes), and last
+// rewrites the references to moved notes (rewrite-references.ts).
+// `acceptMissingImages` is `pnpm drives:move --accept-missing-images` only
+// (placement.ts fileFactsInTx); the API start never passes it.
+// A source already mapped is skipped, so running it again changes nothing and
+// a run that stopped part way resumes. A source that fails is rolled back and
+// listed in `errors`; the rest go on. The notes and canvas tables are only
+// read.
+//
+// The report counts what this run did. Deliberate change, reported: open
+// drives exclude guests (spec 5.2), so a guest can no longer open a note that
+// was visible to the whole workspace unless it is shared with them.
+// `guestsPotentiallyAffected` gives the active guests of a workspace that had
+// such notes, and how many such notes moved (master already hid them from
+// guests in release 153, so this is who could be affected, not a loss count).
+// A reference rewrite that would collide with another workspace's row is an
+// error (rewrite-references.ts): the move doesn't finish until it is settled.
+import { sql } from 'drizzle-orm';
+import { db } from '../db.js';
+import { ensureWorkspaceDrive } from '../drives.js';
+import { moveCanvases, type DroppedCanvas } from './move-canvases.js';
+import { moveNoteFolders, moveNotes } from './move-notes.js';
+import { agentsOnExistingSharedNotesInTx, failureMessage, loadOrgContext, lockOrgInTx, rowsOf } from './placement.js';
+import { emptyReferenceRewrite, rewriteReferences, type ReferenceRewrite } from './rewrite-references.js';
+
+export type MoveReport = {
+  orgId: string; notes: number; folders: number; canvases: number; versions: number; shares: number;
+  favourites: number; unsafeDropped: number; missingImages: number; skippedAlreadyMoved: number; errors: Array<{ sourceId: string; message: string }>;
+  /** Canvases with no content: dropped, no document (counted on every run). */
+  emptyCanvases: number;
+  /** Notes and canvases split into a page and sub-pages, the sub-pages made, and the single blocks that had to be split themselves. */
+  splitNotes: number; subPages: number; splitBlocks: number;
+  /** In versions, apart from the current content. */
+  versionUnsafeDropped: number; versionMissingImages: number;
+  /** Linked files note_files named that no converted content shows (linked as history). */
+  unplacedImages: number;
+  /** Space notes with no chat of this workspace: they became private. */
+  spaceNotesMadePrivate: number;
+  /** Personal drives made frozen, for deactivated, agent and system authors. */
+  frozenDrives: number;
+  /**
+   * Images in notes and canvases whose bytes were gone while the storage answered, or, with --accept-missing-images,
+   * while it was empty or unreachable: shown as "Image not available" (O-F2, C6).
+   */
+  missingImageBytes: number;
+  /** Agents given a `view` member row on Shared notes, so they keep reading workspace notes (O-F3, C2). */
+  agentsKeptOnSharedNotes: number;
+  /** Private chats' canvases that no eligible chat member could own, placed with the workspace's first owner (O-F5). */
+  canvasesPlacedWithWorkspaceOwner: number;
+  /**
+   * Private chats' canvases with no eligible member and no active human owner: in the last editor's (or the chat
+   * creator's) frozen drive, where the chat's share gives view only, indefinitely (handing on is owner-only).
+   */
+  canvasesInFrozenDrives: number;
+  /**
+   * Private chats' canvases with content nobody at all can own (no last editor or creator with a membership row):
+   * dropped, counted in emptyCanvases, named here by their ids only (C5).
+   */
+  unplaceableCanvases: DroppedCanvas[];
+  guestsPotentiallyAffected: { guests: number; workspaceNotes: number };
+  references: ReferenceRewrite;
+};
+
+export function emptyMoveReport(orgId: string): MoveReport {
+  return {
+    orgId, notes: 0, folders: 0, canvases: 0, versions: 0, shares: 0, favourites: 0, unsafeDropped: 0, missingImages: 0,
+    skippedAlreadyMoved: 0, errors: [], emptyCanvases: 0, splitNotes: 0, subPages: 0, splitBlocks: 0, versionUnsafeDropped: 0,
+    versionMissingImages: 0, unplacedImages: 0, spaceNotesMadePrivate: 0, frozenDrives: 0, missingImageBytes: 0,
+    agentsKeptOnSharedNotes: 0, canvasesPlacedWithWorkspaceOwner: 0, canvasesInFrozenDrives: 0, unplaceableCanvases: [],
+    guestsPotentiallyAffected: { guests: 0, workspaceNotes: 0 },
+    references: emptyReferenceRewrite(),
+  };
+}
+
+export async function moveOrg(orgId: string, options: { acceptMissingImages?: boolean } = {}): Promise<MoveReport> {
+  const report = emptyMoveReport(orgId);
+  await db.transaction(async (tx) => {
+    await lockOrgInTx(tx, orgId);
+    await ensureWorkspaceDrive(orgId, tx);
+  });
+  const ctx = await loadOrgContext(orgId, options);
+  await moveNoteFolders(ctx, report);
+  await moveNotes(ctx, report);
+  await moveCanvases(ctx, report);
+  try {
+    report.agentsKeptOnSharedNotes += await db.transaction(async (tx) => {
+      await lockOrgInTx(tx, orgId);
+      return agentsOnExistingSharedNotesInTx(tx, orgId);
+    });
+  } catch (error) {
+    report.errors.push({ sourceId: orgId, message: `Agents could not be given their view on Shared notes: ${failureMessage(error)}` });
+  }
+  try {
+    report.references = await rewriteReferences(orgId);
+    for (const conflict of report.references.conflicts) {
+      report.errors.push({ sourceId: conflict.id, message: `A rewritten ${conflict.table} row would repeat one in another workspace` });
+    }
+  } catch (error) {
+    report.errors.push({ sourceId: orgId, message: `References could not be rewritten: ${failureMessage(error)}` });
+  }
+  if (report.guestsPotentiallyAffected.workspaceNotes > 0) {
+    const [guests] = rowsOf<{ n: number }>(await db.execute(sql`SELECT count(*)::int AS n FROM org_members
+      WHERE org_id = ${orgId} AND role = 'guest' AND is_active = true`));
+    report.guestsPotentiallyAffected.guests = Number(guests?.n ?? 0);
+  }
+  return report;
+}

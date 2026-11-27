@@ -1,5 +1,5 @@
 import {and, eq, sql, type SQL} from 'drizzle-orm';
-import {agentActions, messages, notes, projects, spaceMembers, spaces, tasks, wikiPages} from '@deft/db/schema';
+import {agentActions, messages, projects, spaceMembers, spaces, tasks, wikiPages} from '@deft/db/schema';
 import {db} from './db.js';
 import {loadActionRequesterId, type RequesterActionRow} from './agent-action-requester.js';
 import {resolveSpaceTargetFromRows} from './resolve-space-target.js';
@@ -7,7 +7,7 @@ import {requireSpaceMembership} from './space-membership.js';
 import {visibleTaskCondition} from './task-visibility.js';
 import {visibleWikiPageCondition} from './wiki-visibility.js';
 import {captureEvidenceAvailableSql} from './capture-evidence.js';
-import {fullWorkspaceViewSql} from './people-visibility-sql.js';
+import {documentRoleFor} from './document-access.js';
 export function visibleCaptureActionSql(user: { id: string | SQL; org_id: string | SQL }) {
   return sql`(
     ${agentActions.source} IS DISTINCT FROM 'defty_capture'
@@ -113,26 +113,6 @@ export async function canUndoAgentAction(
   }
 }
 
-/**
- * Note promotion (C13): the actor's own note, an org note, or a space note
- * in a space of the note's own org that the actor is a member of. An org
- * note needs an owner, admin or member (or an agent) of that workspace, as
- * visibleNoteCondition (lib/note-visibility.ts): never a guest.
- */
-export function promotableNoteSql(userId: string): SQL {
-  return sql`(
-    ${notes.user_id} = ${userId}
-    OR (${notes.visibility} = 'org' AND ${fullWorkspaceViewSql(userId, notes.org_id)})
-    OR (${notes.visibility} = 'space' AND EXISTS (
-      SELECT 1 FROM space_members promotable_note_sm
-      INNER JOIN spaces promotable_note_s ON promotable_note_s.id = promotable_note_sm.space_id
-      WHERE promotable_note_sm.space_id = ${notes.visibility_space_id}
-        AND promotable_note_s.org_id = ${notes.org_id}
-        AND promotable_note_sm.user_id = ${userId}
-    ))
-  )`;
-}
-
 const INVALID_TARGET = 'Invalid action target';
 
 function optionalString(value: unknown): boolean {
@@ -214,6 +194,22 @@ export async function authorizeNativeActionTarget(
       return !parent || await requireSpaceMembership(parent.space_id, userId, orgId)
         ? { params }
         : { error: 'Parent message not found in this org' };
+    }
+    case 'edit_document': {
+      // M7: the requester must still be able to open the document; the
+      // writer checks edit again at write time (rule C2), and the
+      // suggestion's executor its own rules (lib/document-suggestions.ts).
+      if (typeof params.document_id !== 'string' || !params.document_id) return { error: INVALID_TARGET };
+      return (await documentRoleFor(userId, orgId, params.document_id))
+        ? { params }
+        : { error: 'Document not found' };
+    }
+    case 'create_document': {
+      // M7: ids only; createDocumentInTx checks the drive, folder and parent page under its locks.
+      if (!optionalString(params.drive_id) || !optionalString(params.folder_id) || !optionalString(params.parent_document_id)) {
+        return { error: INVALID_TARGET };
+      }
+      return { params };
     }
     case 'create_note': {
       if (params.visibility !== 'space') return { params };

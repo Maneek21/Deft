@@ -20,6 +20,20 @@ function humanize(value: unknown) {
   return typeof value === 'string' ? value.replace(/_/g, ' ') : String(value ?? '');
 }
 
+/** ` [Open it](/d/<id>)` for the document a result names, else nothing: the page checks access. */
+function documentLink(result: Record<string, any>): string {
+  const id = [result.document_id, result.canvas_document_id, result.note_id]
+    .find((value) => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value));
+  return id ? ` [Open it](/d/${id})` : '';
+}
+
+/** The note and canvas aliases and create_document: their outcomes never name the document (fix round 5). */
+const DRAFT_TOOL_FAILURES: Readonly<Record<string, string>> = {
+  create_document: 'Create document did not complete.',
+  create_note: 'Create note did not complete.',
+  write_canvas: 'Write canvas did not complete.',
+};
+
 export function summarizeConfirmedAction(action: ConfirmedAction) {
   const params = record(action.params);
   const result = record(action.result);
@@ -54,12 +68,18 @@ export function summarizeConfirmedAction(action: ConfirmedAction) {
     }
     case 'add_knowledge':
       return `Saved${title ? ` "${title}"` : ' the item'} to knowledge.`;
+    // M7: posted in the chat, so none of these names the document (rule C4,
+    // fix round 5 for the note and canvas aliases): the link opens it only for
+    // the people who can, and its title is theirs to read there.
     case 'create_note':
-      return `Created note${title ? ` "${title}"` : ''}.`;
+    case 'create_document':
+      return `Created a document.${documentLink(result)}`;
+    case 'edit_document':
+      return result.status === 'partially_accepted' ? 'Applied part of the suggested edit.' : 'Applied the suggested edit.';
     case 'note_to_wiki':
       return `Promoted${title ? ` "${title}"` : ' the note'} to wiki.`;
     case 'write_canvas':
-      return `Updated the canvas for #${String(params.space_name ?? result.space_name ?? 'the selected space').replace(/^#/, '')}.`;
+      return `Updated the canvas.${documentLink(result)}`;
     case 'create_reminder':
       return `Set the reminder${params.remind_at ? ` for ${params.remind_at}` : ''}.`;
     case 'link_decision_to_tasks': {
@@ -78,6 +98,9 @@ export function summarizeConfirmedAction(action: ConfirmedAction) {
 /** Plain label for an approved action that did not complete. */
 export function summarizeFailedAction(action: ConfirmedAction) {
   const params = record(action.params);
+  // M7: a document's title is never posted in the chat (rule C4; the note and canvas aliases since fix round 5).
+  if (Object.hasOwn(DRAFT_TOOL_FAILURES, action.action)) return DRAFT_TOOL_FAILURES[action.action]!;
+  if (action.action === 'edit_document') return 'Edit document did not complete.';
   const target = typeof params.title === 'string' && params.title.trim()
     ? params.title.trim()
     : typeof params.task_identifier === 'string' && params.task_identifier.trim()

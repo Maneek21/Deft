@@ -122,21 +122,24 @@ before(async () => {
     );
     ids.push({ table: 'messages', id: privateMessageId });
 
-    ownNoteId = `srp-own-note-${Date.now()}`;
-    await c.query(
-      `INSERT INTO notes (id, org_id, user_id, title, content, visibility, is_deleted, is_pinned, is_template, version, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 'private', false, false, false, 1, NOW(), NOW())`,
-      [ownNoteId, ORG_ID, USER_ID, `${SEARCH_TERM} own note`, `Own ${SEARCH_TERM} note.`],
-    );
-    ids.push({ table: 'notes', id: ownNoteId });
-
-    otherPrivateNoteId = `srp-other-note-${Date.now()}`;
-    await c.query(
-      `INSERT INTO notes (id, org_id, user_id, title, content, visibility, is_deleted, is_pinned, is_template, version, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 'private', false, false, false, 1, NOW(), NOW())`,
-      [otherPrivateNoteId, ORG_ID, OTHER_USER_ID, `${SEARCH_TERM} other note`, `Other ${SEARCH_TERM} note.`],
-    );
-    ids.push({ table: 'notes', id: otherPrivateNoteId });
+    // Notes are documents (F15): one in each user's My drive.
+    const myDocument = async (owner: string, title: string, text: string) => {
+      const drive = `srp-drive-${owner}`;
+      await c.query(`INSERT INTO drives (id, org_id, name, kind, owner_user_id, created_by) VALUES ($1, $2, 'My drive', 'personal', $3, $3)`,
+        [drive, ORG_ID, owner]);
+      ids.push({ table: 'drives', id: drive });
+      const member = `srp-drive-member-${owner}`;
+      await c.query(`INSERT INTO drive_members (id, org_id, drive_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'user', $4, 'full')`,
+        [member, ORG_ID, drive, owner]);
+      ids.push({ table: 'drive_members', id: member });
+      const id = `srp-document-${owner}`;
+      await c.query(`INSERT INTO documents (id, org_id, drive_id, title, content_json, content_text, created_by)
+        VALUES ($1, $2, $3, $4, '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb, $5, $6)`, [id, ORG_ID, drive, title, text, owner]);
+      ids.push({ table: 'documents', id });
+      return id;
+    };
+    ownNoteId = await myDocument(USER_ID, `${SEARCH_TERM} own note`, `Own ${SEARCH_TERM} note.`);
+    otherPrivateNoteId = await myDocument(OTHER_USER_ID, `${SEARCH_TERM} other note`, `Other ${SEARCH_TERM} note.`);
 
     projectId = `srp-project-${Date.now()}`;
     await c.query(
@@ -255,11 +258,12 @@ test('global search only returns spaces and messages the caller can access', { s
   assert.ok(!body.messages.some((m: any) => m.id === privateMessageId));
 });
 
-test('global search legacy notes group respects private-note ownership', { skip: !canRun }, async () => {
+test('global search documents group respects private-note ownership', { skip: !canRun }, async () => {
   const body = await callSearch();
 
-  assert.ok(body.notes.some((n: any) => n.id === ownNoteId));
-  assert.ok(!body.notes.some((n: any) => n.id === otherPrivateNoteId));
+  assert.ok(body.documents.some((n: any) => n.id === ownNoteId));
+  assert.ok(!body.documents.some((n: any) => n.id === otherPrivateNoteId));
+  assert.deepEqual(body.notes, [], 'the legacy notes group is empty since F15');
 });
 
 test('global search retrieved privateNotes group respects private-note ownership', { skip: !canRun }, async () => {

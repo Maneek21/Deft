@@ -32,7 +32,7 @@ import { db } from './db.js';
 import { actionReceipts } from '@deft/db/schema';
 import { env } from './env.js';
 import { and, eq, sql } from 'drizzle-orm';
-import { sanitizeActionParamsForReceipt } from './receipt-params.js';
+import { sanitizeActionParamsForReceipt, sanitizeActionResultForReceipt } from './receipt-params.js';
 
 type InferredReceipt = typeof actionReceipts.$inferSelect;
 export type ActionReceipt = InferredReceipt;
@@ -179,7 +179,11 @@ export async function generateReceipt(
     const safeActionParams = sanitizeActionParamsForReceipt(
       params.actionName,
       params.actionParams,
+      params.resultJson,
     );
+    // M7 fix round 5: a draft tool's result is stored and signed as references
+    // only (it names the document; its title is read through the document).
+    const safeResult = sanitizeActionResultForReceipt(params.actionName, params.resultJson ?? null);
     const envelope = buildSignedEnvelope({
       actionId: params.actionId,
       orgId: params.orgId,
@@ -191,7 +195,7 @@ export async function generateReceipt(
       proposer: params.proposer,
       proposerId: params.proposerId ?? null,
       approverId: params.approverId ?? null,
-      resultJson: params.resultJson ?? null,
+      resultJson: safeResult,
     });
     const canonical = canonicalize(envelope);
     const signature = computeHmac(canonical);
@@ -222,7 +226,7 @@ export async function generateReceipt(
           decision_reason: params.decisionReason ?? null,
           action_name: params.actionName,
           action_params_json: safeActionParams,
-          result_json: (params.resultJson ?? null) as unknown as Record<string, unknown>,
+          result_json: safeResult as unknown as Record<string, unknown>,
           signature_hmac: signature,
           signed_at: signedAt,
         })

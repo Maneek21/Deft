@@ -22,11 +22,12 @@ test('confirmation copy names concrete task, wiki, note, and message outcomes', 
     params: { title: 'Watering guide' },
     result: { action: 'created', slug: 'watering-guide' },
   }), 'Created wiki page "Watering guide".');
+  // M7 fix round 5: a note is a document, posted in the room without its title (rule C4); the link checks access.
   assert.equal(summarizeConfirmedAction({
     action: 'create_note',
     params: { title: 'Buyer call notes' },
-    result: { note_id: 'note-1', title: 'Buyer call notes' },
-  }), 'Created note "Buyer call notes".');
+    result: { note_id: 'note-1', document_id: 'note-1', title: 'Buyer call notes' },
+  }), 'Created a document. [Open it](/d/note-1)');
   assert.equal(summarizeConfirmedAction({
     action: 'post_message',
     params: { space_name: 'sales' },

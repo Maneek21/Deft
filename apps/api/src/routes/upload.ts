@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { attachmentDerivatives, files, messageAttachments, taskAttachments } from '@deft/db/schema';
+import { documentAttachments } from '@deft/db/documents';
 import { basename } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -14,13 +15,28 @@ import {
 import { localFileStore } from '../lib/file-store.js';
 import { MAX_ATTACHMENT_BYTES, processAttachment } from '../lib/attachment-processor.js';
 import { stagedAttachmentExpiry } from '../lib/attachment-retention.js';
+import { documentRoleFor, roleAtLeast } from '../lib/document-access.js';
+import { DocumentRefusal, lockDocumentForEditInTx } from '../lib/documents.js';
 import { verifyWebAccess } from '../lib/web-sessions.js';
 import { WorkspaceLimitError, limitResponse } from '../lib/workspace-limits.js';
 
 export const uploadRoutes = new Hono();
 export const fileServingRoutes = new Hono();
 
+/** What every document id looks like (they are crypto.randomUUID()); anything else is malformed. */
+const DOCUMENT_ID = /^[A-Za-z0-9_-]{1,200}$/;
+
 // POST /api/upload — multipart file upload (protected)
+//
+// With `document_id` (plan Task F10) the file is an image in that document:
+// it needs edit on the document (404 when the caller can't open it, 403 for a
+// viewer or commenter; 400 for a document_id that is empty or isn't an id),
+// is never staged, and is linked through document_attachments in the same
+// transaction, which first takes the document write locks
+// (lockDocumentForEditInTx) and checks edit again under them. The link starts
+// outside the content (`in_current` false): editors can fetch the file at
+// once, and everyone who can open the document once a store of it holds the
+// image (lib/document-attachment-access.ts).
 uploadRoutes.post('/', async (c) => {
   try {
     const user = c.get('user');
@@ -43,11 +59,26 @@ uploadRoutes.post('/', async (c) => {
     if (taskId && messageId) {
       return c.json({ error: 'A file can target either a task or a message', code: 'VALIDATION_ERROR' }, 400);
     }
+    // Present, document_id must be one document id; an empty or malformed one
+    // is refused rather than taken for no document.
+    const documentIds = c.req.queries('document_id');
+    if (documentIds && (documentIds.length !== 1 || !DOCUMENT_ID.test(documentIds[0]!))) {
+      return c.json({ error: 'document_id must be a document id', code: 'VALIDATION_ERROR' }, 400);
+    }
+    const documentId = documentIds?.[0] ?? null;
+    if (documentId && (taskId || messageId)) {
+      return c.json({ error: 'A file in a document can’t also target a task or a message', code: 'VALIDATION_ERROR' }, 400);
+    }
     if (taskId && !(await canAccessAttachmentTask(taskId, user.org_id, user.id))) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
     if (messageId && !(await canAccessAttachmentMessage(messageId, user.org_id, user.id))) {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (documentId) {
+      const role = await documentRoleFor(user.id, user.org_id, documentId);
+      if (!role) return c.json({ error: 'Document not found', code: 'NOT_FOUND' }, 404);
+      if (!roleAtLeast(role, 'edit')) return c.json({ error: 'You need edit access to this document', code: 'FORBIDDEN_ROLE' }, 403);
     }
 
     const originalName = basename(file.name).replace(/[^\w.\-]/g, '_');
@@ -63,6 +94,9 @@ uploadRoutes.post('/', async (c) => {
     let inserted: typeof files.$inferSelect | undefined;
     try {
       inserted = await db.transaction(async (tx) => {
+        // The document's write locks come first: the actor, its drive, then
+        // the document (lib/drive-locks.ts's order), before the file row.
+        if (documentId) await lockDocumentForEditInTx(tx, { id: user.id, org_id: user.org_id }, documentId);
         const [row] = await tx.insert(files).values({
           org_id: user.org_id,
           uploaded_by: user.id,
@@ -76,7 +110,7 @@ uploadRoutes.post('/', async (c) => {
           processing_status: processing.status,
           processing_error: processing.error,
           processed_at: new Date(),
-          staged_expires_at: taskId || messageId ? null : stagedAttachmentExpiry(),
+          staged_expires_at: taskId || messageId || documentId ? null : stagedAttachmentExpiry(),
           task_id: taskId,
           message_id: messageId,
         }).returning();
@@ -110,6 +144,18 @@ uploadRoutes.post('/', async (c) => {
             position: 0,
           });
         }
+        if (documentId) {
+          // Not in the document's content yet: only its editors can fetch it
+          // until a store of the document holds it, when the stored listener
+          // (lib/document-versions.ts) marks it current.
+          await tx.insert(documentAttachments).values({
+            org_id: user.org_id,
+            document_id: documentId,
+            file_id: row.id,
+            in_current: false,
+            added_by: user.id,
+          });
+        }
         return row;
       });
     } catch (error) {
@@ -130,12 +176,14 @@ uploadRoutes.post('/', async (c) => {
     }, 201);
   } catch (err) {
     if (err instanceof WorkspaceLimitError) return limitResponse(c, err);
+    if (err instanceof DocumentRefusal) return c.json({ error: err.message, code: err.code }, err.status);
     console.error('Failed to upload file:');
     return c.json({ error: 'Failed to upload file', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 
-// DELETE /api/files/:id — delete an upload that has not been attached yet.
+// DELETE /api/files/:id — delete an upload that has not been attached yet. A
+// document's image never qualifies: its versions keep showing it.
 fileServingRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
   const fileId = c.req.param('id');
@@ -155,6 +203,11 @@ fileServingRoutes.delete('/:id', async (c) => {
         SELECT 1 FROM task_attachments
         WHERE task_attachments.org_id = ${user.org_id}
           AND task_attachments.file_id = ${fileId}
+      )`,
+      sql`NOT EXISTS (
+        SELECT 1 FROM document_attachments
+        WHERE document_attachments.org_id = ${user.org_id}
+          AND document_attachments.file_id = ${fileId}
       )`,
     ))
     .returning({ storage_key: files.storage_key });

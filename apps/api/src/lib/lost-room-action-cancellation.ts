@@ -23,6 +23,10 @@
  * it first, the claim finds the row expired. Once the loss has committed, a
  * claim that starts later also fails on `requesterKeepsSourceRoomsSql`, which
  * the claims carry for paths no hook covers.
+ *
+ * An agent's document edit suggestion (`edit_document`, M6) closes with its
+ * action: it is marked cancelled in the same transaction
+ * (syncSuggestionWithAction, lib/document-suggestions.ts).
  */
 import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import { actionReceipts, agentActions, attentionItems } from '@deft/db/schema';
@@ -30,6 +34,8 @@ import { db } from './db.js';
 import { actionRequesterIdSql } from './agent-action-requester.js';
 import { closedPendingActionParams, finishClosedModuleAction } from './agent-approval-resolver.js';
 import { resolveAttentionBySource } from './attention.js';
+import { DOCUMENT_EDIT_ACTION, syncSuggestionWithAction } from './document-suggestions.js';
+import { DOCUMENT_DRAFT_ACTION, isDraftTextAction, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from './document-draft-params.js';
 import { canonicalDeftyActionSql, MODULE_GOVERNED_WRITE_ACTION_NAMES, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
 import { markWorkIntentsExpiredForActions } from './work-intents.js';
 
@@ -103,10 +109,17 @@ async function closeOneBatch(tx: Tx, scope: { orgId: string; requesterId?: strin
         error: LOST_ROOM_CANCEL_REASON,
         updated_at: new Date(),
         ...(scrubbed ? { params: scrubbed, result: null, before_state: null, after_state: null, executed_at: new Date() } : {}),
+        // A cancelled document draft keeps no title or Markdown (M7 fix round 1, I3).
+        ...(row.action === DOCUMENT_DRAFT_ACTION ? { params: settledDocumentDraftParamsSql() } : {}),
       })
       .where(and(eq(agentActions.id, row.id), eq(agentActions.org_id, row.org_id), eq(agentActions.approval_status, 'pending')))
       .returning({ id: agentActions.id });
-    if (done) closed.push(done.id);
+    if (!done) continue;
+    // A document edit suggestion closes with its action (lib/document-suggestions.ts).
+    if (row.action === DOCUMENT_EDIT_ACTION) await syncSuggestionWithAction(tx, row.id, 'cancelled');
+    // A cancelled document draft's approval items name nothing, in this commit (M7 fix round 3, I3).
+    if (isDraftTextAction(row.action)) await scrubDocumentDraftItems(tx, [row.id]);
+    closed.push(done.id);
   }
   return { seen: rows.length, closed };
 }

@@ -1,6 +1,7 @@
 // ═══ Shared Calendar Types & Helpers ═══
 
 import { dateKeyInUserTimezone } from '@/lib/time';
+import { legacyNotesHref } from '@/lib/legacy-notes-redirect';
 
 export type CalTask = {
   id: string; number: number; title: string; status: string; priority: string;
@@ -10,17 +11,26 @@ export type CalTask = {
 export type CalEvent = {
   id: string; title: string; body?: string | null; event_type: string; url: string | null;
   timestamp: string; metadata: any; source: string;
+  /** Meeting notes linked to the event that the viewer can open (M2). */
+  documents?: Array<{ id: string; title: string }>;
   /** False when the viewer is an attendee of someone else's event: read-only. */
   viewer_is_owner?: boolean;
 };
 
-export type CalNote = { id: string; title: string; icon: string | null; created_at: string };
+/** `legacy`: the id is an old note id (from the API's `notes` key), not a document id. */
+export type CalNote = { id: string; title: string; icon: string | null; created_at: string; legacy?: boolean };
+
+/** Documents open at /d/<id>; an old note id goes through the /notes redirect. */
+export function calNoteHref(note: Pick<CalNote, 'id' | 'legacy'>): string {
+  return note.legacy ? legacyNotesHref(note.id) : `/d/${note.id}`;
+}
 
 export type CalReminder = { id: string; message: string; remind_at: string; is_sent: boolean };
 
 export type DayBucket = { tasks: CalTask[]; events: CalEvent[]; notes: CalNote[]; reminders: CalReminder[] };
 
-export type CalendarData = { tasks: CalTask[]; events: CalEvent[]; notes: CalNote[]; reminders?: CalReminder[] };
+/** `documents` are the notes of the day (documents since the move, F16); `notes` stays for an older API. */
+export type CalendarData = { tasks: CalTask[]; events: CalEvent[]; documents?: CalNote[]; notes?: CalNote[]; reminders?: CalReminder[] };
 
 export type CalendarView = 'month' | 'week' | 'day';
 
@@ -93,8 +103,11 @@ export function bucketByDay(data: CalendarData): Map<string, DayBucket> {
   for (const e of data.events) {
     ensure(dateKeyInUserTimezone(e.timestamp)).events.push(e);
   }
-  for (const n of data.notes) {
-    ensure(dateKeyInUserTimezone(n.created_at)).notes.push(n);
+  for (const n of data.documents ?? []) {
+    ensure(dateKeyInUserTimezone(n.created_at)).notes.push({ ...n, legacy: false });
+  }
+  for (const n of data.notes ?? []) {
+    ensure(dateKeyInUserTimezone(n.created_at)).notes.push({ ...n, legacy: true });
   }
   for (const r of (data.reminders || [])) {
     ensure(dateKeyInUserTimezone(r.remind_at)).reminders.push(r);

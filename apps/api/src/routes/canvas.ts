@@ -1,84 +1,68 @@
+// A chat's old canvas, read-only since canvases became documents (spec 5.11
+// and 5.12; plan Task F15; lib/legacy-notes.ts). The move made each canvas
+// with content a document shared with its chat, and dropped empty ones.
+//
+// GET answers a read-only view of the chat's canvas document: who may read
+// the chat (a member, or a member of the workspace reading a public chat
+// before joining) and can open the document now. It never creates anything:
+// a chat with no canvas, or one whose canvas was empty, is 404, and so is a
+// document the caller can't open. PATCH answers 410 CANVAS_MOVED, with the
+// document's id when the caller can open it (chat membership plays no part).
 import { Hono } from 'hono';
-import { eq, and } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import { documents } from '@deft/db/documents';
 import { db } from '../lib/db.js';
-import { canvases } from '@deft/db/schema';
-import { getIO } from '../socket.js';
-import { canReadSpace, requireSpaceMembership } from '../lib/space-membership.js';
+import { documentRoleFor } from '../lib/document-access.js';
+import { canvasDocumentFor, CANVAS_MOVED, documentJsonNow } from '../lib/legacy-notes.js';
+import { canReadSpace } from '../lib/space-membership.js';
 
 export const canvasRoutes = new Hono();
 
-// GET /api/spaces/:spaceId/canvas — get canvas (upsert: create empty if not exists)
+const NO_CANVAS = { error: 'This space has no canvas', code: 'NOT_FOUND' } as const;
+
+// GET /api/spaces/:spaceId/canvas — the chat's canvas document, read-only
 canvasRoutes.get('/:spaceId/canvas', async (c) => {
   const user = c.get('user');
   const spaceId = c.req.param('spaceId');
 
-  // Reading: a member of the space, or a member of the workspace (never a
-  // guest) reading a public space before joining it.
-  const canRead = await canReadSpace(spaceId, user.id, user.org_id);
-  if (!canRead) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
-
-  const [existing] = await db.select()
-    .from(canvases)
-    .where(and(eq(canvases.space_id, spaceId), eq(canvases.org_id, user.org_id)))
-    .limit(1);
-
-  if (existing) {
-    return c.json(existing);
+  if (!(await canReadSpace(spaceId, user.id, user.org_id))) {
+    return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
   }
+  const canvas = await canvasDocumentFor(user.org_id, spaceId);
+  if (!canvas?.documentId) return c.json(NO_CANVAS, 404);
+  const role = await documentRoleFor(user.id, user.org_id, canvas.documentId);
+  if (!role) return c.json(NO_CANVAS, 404);
 
-  // Creating the first, empty canvas is a write: only for someone in the space.
-  if (!(await requireSpaceMembership(spaceId, user.id, user.org_id))) {
-    return c.json({ error: 'This space has no canvas yet', code: 'NOT_FOUND' }, 404);
-  }
+  const [document] = await db.select({
+    id: documents.id, title: documents.title, content_json: documents.content_json,
+    last_edited_by: documents.last_edited_by, last_edited_at: documents.last_edited_at, updated_at: documents.updated_at,
+  }).from(documents).where(and(eq(documents.id, canvas.documentId), eq(documents.org_id, user.org_id))).limit(1);
+  if (!document) return c.json(NO_CANVAS, 404);
 
-  // Create empty canvas
-  const [canvas] = await db.insert(canvases).values({
-    org_id: user.org_id,
+  return c.json({
+    id: canvas.canvasId,
     space_id: spaceId,
-    title: 'Canvas',
-    content: null,
-  }).returning();
-
-  return c.json(canvas, 201);
+    document_id: document.id,
+    title: document.title,
+    content: await documentJsonNow(user.org_id, document.id, document.content_json),
+    last_edited_by: document.last_edited_by,
+    last_edited_at: document.last_edited_at,
+    updated_at: document.updated_at,
+    read_only: true,
+    role,
+  });
 });
 
-// PATCH /api/spaces/:spaceId/canvas — update canvas
+// PATCH /api/spaces/:spaceId/canvas — canvases are documents now: 410 for
+// everyone signed in, chat member or not; the document's access alone
+// decides whether the answer names it.
 canvasRoutes.patch('/:spaceId/canvas', async (c) => {
   const user = c.get('user');
   const spaceId = c.req.param('spaceId');
-  const body = await c.req.json();
-  const { title, content } = body;
 
-  const isMember = await requireSpaceMembership(spaceId, user.id, user.org_id);
-  if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
-
-  const updates: Record<string, unknown> = {
-    last_edited_by: user.id,
-    last_edited_at: new Date(),
-    updated_at: new Date(),
-  };
-  if (title !== undefined) updates.title = title;
-  if (content !== undefined) updates.content = content;
-
-  const [updated] = await db.update(canvases)
-    .set(updates)
-    .where(and(eq(canvases.space_id, spaceId), eq(canvases.org_id, user.org_id)))
-    .returning();
-
-  if (!updated) {
-    return c.json({ error: 'Canvas not found', code: 'NOT_FOUND' }, 404);
+  const canvas = await canvasDocumentFor(user.org_id, spaceId);
+  if (canvas?.documentId && await documentRoleFor(user.id, user.org_id, canvas.documentId)) {
+    return c.json({ ...CANVAS_MOVED, document_id: canvas.documentId }, 410);
   }
-
-  const io = getIO();
-  if (io) {
-    io.to(`space:${spaceId}`).emit('canvas:updated', {
-      space_id: spaceId,
-      title: updated.title,
-      content: updated.content,
-      last_edited_by: user.id,
-      last_edited_at: updated.last_edited_at,
-    });
-  }
-
-  return c.json(updated);
+  return c.json(CANVAS_MOVED, 410);
 });

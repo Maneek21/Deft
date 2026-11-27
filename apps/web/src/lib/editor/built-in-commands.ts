@@ -8,9 +8,9 @@
  */
 import { slashRegistry, type SlashCommand } from './commands';
 
-const COMMON_SURFACES: SlashCommand['surfaces'] = ['chat', 'note', 'task', 'task-comment', 'canvas'];
+const COMMON_SURFACES: SlashCommand['surfaces'] = ['chat', 'note', 'task', 'task-comment', 'canvas', 'document'];
 // Chat tends to be short-form; we omit headings/toggle/callout there.
-const DOC_SURFACES: SlashCommand['surfaces'] = ['note', 'task', 'canvas'];
+const DOC_SURFACES: SlashCommand['surfaces'] = ['note', 'task', 'canvas', 'document'];
 
 const commands: SlashCommand[] = [
   {
@@ -140,6 +140,20 @@ const commands: SlashCommand[] = [
           content: [{ type: 'paragraph' }],
         })
         .run();
+    },
+  },
+  {
+    // Documents only: the editor uploads it with ?document_id= (lib/editor/document-extensions.ts).
+    id: 'image',
+    group: 'insert',
+    label: 'Image',
+    description: 'Upload an image',
+    keywords: ['picture', 'photo', 'upload'],
+    surfaces: ['document'],
+    iconName: 'Image',
+    run: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).run();
+      (editor.commands as unknown as { pickDocumentImage?: () => boolean }).pickDocumentImage?.();
     },
   },
   {

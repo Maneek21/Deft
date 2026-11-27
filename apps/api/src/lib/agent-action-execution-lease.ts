@@ -51,10 +51,12 @@ import {
   WORKSPACE_PLAN_IMPORT_ACTION,
 } from './workspace-plan-import.js';
 import { DOCUMENT_SEND_ACTION, sanitizeDocumentSendParams } from './document-send.js';
+import { DOCUMENT_EDIT_ACTION, syncSuggestionWithAction } from './document-suggestions.js';
 import { markWorkIntentConvertedForAction, markWorkIntentFailedForAction } from './work-intents.js';
 import { forcedApprovalFailure } from './test-failure-switches.js';
 import { isTerminalRefusalResult, wikiProposalRefusal, wikiProposalRefusalCode } from './wiki-proposal-target.js';
 import { CONNECTED_TOOL_UNAVAILABLE_ERROR } from './connected-tool-access.js';
+import { isDraftTextAction, scrubDocumentDraftItems } from './document-draft-params.js';
 import { MODULE_OPERATION_DEFINITIONS, MODULE_OPERATION_NAMES } from '@deft/shared/modules';
 
 export type AgentActionRow = typeof agentActions.$inferSelect;
@@ -95,6 +97,20 @@ export async function withApprovalLease<T>(
   const held = await withDbAdvisoryLease(approvalLeaseKey(actionId), { wait: true }, run);
   if (!held.acquired) throw new Error('approval lease was not acquired');
   return held.value;
+}
+
+/**
+ * Run with the action's execution lease, waiting for a current holder at
+ * most `timeoutMs` (a free advisory connection and the lock both). Returns
+ * `{ acquired: false }` when it didn't come in time, having run nothing.
+ * Waiters keep their place in the lock's queue, as withApprovalLease's do.
+ */
+export function withApprovalLeaseWithin<T>(
+  actionId: string,
+  timeoutMs: number,
+  run: (lease: DbAdvisoryLease) => Promise<T>,
+) {
+  return withDbAdvisoryLease(approvalLeaseKey(actionId), { wait: true, waitTimeoutMs: timeoutMs }, run);
 }
 
 /** Condition true only while the row still carries this request's claim. */
@@ -157,26 +173,33 @@ function scrubsTerminalParams(action: string): boolean {
 
 /**
  * Terminal-fail an interrupted approval. Conditional on the observed claim;
- * moves the claim forward so the lost owner's writes no longer match.
+ * moves the claim forward so the lost owner's writes no longer match. A
+ * document edit suggestion the approval had claimed closes in the same
+ * commit (lib/document-suggestions.ts; one that was applied before the
+ * interruption is already settled and stays so).
  */
 export async function settleInterruptedApproval(row: AgentActionRow, token: ClaimToken): Promise<boolean> {
-  const [settled] = await db
-    .update(agentActions)
-    .set({
-      executed_at: new Date(),
-      error: APPROVAL_INTERRUPTED_ERROR,
-      result: { lifecycle_state: 'interrupted', interrupted_at: new Date().toISOString() },
-      approved_at: sql`${agentActions.approved_at} + interval '1 microsecond'`,
-      ...(scrubsTerminalParams(row.action) ? { params: terminalHistoryParams(row.action, row.params) as any } : {}),
-    })
-    .where(and(
-      eq(agentActions.id, row.id),
-      eq(agentActions.org_id, row.org_id),
-      eq(agentActions.approval_status, 'approved'),
-      isNull(agentActions.executed_at),
-      ownsClaim(token),
-    ))
-    .returning({ id: agentActions.id });
+  const settled = await db.transaction(async (tx) => {
+    const [stamped] = await tx
+      .update(agentActions)
+      .set({
+        executed_at: new Date(),
+        error: APPROVAL_INTERRUPTED_ERROR,
+        result: { lifecycle_state: 'interrupted', interrupted_at: new Date().toISOString() },
+        approved_at: sql`${agentActions.approved_at} + interval '1 microsecond'`,
+        ...(scrubsTerminalParams(row.action) ? { params: terminalHistoryParams(row.action, row.params) as any } : {}),
+      })
+      .where(and(
+        eq(agentActions.id, row.id),
+        eq(agentActions.org_id, row.org_id),
+        eq(agentActions.approval_status, 'approved'),
+        isNull(agentActions.executed_at),
+        ownsClaim(token),
+      ))
+      .returning({ id: agentActions.id });
+    if (stamped && row.action === DOCUMENT_EDIT_ACTION) await syncSuggestionWithAction(tx, row.id, 'cancelled');
+    return stamped;
+  });
   if (!settled) return false;
   if (row.source === 'defty_capture') {
     await markWorkIntentFailedForAction({
@@ -504,6 +527,8 @@ export async function claimPendingApproval(
       reviewerGuard,
     ))
     .returning({ token: claimTokenSql });
+  // M7 fix round 3 (I3): an approved document draft's items name nothing, in this commit.
+  if (claimed && isDraftTextAction(row.action)) await scrubDocumentDraftItems(tx, [row.id]);
   return claimed?.token ?? null;
   });
 }

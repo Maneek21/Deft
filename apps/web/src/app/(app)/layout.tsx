@@ -16,7 +16,7 @@ import { signedOutDestination } from '@/lib/two-step';
 import { getSocket } from '@/lib/socket';
 import { onMemberJoined } from '@/lib/public-spaces';
 import { applyPresenceSnapshot, applyPresenceUpdate } from '@/lib/presence-state';
-import { openDirectMessage } from '@/lib/quick-actions';
+import { createDocumentAndOpen, openDirectMessage } from '@/lib/quick-actions';
 import { useHuddle } from '@/hooks/use-huddle';
 import { useAudioLevels } from '@/hooks/use-audio-levels';
 import { HuddleOverlay } from '@/components/huddle-overlay';
@@ -72,6 +72,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const spacesLoadGeneration = useRef(0);
   // Preserve hook ordering while keeping disabled builds free of huddle socket work.
   const huddleState = useHuddle(HUDDLES_ENABLED);
+  // Why a keyboard shortcut (`g n`, a new document) did nothing; clears itself.
+  const [shortcutError, setShortcutError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!shortcutError) return;
+    const timer = setTimeout(() => setShortcutError(null), 5000);
+    return () => clearTimeout(timer);
+  }, [shortcutError]);
   const huddleStreams = huddleState.getStreams();
   const speakingMap = useAudioLevels(huddleStreams.localStream, user?.id || null, huddleStreams.peers);
 
@@ -368,7 +375,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               case 't': router.push('/tasks'); break;
               case 'a': router.push('/inbox?tab=approvals'); break;
               case 's': router.push('/settings'); break;
-              case 'n': router.push('/notes'); break;
+              case 'n':
+                void createDocumentAndOpen(api, router).then((outcome) => { if (!outcome.ok) setShortcutError(outcome.message); });
+                break;
               case 'l': router.push('/calendar'); break;
               case 'k': router.push('/knowledge'); break;
               case 'r': router.push('/reminders'); break;
@@ -538,6 +547,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           )}
           {HUDDLES_ENABLED && huddleState.error && (
             <HuddleErrorToast error={huddleState.error} onDismiss={huddleState.clearError} />
+          )}
+          {shortcutError && (
+            <div
+              role="alert"
+              className="fixed bottom-4 left-4 right-4 z-[72] rounded-xl p-3 text-[12px] sm:left-auto sm:w-[360px]"
+              style={{ background: 'var(--surface-container-highest, #1e1e2e)', border: '1px solid var(--status-red, #ef4444)', color: 'var(--text-primary)' }}
+            >
+              {shortcutError}
+            </div>
           )}
           <IosInstallHint />
         </div>

@@ -10,6 +10,7 @@
  */
 import type { api as ApiClient } from './api';
 import type { useRouter } from 'next/navigation';
+import { driveWrite } from './drive-actions';
 
 type Api = typeof ApiClient;
 type Router = ReturnType<typeof useRouter>;
@@ -64,14 +65,62 @@ export function openCreateSpace() {
 }
 
 /**
- * Create a private daily-note and navigate to it. Returns true on success.
+ * Create a document in the caller's My drive and open it at /d/<id>. The one
+ * path the `g n` shortcut, the palette, quick actions and the chat and thread
+ * `note` commands share. A failure comes back as a message every caller shows.
+ * One creation runs at a time: a second call while one is in flight gets the
+ * same promise, so a repeated Enter or `g n` makes one document.
  */
-export async function createNoteAndOpen(api: Api, router: Router, title = 'Untitled'): Promise<boolean> {
-  const res = await api.post('/api/daily-notes', { title, content: '' });
-  if (!res.ok) return false;
-  const note = await res.json() as { id: string };
-  router.push(`/notes?id=${note.id}`);
-  return true;
+export type CreateDocumentOutcome = { ok: true; id: string } | { ok: false; message: string };
+
+let creatingDocument: Promise<CreateDocumentOutcome> | null = null;
+
+function createFailure(outcome: { status: number | null; message: string }): CreateDocumentOutcome {
+  if (outcome.status === 503) return { ok: false, message: 'The workspace is paused right now. Try again when it resumes.' };
+  if (outcome.status === 403) return { ok: false, message: "You can't create documents in your drive." };
+  return { ok: false, message: outcome.message };
+}
+
+async function createDocument(api: Pick<Api, 'post'>, router: Pick<Router, 'push'>, title?: string): Promise<CreateDocumentOutcome> {
+  const mine = await driveWrite<{ drive?: { id?: string } }>(() => api.post('/api/drives/mine'), 'Could not open your drive');
+  if (!mine.ok) return createFailure(mine);
+  const driveId = mine.body.drive?.id;
+  if (!driveId) return { ok: false, message: 'Could not open your drive' };
+  const trimmed = title?.trim();
+  const created = await driveWrite<{ document?: { id?: string } }>(
+    () => api.post('/api/documents', { drive_id: driveId, ...(trimmed ? { title: trimmed } : {}) }),
+    'Could not create the document',
+  );
+  if (!created.ok) return createFailure(created);
+  const id = created.body.document?.id;
+  if (!id) return { ok: false, message: 'Could not create the document' };
+  router.push(`/d/${id}`);
+  return { ok: true, id };
+}
+
+export function createDocumentAndOpen(
+  api: Pick<Api, 'post'>,
+  router: Pick<Router, 'push'>,
+  title?: string,
+): Promise<CreateDocumentOutcome> {
+  if (creatingDocument) return creatingDocument;
+  const run = createDocument(api, router, title).finally(() => { if (creatingDocument === run) creatingDocument = null; });
+  creatingDocument = run;
+  return run;
+}
+
+/** The only slash command a thread composer acts on; every other one behaves as it did before (posted as text, or ignored). */
+export const THREAD_SLASH_COMMANDS = ['note'] as const;
+
+/** A thread composer's `/note` makes a document. Any other command is left alone: no request, no rejection. */
+export async function runThreadSlashCommand(
+  command: string,
+  args: string,
+  deps: { api: Pick<Api, 'post'>; router: Pick<Router, 'push'> },
+): Promise<void> {
+  if (command !== 'note') return;
+  const outcome = await createDocumentAndOpen(deps.api, deps.router, args || undefined);
+  if (!outcome.ok) throw new Error(outcome.message);
 }
 
 /**

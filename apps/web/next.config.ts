@@ -57,7 +57,7 @@ const nextConfig: NextConfig = {
     config.resolve.extensionAlias = { ...config.resolve.extensionAlias, ".js": [".ts", ".tsx", ".js"] };
     return config;
   },
-  transpilePackages: ['@deft/shared'],
+  transpilePackages: ['@deft/shared', '@deft/doc-schema'],
   // App Kit keeps .js specifiers for its emitted Node ESM package. The host
   // imports these reviewed TypeScript sources directly, so resolve only those
   // source-to-source requests to their existing .ts files for Turbopack.

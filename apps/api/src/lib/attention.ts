@@ -21,6 +21,9 @@ import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-pu
 import { nativeDeliveryAccessSql, nativeNotificationAccessSql } from './native-mention-visibility.js';
 import { taskHiddenFromGuestSql } from './task-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
+import { visibleDocumentIdSql } from './document-access.js';
+import { DOCUMENT_DRAFT_ACTION, DOCUMENT_DRAFT_ITEM_BODY, documentTextHiddenFrom, draftItemBodySql, EDIT_SUMMARY_HIDDEN, isDraftTextAction } from './document-draft-params.js';
+import type { AnyNotificationType } from './notification-types.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
 import {
   currentRoleReviewableActionSql, EVERY_REVIEW_GATE_ACTION, readReviewGateScope, type ReviewGateScope,
@@ -69,7 +72,7 @@ export type AttentionDraft = {
  */
 export const ATTENTION_SOURCE_TYPES = [
   'agent', 'agent_action', 'agent_channel_event', 'app_integration_source', 'app_run', 'calendar',
-  'cross_reference', 'message', 'native_mention', 'note', 'notification', 'space', 'task', 'wiki_page',
+  'cross_reference', 'document', 'message', 'native_mention', 'note', 'notification', 'space', 'task', 'wiki_page',
 ] as const;
 
 export type AttentionSourceType = typeof ATTENTION_SOURCE_TYPES[number];
@@ -96,6 +99,8 @@ const SOURCE_TYPE_ACCESS: Partial<Record<AttentionSourceType, (userId: string, s
   // An agent's request for help on a task (cooperative.ts) names the task in its metadata.
   agent_channel_event: (userId) => sql`NOT ${taskHiddenFromGuestSql(userId, sql`${attentionItems.metadata}->>'task_id'`, sql`${attentionItems.org_id}`)}`,
   native_mention: (userId) => nativeDeliveryAccessSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`),
+  // A document shared with the reader (F9): shown only while they can open it (lib/document-access.ts).
+  document: (userId) => visibleDocumentIdSql(userId, sql`${attentionItems.org_id}`, sql`${attentionItems.source_id}`),
   message: (userId) => sql`EXISTS (
         SELECT 1
         FROM ${messages}
@@ -284,6 +289,47 @@ export function projectAttentionItem<T extends { metadata: unknown }>(item: T): 
   return { ...safe, metadata };
 }
 
+type ReaderItem = {
+  org_id: string; user_id: string; kind: string; source_type: string | null; source_id: string | null; body: string | null; metadata: unknown;
+};
+
+/**
+ * M7 fix round 5 (read time): an approval item of a draft tool (a document,
+ * note or canvas draft) shows its stored body only to the action's
+ * requester, the item's reader being its `user_id`; anyone else (a fallback
+ * owner or admin, an assigned reviewer) reads DOCUMENT_DRAFT_ITEM_BODY. This
+ * covers items raised before fix round 4 named a draft to its reviewer, with
+ * no data migration. A create_document item says that body to everyone
+ * (fix round 2), and so does an item whose action is gone. Every other item
+ * is returned as it is.
+ */
+export async function withReaderDraftItemBodies<T extends ReaderItem>(items: readonly T[]): Promise<T[]> {
+  const approvals = items.filter((item) => item.kind === 'approval' && item.source_type === 'agent_action' && typeof item.source_id === 'string');
+  if (approvals.length === 0) return [...items];
+  const ids = [...new Set(approvals.map((item) => item.source_id as string))];
+  const orgIds = [...new Set(approvals.map((item) => item.org_id))];
+  const actions = await db.select({ id: agentActions.id, org_id: agentActions.org_id, action: agentActions.action, user_id: agentActions.user_id })
+    .from(agentActions)
+    .where(and(inArray(agentActions.id, ids), inArray(agentActions.org_id, orgIds)));
+  const byId = new Map(actions.map((action) => [action.id, action]));
+  return items.map((item) => {
+    if (item.kind !== 'approval' || item.source_type !== 'agent_action' || typeof item.source_id !== 'string') return item;
+    const action = byId.get(item.source_id);
+    const named = objectMetadata(item.metadata).action;
+    if (!action || action.org_id !== item.org_id) return isDraftTextAction(named) ? { ...item, body: DOCUMENT_DRAFT_ITEM_BODY } : item;
+    // M7 consult O-F4: an edit's summary only for its asker.
+    if (action.action === 'edit_document') return action.user_id === item.user_id ? item : { ...item, body: EDIT_SUMMARY_HIDDEN };
+    if (!isDraftTextAction(action.action)) return item;
+    const hidden = action.action === DOCUMENT_DRAFT_ACTION || documentTextHiddenFrom(action, item.user_id);
+    return hidden ? { ...item, body: DOCUMENT_DRAFT_ITEM_BODY } : item;
+  });
+}
+
+/** Outbound attention items for their reader: projectAttentionItem, after the draft-body rule (fix round 5). */
+export async function projectAttentionItemsForReader<T extends ReaderItem>(items: readonly T[]): Promise<T[]> {
+  return (await withReaderDraftItemBodies(items)).map(projectAttentionItem);
+}
+
 type LegacyNotification = typeof notifications.$inferSelect;
 type AgentAction = typeof agentActions.$inferSelect;
 
@@ -352,7 +398,8 @@ export function notificationToAttentionDraft(notification: LegacyNotification): 
   let sourceId = notification.id;
   let dedupeKey = explicitDedupe ?? `notification:${notification.id}`;
 
-  switch (notification.type) {
+  // Widened: `document_shared` exists only through upgrade SQL (lib/notification-types.ts).
+  switch (notification.type as AnyNotificationType) {
     case 'mention':
       lane = 'needs_you';
       sourceType = 'message';
@@ -417,6 +464,18 @@ export function notificationToAttentionDraft(notification: LegacyNotification): 
     case 'system':
       lane = metadata.action_required === true ? 'needs_you' : 'updates';
       break;
+    case 'document_shared': {
+      // A document shared with the reader (F9) is a document item, shown only
+      // while they can open it. A drive shared with them (F4, F6: drive_id and
+      // no document) stays a notification item, under the notification rule.
+      const documentId = metadataString(metadata, 'document_id');
+      if (documentId) {
+        sourceType = 'document';
+        sourceId = documentId;
+        dedupeKey = explicitDedupe ?? `document_shared:${documentId}:${notification.user_id}`;
+      }
+      break;
+    }
   }
 
   return {
@@ -437,8 +496,15 @@ export function notificationToAttentionDraft(notification: LegacyNotification): 
   };
 }
 
-function approvalActionLabel(action: AgentAction): string {
+function approvalActionLabel(action: AgentAction, userId: string): string {
   if (isModuleGovernedWriteActionName(action.action)) return action.action.replaceAll('_', ' ');
+  // M7 fix round 2 (I3): a document draft's item never carries its title.
+  if (action.action === DOCUMENT_DRAFT_ACTION) return DOCUMENT_DRAFT_ITEM_BODY;
+  // M7 fix round 4: a note or canvas draft's title or text only on the item of
+  // the person who asked; a fallback reviewer's item names nothing.
+  if (documentTextHiddenFrom(action, userId)) return DOCUMENT_DRAFT_ITEM_BODY;
+  // M7 consult O-F4: an edit's summary only on its asker's item.
+  if (action.action === 'edit_document' && action.user_id !== userId) return EDIT_SUMMARY_HIDDEN;
   const params = objectMetadata(action.params);
   return metadataString(params, 'summary', 'title', 'task_title', 'page_title', 'content')
     ?? action.action.replaceAll('_', ' ');
@@ -465,7 +531,7 @@ export function approvalToAttentionDraft(action: AgentAction, userId: string): A
     sourceId: action.id,
     sourceEventId: `approval-requested:${action.id}`,
     title: `Review ${action.action.replaceAll('_', ' ')}`,
-    body: approvalActionLabel(action),
+    body: approvalActionLabel(action, userId),
     link,
     metadata: {
       action_id: action.id,
@@ -483,7 +549,9 @@ async function emitAttention(event: 'attention:new' | 'attention:updated', item:
   try {
     const current = await loadVisibleAttentionSnapshot(item);
     if (!current) return;
-    emitToUser(current.org_id, current.user_id, event, projectAttentionItem(current));
+    // M7 fix round 5: a draft's item body only for its requester.
+    const [shown] = await projectAttentionItemsForReader([current]);
+    emitToUser(current.org_id, current.user_id, event, shown);
   } catch (error) {
     console.warn('[attention] realtime delivery skipped:');
   }
@@ -757,10 +825,13 @@ export async function syncNotificationsToAttention(
     return [];
   });
   const projectedIds = new Set(projected.map((item) => item.id));
-  for (const item of visible) {
-    if (projectedIds.has(item.id)) {
-      emitToUser(item.org_id, item.user_id, item.event_count > 1 ? 'attention:updated' : 'attention:new', projectAttentionItem(item));
-    }
+  // M7 fix round 5: a draft's item body only for its requester.
+  const shownItems = await projectAttentionItemsForReader(visible.filter((item) => projectedIds.has(item.id))).catch((error) => {
+    console.warn('[attention] draft item projection failed; skipping realtime delivery');
+    return [];
+  });
+  for (const item of shownItems) {
+    emitToUser(item.org_id, item.user_id, item.event_count > 1 ? 'attention:updated' : 'attention:new', item);
   }
   if (options.deliver !== false) {
     await scheduleAttentionDeliveries(visible).catch((error) => {
@@ -884,6 +955,8 @@ export async function resolveApprovalItemsWithoutReviewer(limit = 500) {
     snoozed_until: null,
     resolved_at: now,
     resolution: 'source_access_removed',
+    // M7 fix round 3 (I3): a document draft's item names nothing once its reviewer loses it, in this same statement.
+    body: draftItemBodySql(),
     version: sql`${attentionItems.version} + 1`,
     updated_at: now,
   }).where(and(inArray(attentionItems.id, scanned.map((row) => row.id)), withoutReviewer))
@@ -1097,6 +1170,8 @@ export async function transitionAttentionItem(params: {
       snoozed_until: params.state === 'snoozed' ? params.snoozedUntil ?? null : null,
       resolved_at: terminal ? now : null,
       resolution: terminal ? params.resolution ?? null : null,
+      // M7 fix round 2 (I3): a document draft's approval item that settles names nothing, whenever it was made.
+      body: terminal ? draftItemBodySql() : undefined,
       version: sql`${attentionItems.version} + 1`,
       updated_at: now,
     })

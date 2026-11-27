@@ -166,7 +166,17 @@ test('the hook listens to the events the server sends an approval\'s reviewers, 
   const emitted = attention.match(/async function emitAttention\(event: ([^,]+),/)?.[1];
   assert.ok(emitted, 'lib/attention.ts emitAttention');
   assert.deepEqual([...emitted.matchAll(/'([a-z:]+)'/g)].map((match) => match[1]).sort(), [...APPROVAL_ATTENTION_EVENTS].sort());
-  assert.match(attention, /emitToUser\(current\.org_id, current\.user_id, event, projectAttentionItem\(current\)\)/, 'the item itself is the payload');
+  // M7 fix round 5: the payload is the item itself, projected for its reader
+  // (a draft's body only for its requester) before it is sent.
+  assert.match(attention, /const \[shown\] = await projectAttentionItemsForReader\(\[current\]\);\s*emitToUser\(current\.org_id, current\.user_id, event, shown\);/,
+    'the item itself is the payload, projected for its reader');
+  assert.match(attention, /export async function projectAttentionItemsForReader<T extends ReaderItem>\(items: readonly T\[\]\): Promise<T\[\]> \{\s*return \(await withReaderDraftItemBodies\(items\)\)\.map\(projectAttentionItem\);\s*\}/,
+    'the projection is projectAttentionItem of each item, after the draft-body rule');
+  const bodyRule = attention.match(/export async function withReaderDraftItemBodies[\s\S]*?\n\}\n/)?.[0];
+  assert.ok(bodyRule, 'lib/attention.ts withReaderDraftItemBodies');
+  const rewrites = [...bodyRule.matchAll(/\{ \.\.\.item, ([^}]*) \}/g)].map((match) => match[1]);
+  assert.ok(rewrites.length > 0, 'the draft-body rule rewrites an item');
+  assert.deepEqual([...new Set(rewrites)], ['body: DOCUMENT_DRAFT_ITEM_BODY'], 'it replaces only the body, so the type and source stay the item\'s');
   assert.match(attention, /export function approvalToAttentionDraft[\s\S]*?sourceType: 'agent_action'/, 'an approval\'s item has source_type agent_action');
 });
 

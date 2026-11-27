@@ -19,8 +19,10 @@ import type { AppRunTransaction } from './app-run-repository.js';
  * or reject their own proposed write. Org owners and admins may review any
  * proposal. An approver assignment counts when it names one of these
  * reviewers, so it never admits anyone else. Action-specific
- * rules stay stricter: record-mirror nominations are owner-only and App Run
- * releases keep their owner and web-session rules. Internal
+ * rules stay stricter: record-mirror nominations are owner-only, App Run
+ * releases keep their owner and web-session rules, and an agent's document
+ * edit suggestion (`edit_document`, lib/document-suggestions.ts) is decided
+ * only by the person who asked, with no owner or admin fallback. Internal
  * system flows must opt into the explicit `internal` bypass instead of
  * impersonating a human reviewer.
  *
@@ -59,6 +61,7 @@ import {
   recoverInterruptedApproval,
   tryWithApprovalLease,
   withApprovalLease,
+  withApprovalLeaseWithin,
   type ClaimToken,
 } from './agent-action-execution-lease.js';
 import { AppError } from './app-errors.js';
@@ -121,6 +124,19 @@ import {
 } from './module-record-bulk-create.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import {
+  DOCUMENT_EDIT_ACTION,
+  NOT_REQUESTER_MESSAGE,
+  prepareSuggestionForApproval,
+  releaseSuggestionClaimInTx,
+  suggestionApplyLeaseWaitMs,
+  suggestionReviewerRefusal,
+  suggestionRetryOf,
+  suggestionRetryRefusal,
+  syncSuggestionWithAction,
+  type SuggestionApprovalCode,
+  type SuggestionClaim,
+} from './document-suggestions.js';
+import {
   APP_RUN_APPROVAL_ACTION,
 } from './app-run-approval-adapter.js';
 import { getAppRunRuntime } from './app-run-runtime.js';
@@ -135,10 +151,10 @@ export function _setAppRunApprovalResolverForTest(
   appRunApprovalResolverForTest = resolver;
 }
 
-type ReviewerRecheckPoint = 'before_decision' | 'before_return';
+type ReviewerRecheckPoint = 'before_decision' | 'before_execute' | 'before_return';
 let reviewerRecheckHookForTest: ((point: ReviewerRecheckPoint, actionId: string) => Promise<void>) | null = null;
 
-/** Test seam: runs before each guarded decision statement and before a result is re-authorized. */
+/** Test seam: runs before each guarded decision statement, after an approval's claim before it executes, and before a result is re-authorized. */
 export function _setReviewerRecheckHookForTest(
   hook: ((point: ReviewerRecheckPoint, actionId: string) => Promise<void>) | null,
 ): void {
@@ -182,12 +198,13 @@ export { sanitizeModuleActionParamsForReceipt };
  * record through this resolver. App Runs remain outside MCP action catalogs
  * and budgets; this predicate only owns the human approval handoff. */
 export function isApprovalResolverAction(action: string): boolean {
-  return action === 'email_send' || action === 'app_record_mirror_nominate' || action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
+  // DOCUMENT_EDIT_ACTION: an agent's document edit suggestion (M6), which only its asker decides, here.
+  return action === 'email_send' || action === 'app_record_mirror_nominate' || action === APP_RUN_APPROVAL_ACTION || action === DOCUMENT_EDIT_ACTION || MCP_ACTION_KINDS.has(action);
 }
 
 /** The action names `isApprovalResolverAction` accepts, for SQL filters. */
 export const APPROVAL_RESOLVER_ACTION_NAMES: readonly string[] = Object.freeze([
-  'email_send', 'app_record_mirror_nominate', APP_RUN_APPROVAL_ACTION, ...MCP_ACTION_KINDS,
+  'email_send', 'app_record_mirror_nominate', APP_RUN_APPROVAL_ACTION, DOCUMENT_EDIT_ACTION, ...MCP_ACTION_KINDS,
 ]);
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
@@ -675,7 +692,16 @@ export type ApprovalResolverError =
   | { status: 'error'; code: 'EXECUTE_FAILED'; message: string; refusalCode?: WikiProposalRefusalCode }
   /** This request's execution lease dropped: nothing was recorded and the
    *  approved action is left for recovery to settle. */
-  | { status: 'error'; code: 'LEASE_LOST'; message: string };
+  | { status: 'error'; code: 'LEASE_LOST'; message: string }
+  /** A document edit suggestion (lib/document-suggestions.ts) was not applied
+   *  and its action is pending: the document moved since it was reviewed
+   *  (REVIEW_IN_DOCUMENT from the card, REVISION_CHANGED from the review),
+   *  another apply came first, nothing chosen can be applied, or live editing
+   *  is busy. */
+  | { status: 'error'; code: SuggestionApprovalCode; message: string }
+  /** Someone other than the asker, who can open the document, on a document
+   *  edit suggestion: only the asker reviews it (403 on every path). */
+  | { status: 'error'; code: 'NOT_REQUESTER'; message: string };
 
 /**
  * `decidedElsewhere` is set when the row was already settled or another
@@ -783,7 +809,22 @@ async function callerMayReceiveResult(
 /** Results that say nothing about the action beyond its absence or a refusal. */
 function carriesNoActionContent(result: ApprovalResolverResult): boolean {
   return result.status === 'error'
-    && (result.code === 'NOT_FOUND' || result.code === 'FORBIDDEN' || result.code === 'LEASE_LOST');
+    && (result.code === 'NOT_FOUND' || result.code === 'FORBIDDEN' || result.code === 'LEASE_LOST' || result.code === 'NOT_REQUESTER');
+}
+
+/**
+ * The reviewer rule's refusal for an action: an edit suggestion someone
+ * else asked for is 403 NOT_REQUESTER when the caller can open its
+ * document and 404 NOT_FOUND when they can't (nothing about it is told);
+ * every other refusal is FORBIDDEN with its message.
+ */
+async function reviewerRefusalResult(row: { id: string; org_id: string; action: string }, userId: string, refusal: string): Promise<ApprovalResolverError> {
+  if (row.action === DOCUMENT_EDIT_ACTION) {
+    const refused = await suggestionReviewerRefusal(row.org_id, row.id, userId);
+    if (refused === 'NOT_REQUESTER') return { status: 'error', code: 'NOT_REQUESTER', message: NOT_REQUESTER_MESSAGE };
+    if (refused === 'NOT_FOUND') return { status: 'error', code: 'NOT_FOUND', message: `agent_actions row ${row.id} not found` };
+  }
+  return { status: 'error', code: 'FORBIDDEN', message: refusal };
 }
 
 const notReviewer = (): ApprovalResolverError => ({
@@ -845,6 +886,13 @@ export async function reviewerRefusal(
   // the internal system path never stands in for the owning human.
   if (decision === 'approve' && row.action === 'app_record_mirror_nominate' && userId !== row.user_id) {
     return 'only the owning user may approve a record-mirror nomination';
+  }
+  // A document edit suggestion is its asker's alone (the 13 Nov rule; the M6
+  // consult): no owner or admin fallback, and no internal stand-in, for
+  // approval or rejection.
+  if (row.action === DOCUMENT_EDIT_ACTION) {
+    const asker = options.requesterId ?? await loadActionRequesterId(row);
+    return membership !== null && asker === userId ? null : 'only the person who asked may review this suggestion';
   }
   const humanCanReview = membership !== null && (
     (options.requesterId ?? await loadActionRequesterId(row)) === userId
@@ -1142,14 +1190,44 @@ async function dispatchAction(
 export async function approveAction(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; humanWebSessionId?: string } = {},
+  options: {
+    internal?: boolean;
+    appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>;
+    humanWebSessionId?: string;
+    /** Set only by applySuggestion (lib/document-suggestions.ts): the asker's choice, which the claim under the lease takes. */
+    suggestionClaim?: SuggestionClaim;
+  } = {},
 ): Promise<ApprovalResolverResult> {
+  const seen: { suggestionToken?: string } = {};
+  const locked = async (lease: DbAdvisoryLease) => {
+    let outcome: ApprovalResolverResult | undefined;
+    try {
+      outcome = await approveActionLocked(actionId, approverUserId, { ...options, seen }, lease);
+      return outcome;
+    } finally {
+      // An edit suggestion this request claimed, for an approval that didn't
+      // start, goes back to pending before the lease is released: only its own
+      // claim (the token), and not once the lease is lost (fix rounds 1 and 2,
+      // I1). Also when the approval threw (M7 consult O-F9): the release only
+      // touches a claim whose action is still pending.
+      const released = outcome === undefined || (outcome.status === 'error' && outcome.code !== 'LEASE_LOST');
+      if (seen.suggestionToken && released && !lease.lost) {
+        await releaseSuggestionClaimInTx(db, actionId, seen.suggestionToken);
+      }
+    }
+  };
   // The execution lease is held for the whole approval so a recovery can
-  // tell a live executor from one that is gone.
-  const result = await withApprovalLease(
-    actionId,
-    (lease) => approveActionLocked(actionId, approverUserId, options, lease),
-  );
+  // tell a live executor from one that is gone. An apply from the document
+  // review waits for it at most suggestionApplyLeaseWaitMs (N2), then answers
+  // that the suggestion is being resolved, having changed nothing.
+  let result: ApprovalResolverResult;
+  if (options.suggestionClaim) {
+    const held = await withApprovalLeaseWithin(actionId, suggestionApplyLeaseWaitMs(), locked);
+    if (!held.acquired) return { status: 'error', code: 'SUGGESTION_ALREADY_RESOLVING', message: 'This suggestion is already being applied, or has been settled' };
+    result = held.value;
+  } else {
+    result = await withApprovalLease(actionId, locked);
+  }
   if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
     await publishApprovalResolution(actionId, approverUserId);
   }
@@ -1167,6 +1245,9 @@ async function approveActionLocked(
     humanWebSessionId?: string;
     /** Maintenance resume of a decision already recorded under `approverUserId`. */
     resume?: boolean;
+    suggestionClaim?: SuggestionClaim;
+    /** This request's claim token once it has claimed the action's edit suggestion, for approveAction. */
+    seen?: { suggestionToken?: string };
   },
   lease: DbAdvisoryLease,
 ): Promise<ApprovalResolverResult> {
@@ -1196,13 +1277,7 @@ async function approveActionLocked(
   const membership = await loadReviewMembership(approverUserId, row.org_id);
   const requesterId = await loadActionRequesterId(row);
   const refusal = await reviewerRefusal('approve', row, approverUserId, membership, { internal: options.internal, requesterId });
-  if (refusal) {
-    return {
-      status: 'error',
-      code: 'FORBIDDEN',
-      message: refusal,
-    };
-  }
+  if (refusal) return reviewerRefusalResult(row, approverUserId, refusal);
 
   // A maintenance resume carries out a decision already made; the reviewer
   // rule applies to new decisions and to every other read of the row.
@@ -1315,7 +1390,9 @@ async function approveActionLocked(
 
   // Retained native proposals remain audit records, never replacement sends.
   if(row.source==='native_email'||row.action==='email_send')return {status:'error',code:'UNSUPPORTED_ACTION',message:'The built-in mailbox action is retired'};
-  if (!MCP_ACTION_KINDS.has(row.action) && !row.action.startsWith('mcp__') && !ACTION_TOOLS.has(row.action)) {
+  // An edit suggestion's executor is executeAction's: edit_document is a registered action tool (M7).
+  const isNativeAction = ACTION_TOOLS.has(row.action);
+  if (!MCP_ACTION_KINDS.has(row.action) && !row.action.startsWith('mcp__') && !isNativeAction) {
     return {
       status: 'error',
       code: 'UNSUPPORTED_ACTION',
@@ -1468,12 +1545,25 @@ async function approveActionLocked(
     }
   }
 
+  // A document edit suggestion is claimed with the blocks to apply, under
+  // this request's lease, after the reviewer rule and as late as it can be
+  // before the action is (lib/document-suggestions.ts): the document must
+  // still be at the revision the asker saw, or nothing changes.
+  if (row.action === DOCUMENT_EDIT_ACTION && !resumesApprovedModule) {
+    if (lease.lost) return leaseLost(actionId);
+    const claim = await prepareSuggestionForApproval(row.org_id, row.id, options.suggestionClaim ?? null, lease);
+    if (claim.refusal) return { status: 'error', code: claim.refusal.code, message: claim.refusal.message };
+    if (claim.claimToken && options.seen) options.seen.suggestionToken = claim.claimToken;
+  }
+
   // Phase 12 review fix — atomic claim. Two concurrent callers could both
   // pass the `status === 'pending'` read above; the UPDATE … WHERE … AND
   // approval_status = 'pending' only succeeds for one of them. If this
   // returns zero rows, we lost the race and return the idempotent result.
   if (!resumesApprovedModule) {
     await reviewerRecheckPoint('before_decision', actionId);
+    // An edit suggestion's approval doesn't claim the action once its lease is lost.
+    if (row.action === DOCUMENT_EDIT_ACTION && lease.lost) return leaseLost(actionId);
     // The requester's room-access lock (shared) first, so the claiming
     // statement never reads access from before a loss that commits while it
     // waits (lib/room-access-lock.ts).
@@ -1554,6 +1644,7 @@ async function approveActionLocked(
     if (!stillCurrent) return reviewerGuard ? notReviewer() : sourceUnavailable();
   }
 
+  await reviewerRecheckPoint('before_execute', actionId);
   let toolResult: ToolResult;
   let caughtError: Error | null = null;
   try {
@@ -1562,7 +1653,7 @@ async function approveActionLocked(
     if (!await actionSourceIsCurrent(actionId, sourceReaderId)) {
       toolResult = { content: [{ type: 'text', text: sourceUnavailable().message }], isError: true };
     } else if (
-      ACTION_TOOLS.has(row.action)
+      isNativeAction
       && (!MCP_ACTION_KINDS.has(row.action) || (isModuleMutation && !ctx))
     ) {
       const executed = await executeAgentAction(
@@ -1574,6 +1665,8 @@ async function approveActionLocked(
         {
           agentEmployeeId: row.agent_employee_id ?? undefined,
           trustedHumanMcpPrincipal: hasHumanMcpBulkProvenance(row),
+          // The edit suggestion this approval claimed: the executor writes only under it.
+          ...(options.seen?.suggestionToken ? { suggestionClaimToken: options.seen.suggestionToken } : {}),
         },
       );
       toolResult = {
@@ -1618,6 +1711,35 @@ async function approveActionLocked(
   } catch {
     // leave as string
   }
+
+  // An edit suggestion the executor could not apply with nothing written
+  // (the document moved since the revision the asker saw, live editing was
+  // busy, or nothing chosen is left): the action and the suggestion go back
+  // to pending under this request's claim, as a retryable failure leaves an
+  // ordinary approval, and the asker is sent to review it again.
+  const suggestionRetry = row.action === DOCUMENT_EDIT_ACTION && isError && !caughtError ? suggestionRetryOf(parsedResult) : null;
+  if (suggestionRetry) {
+    if (lease.lost) return leaseLost(actionId);
+    const reopened = await db.transaction(async (tx) => {
+      const [back] = await tx.update(agentActions)
+        .set({ approval_status: 'pending', approved_at: null, approved_by_user_id: null, executed_at: null, result: null, error: null })
+        .where(and(
+          eq(agentActions.id, actionId),
+          eq(agentActions.org_id, row.org_id),
+          eq(agentActions.approval_status, 'approved'),
+          ownsClaim(claimToken!),
+        ))
+        .returning({ id: agentActions.id });
+      if (!back) return false;
+      if (options.seen?.suggestionToken) await releaseSuggestionClaimInTx(tx, actionId, options.seen.suggestionToken);
+      return true;
+    });
+    if (reopened) {
+      const refused = suggestionRetryRefusal(suggestionRetry, options.suggestionClaim?.fromReview === true);
+      return { status: 'error', code: refused.code, message: refused.message };
+    }
+  }
+
   const partialBulkResult = row.action === MODULE_RECORD_BULK_CREATE_ACTION
     && isError
     && parsedResult !== null
@@ -1661,6 +1783,12 @@ async function approveActionLocked(
         actionParams: row.params,
         reason: resultText || caughtError?.message || 'execution failed',
       }, tx);
+      // A failed approval closes its edit suggestion in this commit, whatever
+      // stopped it: the source check above, or anything the executor didn't
+      // settle itself (fix round 1, I3).
+      if (row.action === DOCUMENT_EDIT_ACTION && options.seen?.suggestionToken) {
+        await syncSuggestionWithAction(tx, row.id, 'cancelled', options.seen.suggestionToken);
+      }
     } else {
       await markWorkIntentConvertedForAction({
         actionId: row.id,
@@ -1954,13 +2082,7 @@ async function rejectActionOnce(
   // same reviewer boundary before any early return or repair side effect.
   const membership = await loadReviewMembership(rejecterUserId, row.org_id);
   const refusal = await reviewerRefusal('reject', row, rejecterUserId, membership);
-  if (refusal) {
-    return {
-      status: 'error',
-      code: 'FORBIDDEN',
-      message: refusal,
-    };
-  }
+  if (refusal) return reviewerRefusalResult(row, rejecterUserId, refusal);
   // As on approval, the reviewer rule is also part of the rejection's predicate.
   let reviewerGuard: SQL | undefined;
   if (!hasOwnReviewerRule(row.action)) {
@@ -2049,6 +2171,8 @@ async function rejectActionOnce(
       dismissedBy: rejecterUserId,
       reason: rejectionReason,
     }, tx);
+    // A document edit suggestion is rejected with its action, in this commit.
+    if (row.action === DOCUMENT_EDIT_ACTION) await syncSuggestionWithAction(tx, row.id, 'rejected');
     return claimed;
   });
 

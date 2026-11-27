@@ -36,7 +36,9 @@ test('C14: confirmation copy reports a failed sibling as failed', () => {
   assert.doesNotMatch(text, /completed 2/);
   assert.doesNotMatch(text, /Created note "Buyer notes"/);
   assert.match(text, /Updated wiki page "Trial guide"/);
-  assert.match(text, /create note "Buyer notes" did not complete/i);
+  // M7 fix round 5: posted in the room, so a note draft's failure names no title (rule C4).
+  assert.match(text, /Create note did not complete/);
+  assert.doesNotMatch(text, /Buyer notes/);
 });
 
 test('C14: when every approved action failed the copy does not start with Done', () => {

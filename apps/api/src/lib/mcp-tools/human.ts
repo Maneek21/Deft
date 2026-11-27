@@ -2,10 +2,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { discoverPersonalInstalledTools } from './installed-apps.js';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
+import { documentTextParamsForViewer } from '../document-draft-params.js';
 import { z } from 'zod';
 import { NativeMentionSourceSchema, nativeMentionToken } from '@deft/shared';
 import { searchNativeMentions, publishNativeMentions, enqueueNativeMentionPublication } from '../native-mentions.js';
 import { nativeNotificationAccessSql } from '../native-mention-visibility.js';
+import { accessLossInTx, finishAccessLoss } from '../document-access-change.js';
+import { emitDocumentAccessChanged } from '../document-access-events.js';
 import { withoutUnverifiableReplyText } from '../reply-notification-text.js';
 import {
   agentActions,
@@ -13,8 +16,6 @@ import {
   attentionItems,
   events,
   messages,
-  notes,
-  noteVersions,
   notifications,
   oauthAuditEvents,
   orgMembers,
@@ -43,9 +44,12 @@ import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
 import { isTaskStatus, taskPriorityError, type TaskStatus } from '../task-priority.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
-import { visibleNoteCondition } from '../note-visibility.js';
+import { docFavorites } from '@deft/db/documents';
+import {
+  createNoteDocument, documentIdForNoteRef, noteContentJson, noteToolError, readNoteDocument, replaceDocumentContent, searchNoteDocuments,
+} from '../legacy-notes.js';
+import { DocumentRefusal, softDeleteDocument, updateDocument } from '../documents.js';
 import { liveHumanCalendarEventCondition } from '../calendar-event-visibility.js';
-import { syncNoteFiles } from '../note-file-claims.js';
 import { canReadSpace, readableSpaceSql } from '../space-membership.js';
 import { Context } from 'hono';
 import { currentActionReviewerSql } from '../agent-action-review-gate.js';
@@ -54,7 +58,7 @@ import { toPlainText } from '../plain-text.js';
 import {
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
-  projectAttentionItem,
+  projectAttentionItemsForReader,
   readAttentionWithSourceTypes,
   visibleAttentionCondition,
   transitionAttentionItem,
@@ -562,12 +566,65 @@ function fallbackDedupeSignature(toolName: string, args: Record<string, unknown>
   return createHash('sha256').update(`${toolName}:${stableJson(input)}`).digest('hex');
 }
 
+/** The document a note tool's answer names, or null (rule C4, M7). */
+function noteAnswerDocumentId(result: ToolResult): string | null {
+  try {
+    const payload = JSON.parse(result.content[0]?.text ?? '') as Record<string, any>;
+    const note = payload && typeof payload.note === 'object' && payload.note !== null ? payload.note as Record<string, unknown> : {};
+    const id = [payload?.document_id, note.document_id, note.id].find((value) => typeof value === 'string' && value.length > 0);
+    return typeof id === 'string' ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The outcome a note tool's answer reports (created, updated, archived), and nothing else. */
+function noteAnswerOutcome(result: ToolResult): Record<string, boolean> {
+  try {
+    const payload = JSON.parse(result.content[0]?.text ?? '') as Record<string, unknown>;
+    return Object.fromEntries(['created', 'updated', 'archived'].flatMap((key) => (typeof payload?.[key] === 'boolean' ? [[key, payload[key] as boolean]] : [])));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * A note tool's answer as kept for replay (rule C4, M7): the outcome and the
+ * document, never its title or content, which a replay reads again.
+ */
+function noteAnswerReference(result: ToolResult): ToolResult {
+  const id = noteAnswerDocumentId(result);
+  return textResult({ ...noteAnswerOutcome(result), ...(id ? { document_id: id, url: `/d/${id}`, note: { id, document_id: id } } : {}) });
+}
+
+/**
+ * A note tool's replay (rule C4, M7): the note read again, as the caller may
+ * open it now (readNoteDocument, the one access check); a caller who can't
+ * gets the outcome and the document's id only. Whatever an older stored
+ * answer held is never served.
+ */
+function noteAnswerReplay(ctx: HumanToolContext): (stored: ToolResult) => Promise<ToolResult> {
+  return async (stored) => {
+    const id = noteAnswerDocumentId(stored);
+    const note = id ? await readNoteDocument(ctx.org_id, ctx.user_id, id) : null;
+    if (!id || !note) return noteAnswerReference(stored);
+    return textResult({ ...noteAnswerOutcome(stored), document_id: id, url: note.url, note: { ...note, document_id: note.id } });
+  };
+}
+
 async function withIdempotency(
   toolName: string,
   args: { idempotency_key?: unknown } & Record<string, unknown>,
   ctx: HumanToolContext,
   execute: () => Promise<ToolResult>,
-  options: { bind?: string; store?: (result: ToolResult) => Promise<boolean> } = {},
+  options: {
+    bind?: string;
+    store?: (result: ToolResult) => Promise<boolean>;
+    /** What is kept for replay, when not the answer itself (rule C4: no document text). */
+    storedAs?: (result: ToolResult) => ToolResult;
+    /** How a stored answer is replayed, when not as it was kept (a fresh read with the caller's access now). */
+    replay?: (stored: ToolResult) => Promise<ToolResult>;
+  } = {},
 ): Promise<ToolResult> {
   // A bound result answers only a call for the same target (`bind`); `store`
   // keeps an unsettled answer from being stored for replay.
@@ -594,7 +651,7 @@ async function withIdempotency(
       .orderBy(desc(oauthAuditEvents.created_at))
       .limit(1);
     const replay = storedToolResult(existing?.metadata?.result);
-    if (replay) return replayForViewer(replay, ctx);
+    if (replay) return replayForViewer(options.replay ? await options.replay(replay) : replay, ctx);
   }
 
   const result = await execute();
@@ -612,7 +669,7 @@ async function withIdempotency(
         grant_id: ctx.grant_id ?? null,
         principal_kind: ctx.principal_kind ?? 'human',
         ...(bind === null ? {} : { bind }),
-        result,
+        result: options.storedAs ? options.storedAs(result) : result,
       },
     });
   }
@@ -2916,8 +2973,9 @@ export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: 
 
     // The approvals the user reviews now, by the web's gate (as approval_list).
     const reviewer = await approvalReviewerSql(ctx, 'read');
-    digest.pending_approvals = !reviewer ? [] : await db.select({
+    const approvals = !reviewer ? [] : await db.select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       params: agentActions.params,
       approval_tier: agentActions.approval_tier,
@@ -2929,6 +2987,11 @@ export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: 
       inArray(agentActions.approval_tier, ['quick', 'full']),
       reviewer,
     )).orderBy(desc(agentActions.created_at)).limit(limit);
+    // M7 fix round 4: a document draft's text only for the person who asked (a fallback reviewer sees its size), as approval_list.
+    digest.pending_approvals = approvals.map((row) => {
+      const { user_id: _requester, ...shown } = documentTextParamsForViewer(row, ctx.user_id);
+      return shown;
+    });
   }
 
   if (hasScope(ctx, 'read:messages')) {
@@ -3311,31 +3374,38 @@ export async function humanWorkspaceCapabilities(_args: Record<string, never>, c
   });
 }
 
+// The note tools read and write documents since the notes move (F15,
+// lib/legacy-notes.ts), with the same names and arguments. A note id may be a
+// document id or an old note id (mapped to its document). Every read and
+// write is the connected person's own access to the document
+// (lib/document-access.ts); content is read as Markdown, and written from
+// HTML (what Notes stored) or Markdown. Links are `/d/<documentId>`.
+
+/** A favourite (what a pinned note became), set or cleared for the connected person. */
+async function setNoteFavorite(ctx: HumanToolContext, documentId: string, pinned: boolean): Promise<void> {
+  if (pinned) {
+    await db.insert(docFavorites).values({ org_id: ctx.org_id, user_id: ctx.user_id, target_type: 'document', target_id: documentId })
+      .onConflictDoNothing();
+  } else {
+    await db.delete(docFavorites).where(and(eq(docFavorites.org_id, ctx.org_id), eq(docFavorites.user_id, ctx.user_id),
+      eq(docFavorites.target_type, 'document'), eq(docFavorites.target_id, documentId)));
+  }
+}
+
 export async function humanNoteList(args: { query?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
   const limit = Math.min(Math.max(1, args.limit ?? 50), 100);
-  const query = args.query?.trim();
-  const rows = await db.select({
-    id: notes.id, title: notes.title, content: notes.content, icon: notes.icon,
-    is_pinned: notes.is_pinned, visibility: notes.visibility,
-    visibility_space_id: notes.visibility_space_id, user_id: notes.user_id,
-    version: notes.version, created_at: notes.created_at, updated_at: notes.updated_at,
-  }).from(notes).where(and(
-    eq(notes.org_id, ctx.org_id), eq(notes.is_deleted, false), eq(notes.is_template, false),
-    visibleNoteCondition(ctx.user_id), query ? sql`(${notes.title} ILIKE ${`%${query}%`} OR ${notes.content} ILIKE ${`%${query}%`})` : sql`true`,
-  )).orderBy(desc(notes.is_pinned), desc(notes.updated_at)).limit(limit);
-  return textResult(rows.map((row) => ({ ...row, url: `/notes?note=${row.id}` })));
+  const rows = await searchNoteDocuments({ orgId: ctx.org_id, userId: ctx.user_id, query: args.query, scope: 'all', limit, templates: false });
+  return textResult(rows.map((row) => ({ ...row, document_id: row.id })));
 }
 
 export async function humanNoteGet(args: { note_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
   if (!args.note_id) return errorResult('note_id is required');
-  const [row] = await db.select().from(notes).where(and(
-    eq(notes.id, args.note_id), eq(notes.org_id, ctx.org_id), eq(notes.is_deleted, false), visibleNoteCondition(ctx.user_id),
-  )).limit(1);
-  return row ? textResult({ ...row, url: `/notes?note=${row.id}` }) : errorResult('Note not found or not visible');
+  const row = await readNoteDocument(ctx.org_id, ctx.user_id, args.note_id);
+  return row ? textResult({ ...row, document_id: row.id }) : errorResult('Note not found or not visible');
 }
 
 function validNoteVisibility(value: unknown): value is 'private' | 'org' | 'space' {
@@ -3356,20 +3426,26 @@ export async function humanNoteCreate(args: Record<string, unknown>, ctx: HumanT
     const spaceId = typeof args.visibility_space_id === 'string' ? args.visibility_space_id : null;
     const spaceError = await validateNoteSpace(ctx, visibility, spaceId);
     if (spaceError) return spaceError;
-    const [created] = await db.transaction(async (tx) => {
-      const rows = await tx.insert(notes).values({
-      org_id: ctx.org_id, user_id: ctx.user_id,
-      title: typeof args.title === 'string' ? args.title.trim() : '',
-      content: typeof args.content === 'string' ? args.content : '',
-      icon: typeof args.icon === 'string' ? args.icon : null,
-      is_pinned: args.is_pinned === true,
-      visibility, visibility_space_id: visibility === 'space' ? spaceId : null,
-      }).returning();
-      await syncNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, rows[0]!);
-      return rows;
-    });
-    return textResult({ created: true, note: created, url: `/notes?note=${created!.id}` });
-  });
+    let documentId: string;
+    try {
+      const document = await createNoteDocument({
+        orgId: ctx.org_id, userId: ctx.user_id,
+        title: typeof args.title === 'string' ? args.title.trim() : '',
+        json: noteContentJson(typeof args.content === 'string' ? args.content : ''),
+        icon: typeof args.icon === 'string' ? args.icon : null,
+        visibility, spaceId,
+      });
+      documentId = document.id;
+    } catch (error) {
+      const refusal = noteToolError(error);
+      if (refusal) return errorResult(refusal);
+      throw error;
+    }
+    if (args.is_pinned === true) await setNoteFavorite(ctx, documentId, true);
+    const note = await readNoteDocument(ctx.org_id, ctx.user_id, documentId);
+    return textResult({ created: true, note: note ? { ...note, document_id: documentId } : { id: documentId, document_id: documentId },
+      document_id: documentId, url: `/d/${documentId}` });
+  }, { storedAs: noteAnswerReference, replay: noteAnswerReplay(ctx) });
 }
 
 export async function humanNoteUpdate(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3377,30 +3453,34 @@ export async function humanNoteUpdate(args: Record<string, unknown>, ctx: HumanT
   if (scopeError) return scopeError;
   if (typeof args.note_id !== 'string') return errorResult('note_id is required');
   return withIdempotency('note_update', args, ctx, async () => {
-    const [current] = await db.select().from(notes).where(and(
-      eq(notes.id, args.note_id as string), eq(notes.org_id, ctx.org_id), eq(notes.user_id, ctx.user_id), eq(notes.is_deleted, false),
-    )).limit(1);
-    if (!current) return errorResult('Note not found or not owned by the connected user');
-    const visibility = validNoteVisibility(args.visibility) ? args.visibility : current.visibility;
-    const spaceId = args.visibility_space_id === null ? null : typeof args.visibility_space_id === 'string' ? args.visibility_space_id : current.visibility_space_id;
-    const spaceError = await validateNoteSpace(ctx, visibility, spaceId);
-    if (spaceError) return spaceError;
-    const updates: Record<string, unknown> = {};
-    for (const field of ['title', 'content', 'icon', 'is_pinned'] as const) if (args[field] !== undefined) updates[field] = args[field];
-    if (args.visibility !== undefined) updates.visibility = visibility;
-    if (args.visibility !== undefined || args.visibility_space_id !== undefined) updates.visibility_space_id = visibility === 'space' ? spaceId : null;
-    if (args.content !== undefined && args.content !== current.content) {
-      await db.insert(noteVersions).values({ note_id: current.id, version: current.version, title: current.title, content: current.content, edited_by: ctx.user_id }).onConflictDoNothing();
-      updates.version = current.version + 1;
+    if (args.visibility !== undefined || args.visibility_space_id !== undefined) {
+      return errorResult('Notes are documents now: change who can open one by sharing it, not with visibility');
     }
-    if (Object.keys(updates).length === 0) return textResult({ updated: false, note: current, url: `/notes?note=${current.id}` });
-    const updated = await db.transaction(async (tx) => {
-      const [saved] = await tx.update(notes).set(updates).where(and(eq(notes.id, current.id), eq(notes.version, current.version))).returning();
-      if (saved && args.content !== undefined) await syncNoteFiles(tx, { id: ctx.user_id, org_id: ctx.org_id }, saved);
-      return saved;
-    });
-    return updated ? textResult({ updated: true, note: updated, url: `/notes?note=${updated.id}` }) : errorResult('Note changed in another session; read it again before retrying');
-  });
+    const documentId = await documentIdForNoteRef(ctx.org_id, args.note_id as string);
+    const current = await readNoteDocument(ctx.org_id, ctx.user_id, documentId);
+    if (!current) return errorResult('Note not found or not visible');
+    const changes = ['title', 'content', 'icon', 'is_pinned'].filter((field) => args[field] !== undefined);
+    if (changes.length === 0) return textResult({ updated: false, note: { ...current, document_id: current.id }, url: current.url });
+    try {
+      if (typeof args.content === 'string') {
+        await replaceDocumentContent({ orgId: ctx.org_id, documentId, actor: { kind: 'user', userId: ctx.user_id }, json: noteContentJson(args.content) });
+      }
+      if (typeof args.title === 'string' || args.icon !== undefined) {
+        await updateDocument({ orgId: ctx.org_id, userId: ctx.user_id, documentId, patch: {
+          ...(typeof args.title === 'string' ? { title: args.title.trim() } : {}),
+          ...(args.icon === null || typeof args.icon === 'string' ? { icon: args.icon } : {}),
+        } });
+      }
+    } catch (error) {
+      const refusal = noteToolError(error);
+      if (refusal) return errorResult(refusal);
+      throw error;
+    }
+    if (typeof args.is_pinned === 'boolean') await setNoteFavorite(ctx, documentId, args.is_pinned);
+    const updated = await readNoteDocument(ctx.org_id, ctx.user_id, documentId);
+    return updated ? textResult({ updated: true, note: { ...updated, document_id: updated.id }, url: updated.url })
+      : errorResult('Note not found or not visible');
+  }, { storedAs: noteAnswerReference, replay: noteAnswerReplay(ctx) });
 }
 
 export async function humanNoteArchive(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3408,11 +3488,17 @@ export async function humanNoteArchive(args: Record<string, unknown>, ctx: Human
   if (scopeError) return scopeError;
   if (typeof args.note_id !== 'string') return errorResult('note_id is required');
   return withIdempotency('note_archive', args, ctx, async () => {
-    const [updated] = await db.update(notes).set({ is_deleted: true }).where(and(
-      eq(notes.id, args.note_id as string), eq(notes.org_id, ctx.org_id), eq(notes.user_id, ctx.user_id), eq(notes.is_deleted, false),
-    )).returning({ id: notes.id, title: notes.title });
-    return updated ? textResult({ archived: true, note: updated }) : errorResult('Note not found or not owned by the connected user');
-  });
+    const documentId = await documentIdForNoteRef(ctx.org_id, args.note_id as string);
+    const current = await readNoteDocument(ctx.org_id, ctx.user_id, documentId);
+    if (!current) return errorResult('Note not found or not visible');
+    try {
+      await softDeleteDocument({ orgId: ctx.org_id, userId: ctx.user_id, documentId });
+    } catch (error) {
+      if (error instanceof DocumentRefusal) return errorResult(error.status === 404 ? 'Note not found or not visible' : error.message);
+      throw error;
+    }
+    return textResult({ archived: true, note: { id: documentId, document_id: documentId, title: current.title } });
+  }, { storedAs: noteAnswerReference, replay: noteAnswerReplay(ctx) });
 }
 
 function parseRequiredDate(value: unknown, field: string): Date | ToolResult {
@@ -3557,9 +3643,10 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
     .from(attentionItems)
     .where(and(openWhere, visibleAttentionCondition(ctx.user_id, sourceTypes), visibleModuleAttentionScopeSql(ctx.scopes, 'read')))
     .groupBy(attentionItems.lane));
-  const visibleRows = await filterVisibleAttentionItems(ctx.user_id, rows);
+  // M7 fix round 5: a draft's item body only for its requester.
+  const visibleRows = await projectAttentionItemsForReader(await filterVisibleAttentionItems(ctx.user_id, rows));
   return textResult({
-    items: visibleRows.map((row) => ({ ...projectAttentionItem(row), url: row.link ?? `/inbox?lane=${row.lane}` })),
+    items: visibleRows.map((row) => ({ ...row, url: row.link ?? `/inbox?lane=${row.lane}` })),
     counts: Object.fromEntries(counts.map((row) => [row.lane, { count: Number(row.count), unseen: Number(row.unseen) }])),
   });
 }
@@ -3583,9 +3670,10 @@ export async function humanAttentionGet(args: { attention_id?: string }, ctx: Hu
     ))
     .limit(1));
   if (!row) return errorResult('Attention item not found');
-  const visible = await filterVisibleAttentionItems(ctx.user_id, [row]);
+  // M7 fix round 5: a draft's item body only for its requester.
+  const visible = await projectAttentionItemsForReader(await filterVisibleAttentionItems(ctx.user_id, [row]));
   return visible[0]
-    ? textResult({ ...projectAttentionItem(visible[0]), url: visible[0].link ?? `/inbox?lane=${visible[0].lane}` })
+    ? textResult({ ...visible[0], url: visible[0].link ?? `/inbox?lane=${visible[0].lane}` })
     : errorResult('Attention item not found');
 }
 
@@ -3634,7 +3722,7 @@ async function transitionHumanAttention(
   if (result.isError) return result;
   // Dedupe may reuse this id for a newer reply. Never replay a prior item's body.
   const current = await visible();
-  return current ? textResult({ updated: true, item: projectAttentionItem(current) }) : errorResult('Attention item not found');
+  return current ? textResult({ updated: true, item: (await projectAttentionItemsForReader([current]))[0] }) : errorResult('Attention item not found');
 }
 
 export function humanAttentionAcknowledge(args: Record<string, unknown>, ctx: HumanToolContext) {
@@ -3832,14 +3920,15 @@ export async function humanApprovalList(args: { status?: string; limit?: number 
   const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), reviewer, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any),
     // Pending approvals are the ones awaiting a person, as on the web.
     status === 'pending' ? inArray(agentActions.approval_tier, ['quick', 'full']) : undefined)).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
-  return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
+  // M7 fix round 3: a document draft's text only for the person who asked (a fallback reviewer sees its size).
+  return textResult(rows.map((row) => ({ ...documentTextParamsForViewer(row, ctx.user_id), url: '/inbox?lane=needs_you' })));
 }
 
 export async function humanApprovalGet(args: { action_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   if (!args.action_id) return errorResult('action_id is required');
   const row = await ownApproval(ctx, args.action_id);
-  return row ? textResult({ ...row, url: '/inbox?lane=needs_you' }) : errorResult('Approval not found');
+  return row ? textResult({ ...documentTextParamsForViewer(row, ctx.user_id), url: '/inbox?lane=needs_you' }) : errorResult('Approval not found');
 }
 
 export async function humanApprovalApprove(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3990,9 +4079,20 @@ export async function humanAgentEmployeeUpdateState(args: Record<string, unknown
     else return errorResult('state must be active, paused, or healthy');
     // The same choke point as the HTTP routes (lib/agent-management.ts): an
     // agent that is or was an owner or admin is the owner's to pause or resume.
-    const managed = await manageAgent({ userId: ctx.user_id, orgId: ctx.org_id }, args.employee_id as string, (tx) => tx.update(agentEmployees).set(updates).where(and(eq(agentEmployees.id, args.employee_id as string), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).returning({ id: agentEmployees.id, name: agentEmployees.name, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy }));
+    const managed = await manageAgent({ userId: ctx.user_id, orgId: ctx.org_id }, args.employee_id as string, async (tx, agent) => {
+      const rows = await tx.update(agentEmployees).set(updates).where(and(eq(agentEmployees.id, args.employee_id as string), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).returning({ id: agentEmployees.id, name: agentEmployees.name, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy });
+      // Rule C3: a paused agent holds no drive or document access.
+      const loss = rows.length > 0 && updates.is_active === false && agent.userId
+        ? await accessLossInTx(tx, { orgId: ctx.org_id, userIds: [agent.userId] })
+        : null;
+      return { rows, loss };
+    });
     if (!managed.ok) return errorResult(managed.error);
-    const [updated] = managed.value;
+    if (managed.value.loss) await finishAccessLoss(managed.value.loss.change, managed.value.loss.result);
+    else if (updates.is_active === true && managed.value.rows.length > 0 && managed.agent.userId) {
+      emitDocumentAccessChanged({ orgId: ctx.org_id, userIds: [managed.agent.userId] });
+    }
+    const [updated] = managed.value.rows;
     return updated ? textResult({ updated: true, employee: updated, url: `/settings/agent-employees/${updated.id}` }) : errorResult('Agent employee not found');
   });
 }
@@ -4112,11 +4212,11 @@ function operationalHumanSchemas(): Array<Record<string, unknown>> {
         source: { type: 'object', properties: { kind: { type: 'string', enum: ['message', 'task', 'task_comment', 'wiki_page'] }, id: { type: 'string' } }, required: ['kind', 'id'], additionalProperties: false },
         content_hash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
       }, required: ['source', 'content_hash'], additionalProperties: false } },
-    read('note_list', 'List Deft Notes', 'List private notes owned by the connected user plus org/space notes they can see.', { query: { type: 'string' }, limit }),
-    read('note_get', 'Get Deft Note', 'Read one visible note including its full TipTap HTML content.', { note_id: id('Note id') }, ['note_id']),
+    read('note_list', 'List Deft Notes', 'List the notes (documents, since notes became documents) the connected user can open, with their /d/ links.', { query: { type: 'string' }, limit }),
+    read('note_get', 'Get Deft Note', 'Read one note (a document id, or an old note id) the connected user can open, its content as Markdown.', { note_id: id('Note id') }, ['note_id']),
     write('note_create', 'Create Deft Note', 'Create a private, org, or space-visible note as the connected user.', { title: { type: 'string' }, content: { type: 'string' }, icon: { type: 'string' }, is_pinned: { type: 'boolean' }, visibility: { type: 'string', enum: ['private', 'org', 'space'] }, visibility_space_id: id('Required for space visibility') }),
-    write('note_update', 'Update Deft Note', 'Update a note owned by the connected user with optimistic version protection.', { note_id: id('Note id'), title: { type: 'string' }, content: { type: 'string' }, icon: { type: ['string', 'null'] }, is_pinned: { type: 'boolean' }, visibility: { type: 'string', enum: ['private', 'org', 'space'] }, visibility_space_id: { type: ['string', 'null'] } }, ['note_id']),
-    write('note_archive', 'Archive Deft Note', 'Soft-delete a note owned by the connected user.', { note_id: id('Note id') }, ['note_id']),
+    write('note_update', 'Update Deft Note', 'Update the title, content (HTML or Markdown), icon or pin of a note the connected user can edit.', { note_id: id('Note id'), title: { type: 'string' }, content: { type: 'string' }, icon: { type: ['string', 'null'] }, is_pinned: { type: 'boolean' }, visibility: { type: 'string', enum: ['private', 'org', 'space'] }, visibility_space_id: { type: ['string', 'null'] } }, ['note_id']),
+    write('note_archive', 'Archive Deft Note', 'Move a note the connected user can edit to the trash of its drive.', { note_id: id('Note id') }, ['note_id']),
     read('calendar_list', 'List Deft Calendar Events', "List the connected user's native and imported calendar events in a time range.", { from: iso('ISO range start'), until: iso('ISO range end'), limit }),
     read('calendar_get', 'Get Deft Calendar Event', 'Read one visible native or imported calendar event.', { event_id: id('Event id') }, ['event_id']),
     read('calendar_availability', 'Check Deft Calendar Availability', 'Return busy windows from native and imported calendar context.', { from: iso('ISO range start'), until: iso('ISO range end') }),
