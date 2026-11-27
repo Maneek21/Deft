@@ -16,7 +16,9 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
   #general. **Post and finish** used to send it to an address that doesn't exist, so the
   hello was lost without a word. If the hello can't be posted, the step now says "Your
   hello wasn't posted. Try again, or skip and say hello in #general later." and stays
-  open, so you can try again or skip.
+  open, so you can try again or skip; trying again can't post the hello twice. The hello
+  goes only to #general: with no #general, the step says so instead of posting it to
+  another space you're in.
 
 ## [0.3.0-preview.156] — 2026-11-27 (prerelease)
 
