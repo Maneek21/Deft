@@ -58,7 +58,7 @@ import { toPlainText } from '../plain-text.js';
 import {
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
-  projectAttentionItem,
+  projectAttentionItemsForReader,
   readAttentionWithSourceTypes,
   visibleAttentionCondition,
   transitionAttentionItem,
@@ -3643,9 +3643,10 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
     .from(attentionItems)
     .where(and(openWhere, visibleAttentionCondition(ctx.user_id, sourceTypes), visibleModuleAttentionScopeSql(ctx.scopes, 'read')))
     .groupBy(attentionItems.lane));
-  const visibleRows = await filterVisibleAttentionItems(ctx.user_id, rows);
+  // M7 fix round 5: a draft's item body only for its requester.
+  const visibleRows = await projectAttentionItemsForReader(await filterVisibleAttentionItems(ctx.user_id, rows));
   return textResult({
-    items: visibleRows.map((row) => ({ ...projectAttentionItem(row), url: row.link ?? `/inbox?lane=${row.lane}` })),
+    items: visibleRows.map((row) => ({ ...row, url: row.link ?? `/inbox?lane=${row.lane}` })),
     counts: Object.fromEntries(counts.map((row) => [row.lane, { count: Number(row.count), unseen: Number(row.unseen) }])),
   });
 }
@@ -3669,9 +3670,10 @@ export async function humanAttentionGet(args: { attention_id?: string }, ctx: Hu
     ))
     .limit(1));
   if (!row) return errorResult('Attention item not found');
-  const visible = await filterVisibleAttentionItems(ctx.user_id, [row]);
+  // M7 fix round 5: a draft's item body only for its requester.
+  const visible = await projectAttentionItemsForReader(await filterVisibleAttentionItems(ctx.user_id, [row]));
   return visible[0]
-    ? textResult({ ...projectAttentionItem(visible[0]), url: visible[0].link ?? `/inbox?lane=${visible[0].lane}` })
+    ? textResult({ ...visible[0], url: visible[0].link ?? `/inbox?lane=${visible[0].lane}` })
     : errorResult('Attention item not found');
 }
 
@@ -3720,7 +3722,7 @@ async function transitionHumanAttention(
   if (result.isError) return result;
   // Dedupe may reuse this id for a newer reply. Never replay a prior item's body.
   const current = await visible();
-  return current ? textResult({ updated: true, item: projectAttentionItem(current) }) : errorResult('Attention item not found');
+  return current ? textResult({ updated: true, item: (await projectAttentionItemsForReader([current]))[0] }) : errorResult('Attention item not found');
 }
 
 export function humanAttentionAcknowledge(args: Record<string, unknown>, ctx: HumanToolContext) {

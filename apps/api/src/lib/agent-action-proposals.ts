@@ -47,9 +47,8 @@ import {
   validateDocumentSendDraft,
 } from './document-send.js';
 import { isTaskPriority } from './task-priority.js';
-import {
-  CREATE_DOCUMENT_ACTION, createDocumentInputForStorage, DOCUMENT_EDIT_ACTION, documentEditActionParams,
-} from './agent-document-write-tools.js';
+import { DOCUMENT_EDIT_ACTION, documentEditActionParams } from './agent-document-write-tools.js';
+import { draftTextOmittedFromMetadata, draftToolInputForStorage, isDraftTextAction } from './document-draft-params.js';
 import { DocumentEditRefused } from './document-edit.js';
 import { proposeDocumentEdit } from './document-suggestions.js';
 import { DocumentRefusal } from './documents.js';
@@ -105,9 +104,11 @@ function safeActionParamsForMessage(action: string, actionParams: unknown): unkn
   if (action === DOCUMENT_SEND_ACTION) {
     return sanitizeDocumentSendParams(actionParams);
   }
-  // M7 (rule C4): an edit's operations and a new document's title and Markdown never reach a message.
+  // M7 (rule C4): an edit's operations and a new document's title and Markdown
+  // never reach a message; nor, since fix round 5, a note's or canvas's title
+  // and content (draft text: the card reads the action, for its requester).
   if (action === DOCUMENT_EDIT_ACTION) return documentEditActionParams(actionParams);
-  if (action === CREATE_DOCUMENT_ACTION) return createDocumentInputForStorage(actionParams);
+  if (isDraftTextAction(action)) return draftToolInputForStorage(action, actionParams);
   if(action==='email_send')return {account_id:actionParams.account_id,draft_id:actionParams.draft_id,draft_revision:actionParams.draft_revision,content_digest:actionParams.content_digest,review_url:actionParams.review_url};
   return actionParams;
 }
@@ -129,7 +130,9 @@ function safePendingDraftForMessage(pending: unknown): unknown {
 
 export function sanitizeAgentReplyActionMetadata(metadata: Record<string, any>): Record<string, any> {
   const { pending_actions: _pendingActions, action_graph: graph, ...safe } = metadata;
-  const safeMetadata = sanitizeAgentMetadataForStorage(safe);
+  // M7 fix round 5: the run's record of a draft tool's call (its tool_use
+  // input, its result, tool_calls) keeps each text as its size.
+  const safeMetadata = draftTextOmittedFromMetadata(sanitizeAgentMetadataForStorage(safe));
   if (Object.hasOwn(safeMetadata, 'defty_pending')) {
     safeMetadata.defty_pending = safePendingDraftForMessage(safeMetadata.defty_pending);
   }

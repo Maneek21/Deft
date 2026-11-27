@@ -3212,7 +3212,8 @@ export async function executeAction(
         await db
           .update(agentActions)
           .set({
-            result: { canvas_document_id: target.documentId, space: space.name } as any,
+            // M7 fix round 5: references only (the canvas is its document).
+            result: { canvas_document_id: target.documentId, document_id: target.documentId, space_id: space.id, url: `/d/${target.documentId}` } as any,
             after_state: { document_id: target.documentId, space_id: space.id, revision } as any,
             executed_at: new Date(),
           })
@@ -3232,7 +3233,7 @@ export async function executeAction(
           metadata: { action_id: actionId, space_name: space.name },
         });
 
-        return { success: true, result: { canvas_document_id: target.documentId, document_id: target.documentId, space: space.name, url: `/d/${target.documentId}` } };
+        return { success: true, result: { canvas_document_id: target.documentId, document_id: target.documentId, space_id: space.id, url: `/d/${target.documentId}` } };
       }
 
       case 'post_thread_reply': {
@@ -3368,11 +3369,14 @@ export async function executeAction(
           throw error;
         }
 
+        // M7 fix round 5: references only. The title was draft text; the
+        // document is named by its id, and each reader reads its title
+        // through their own access to it (rule C4).
         await db
           .update(agentActions)
           .set({
-            result: { note_id: document.id, document_id: document.id, title: document.title } as any,
-            after_state: { document_id: document.id, title, visibility } as any,
+            result: { note_id: document.id, document_id: document.id, url: `/d/${document.id}` } as any,
+            after_state: { document_id: document.id, visibility } as any,
             executed_at: new Date(),
           })
           .where(eq(agentActions.id, actionId));
@@ -3387,11 +3391,11 @@ export async function executeAction(
           entityType: 'document',
           entityId: document.id,
           beforeState: null,
-          afterState: { title, visibility } as any,
+          afterState: { visibility } as any,
           metadata: { action_id: actionId },
         });
 
-        return { success: true, result: { note_id: document.id, document_id: document.id, title: document.title, url: `/d/${document.id}` } };
+        return { success: true, result: { note_id: document.id, document_id: document.id, url: `/d/${document.id}` } };
       }
 
       case 'note_to_wiki': {

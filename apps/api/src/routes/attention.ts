@@ -16,6 +16,8 @@ import {
   lockedAttentionIdsSql,
   filterVisibleAttentionItems,
   projectAttentionItem,
+  projectAttentionItemsForReader,
+  withReaderDraftItemBodies,
   recordAttentionFeedback,
   transitionAttentionItem,
   readAttentionWithSourceTypes,
@@ -90,8 +92,10 @@ async function hasVisibleItem(orgId: string, userId: string, itemId: string) {
  */
 async function hydrateApprovals(
   viewer: { id: string; org_id: string; role?: string },
-  rows: Array<typeof attentionItems.$inferSelect>,
+  storedRows: Array<typeof attentionItems.$inferSelect>,
 ) {
+  // M7 fix round 5: a draft's item body only for its requester (an item raised before says it too).
+  const rows = await withReaderDraftItemBodies(storedRows);
   const actionIds = rows
     .filter((item) => item.source_type === 'agent_action')
     .map((item) => item.source_id);
@@ -197,7 +201,8 @@ attentionRoutes.get('/', async (c) => {
   const finalRows = await filterVisibleAttentionItems(user.id, hydrated);
 
   return c.json({
-    items: finalRows.map(projectAttentionItem),
+    // M7 fix round 5: after the visibility re-read, which reloads each stored body.
+    items: await projectAttentionItemsForReader(finalRows),
     counts: {
       needs_you: byLane.needs_you ?? { count: 0, unseen: 0 },
       updates: byLane.updates ?? { count: 0, unseen: 0 },
@@ -223,7 +228,7 @@ attentionRoutes.get('/:id', async (c) => {
   if (visible.length === 0) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   const [hydrated] = await filterVisibleAttentionItems(user.id, await hydrateApprovals(user, visible));
   if (!hydrated) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(hydrated) });
+  return c.json({ item: (await projectAttentionItemsForReader([hydrated]))[0] });
 });
 
 attentionRoutes.post('/:id/seen', async (c) => {
@@ -240,7 +245,7 @@ attentionRoutes.post('/:id/seen', async (c) => {
     viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(item) });
+  return c.json({ item: (await projectAttentionItemsForReader([item]))[0] });
 });
 
 attentionRoutes.post('/:id/acknowledge', async (c) => {
@@ -257,7 +262,7 @@ attentionRoutes.post('/:id/acknowledge', async (c) => {
     viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(item) });
+  return c.json({ item: (await projectAttentionItemsForReader([item]))[0] });
 });
 
 attentionRoutes.post('/:id/snooze', async (c) => {
@@ -280,7 +285,7 @@ attentionRoutes.post('/:id/snooze', async (c) => {
     viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(item) });
+  return c.json({ item: (await projectAttentionItemsForReader([item]))[0] });
 });
 
 attentionRoutes.post('/:id/resolve', async (c) => {
@@ -299,7 +304,7 @@ attentionRoutes.post('/:id/resolve', async (c) => {
     viewerId: user.id,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(item) });
+  return c.json({ item: (await projectAttentionItemsForReader([item]))[0] });
 });
 
 attentionRoutes.post('/:id/feedback', async (c) => {
@@ -318,7 +323,7 @@ attentionRoutes.post('/:id/feedback', async (c) => {
     feedback: body.feedback,
   });
   if (!item) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  return c.json({ item: projectAttentionItem(item) });
+  return c.json({ item: (await projectAttentionItemsForReader([item]))[0] });
 });
 
 attentionRoutes.post('/mark-all-seen', async (c) => {

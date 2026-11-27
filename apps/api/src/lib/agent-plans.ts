@@ -13,7 +13,7 @@ import { logId } from './log-metadata.js';
 import { createHash } from 'node:crypto';
 import { canonicalCapabilityJson } from '@deft/shared';
 import { db, withDbAdvisoryLock } from './db.js';
-import { agentActions, agentPlans, orgs, tasks, messages } from '@deft/db/schema';
+import { agentActions, agentEmployees, agentPlans, orgs, tasks, messages } from '@deft/db/schema';
 import { eq, and, sql, type SQL } from 'drizzle-orm';
 import { planCreatorKeepsRoomsSql } from './plan-room-access.js';
 import { lockPlanRoomAccess } from './room-access-lock.js';
@@ -30,7 +30,8 @@ import { ACTION_TOOLS } from './agent-tools.js';
 import { runAgentQuery } from './agent-runner.js';
 import { DOCUMENT_EDIT_ACTION } from './document-suggestions.js';
 import { documentToolCallForStorage, editDocumentInputForStorage, omittedText, storableRef, type OmittedText } from './document-audience.js';
-import { DOCUMENT_DRAFT_ACTION, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from './document-draft-params.js';
+import { isDraftTextAction, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from './document-draft-params.js';
+import { isCanonicalDeftyEmployee } from './defty-identity.js';
 import type { TrustLevel } from './agent-approval.js';
 import { getIO } from '../socket.js';
 import { getMCPToolsForAgent } from './mcp-tools.js';
@@ -128,6 +129,33 @@ export async function assertPlanEmployeeBindable(orgId: string, agentEmployeeId:
  * apply them with no suggestion to review.
  */
 export const PLAN_DOCUMENT_EDIT_ERROR = 'Document edits are made from chat, not as plan steps';
+
+/**
+ * M7 fix round 5 (the controller's rule: a draft's text reaches only the
+ * person who asked). A plan step that writes a document's text
+ * (create_document, create_note, write_canvas) keeps that text on its
+ * pending action, which an employee's queue (fetch_unread,
+ * poll_pending_work) lists, and the employee's agent user would write it.
+ * So a plan bound to an agent employee carries no such step unless its
+ * creator is that employee's own user (or the employee is Defty's internal
+ * one, which is Defty's path): refused when the plan is made, edited or
+ * approved (code DRAFT_STEP_NOT_FOR_EMPLOYEE), and a plan stored before
+ * stops at that step without queueing anything.
+ */
+export const PLAN_DRAFT_STEP_EMPLOYEE_ERROR = 'A step that writes a document\'s text runs for the person who asked, so it can\'t be handed to an agent employee. Ask Defty to make the document from chat.';
+
+/** True when a draft step of `creatorId`'s plan would be handed to the bound employee (fix round 5). */
+export async function draftStepsWouldReachEmployee(orgId: string, creatorId: string, agentEmployeeId: string | null | undefined): Promise<boolean> {
+  if (!agentEmployeeId) return false;
+  const [employee] = await db
+    .select({ user_id: agentEmployees.user_id, slug: agentEmployees.slug, runtime_kind: agentEmployees.runtime_kind, is_byoa: agentEmployees.is_byoa })
+    .from(agentEmployees)
+    .where(and(eq(agentEmployees.id, agentEmployeeId), eq(agentEmployees.org_id, orgId)))
+    .limit(1);
+  if (!employee) return true;
+  if (isCanonicalDeftyEmployee(employee)) return false;
+  return employee.user_id !== creatorId;
+}
 
 // ─── Document content in plans (M7, rule C4) ───
 
@@ -408,9 +436,14 @@ export function planWithDocumentReferences<T extends { steps: unknown; context?:
 }
 
 /** Plans with connected steps are created and approved for workspace members. */
-export async function assertPlanStepsAllowedFor(orgId: string, userId: string, steps: unknown): Promise<void> {
+export async function assertPlanStepsAllowedFor(orgId: string, userId: string, steps: unknown, agentEmployeeId?: string | null): Promise<void> {
   if (Array.isArray(steps) && steps.some((step) => (step as { tool?: unknown } | null)?.tool === DOCUMENT_EDIT_ACTION)) {
     throw new PlanAccessError(PLAN_DOCUMENT_EDIT_ERROR);
+  }
+  // M7 fix round 5: a draft step never goes to an employee that isn't the creator's own agent.
+  if (Array.isArray(steps) && steps.some((step) => isDraftTextAction((step as { tool?: unknown } | null)?.tool))
+    && await draftStepsWouldReachEmployee(orgId, userId, agentEmployeeId)) {
+    throw new PlanAccessError(PLAN_DRAFT_STEP_EMPLOYEE_ERROR);
   }
   const hasConnectedStep = Array.isArray(steps)
     && steps.some((step) => isConnectedToolName((step as { tool?: unknown } | null)?.tool));
@@ -499,7 +532,7 @@ async function executeReviewedPlanDependency(params: {
             ))
             .returning({ id: agentActions.id });
           // M7 fix round 3 (I3): an expired document draft's approval items name nothing, in this commit.
-          if (expired.length > 0 && prior.action === DOCUMENT_DRAFT_ACTION) await scrubDocumentDraftItems(tx, [prior.id]);
+          if (expired.length > 0 && isDraftTextAction(prior.action)) await scrubDocumentDraftItems(tx, [prior.id]);
         });
       }
       throw new PlanApprovalBoundaryError(
@@ -711,7 +744,7 @@ export interface CreatePlanRowInput {
 export async function createPlanRow(
   input: CreatePlanRowInput,
 ): Promise<{ plan_id: string; status: 'draft' }> {
-  await assertPlanStepsAllowedFor(input.org_id, input.user_id, input.steps);
+  await assertPlanStepsAllowedFor(input.org_id, input.user_id, input.steps, input.agent_employee_id);
   // Fix round 1 (I2): no document text is stored in any step, from creation on.
   const steps = planStepsForStorage(input.steps).map((step) => ({
     ...step,
@@ -849,6 +882,9 @@ async function executePlanUnlocked(
   };
   const connectedStepsRefused = steps.some((candidate) => isConnectedToolName(candidate.tool))
     && await isWorkspaceGuest(orgId, userId);
+  // M7 fix round 5: a plan stored before the rule still never hands a draft step to an employee.
+  const draftStepsRefused = steps.some((candidate) => isDraftTextAction(candidate.tool))
+    && await draftStepsWouldReachEmployee(orgId, plan.user_id, plan.agent_employee_id);
   const startIdx = plan.current_step ?? 0;
   const failFast = plan.fail_fast === true;
   const rollbackOnFail = plan.rollback_on_fail === true;
@@ -936,6 +972,7 @@ async function executePlanUnlocked(
     await updatePlanProgress(planId, steps, context, i);
 
     try {
+      if (draftStepsRefused && isDraftTextAction(step.tool)) throw new PlanApprovalBoundaryError(PLAN_DRAFT_STEP_EMPLOYEE_ERROR);
       await readAgainFor(step.params);
       const resolvedParams = resolveStepReferences(step.params, readableContext());
       if (plan.agent_employee_id && (step.tool === 'document_send' || step.tool === 'workspace_plan_import')) {

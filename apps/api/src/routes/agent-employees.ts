@@ -67,7 +67,7 @@ import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-s
 import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-preflight.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { invalidatePlatformContextCacheFor } from '../lib/mcp-tools/context.js';
-import { DOCUMENT_DRAFT_ACTION, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from '../lib/document-draft-params.js';
+import { isDraftTextAction, receiptForViewer, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from '../lib/document-draft-params.js';
 import {
   isCanonicalDeftyEmployee,
   isReservedDeftyEmployeeSlug,
@@ -509,7 +509,8 @@ agentEmployeeRoutes.get('/:id/turns/:turn_id/receipt', async (c) => {
     // Reuse the existing verify helper from Phase 7.
     const { verifyReceipt } = await import('../lib/receipts.js');
     const verified = await verifyReceipt(row as any);
-    return c.json({ receipt: row, verified, action_id: row.action_id });
+    // M7 fix round 5: a draft tool's receipt names the document and sizes, whenever it was signed.
+    return c.json({ receipt: receiptForViewer(row), verified, action_id: row.action_id });
   } catch (err) {
     console.error('Failed to fetch turn receipt:');
     return c.json({ error: 'Failed to fetch turn receipt', code: 'INTERNAL_ERROR' }, 500);
@@ -2614,7 +2615,7 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
         )
         .returning({ id: agentActions.id, action: agentActions.action, params: agentActions.params });
       // M7 fix round 3 (I3): an expired document draft's approval items name nothing, in this commit.
-      await scrubDocumentDraftItems(tx, rows.filter((row) => row.action === DOCUMENT_DRAFT_ACTION).map((row) => row.id));
+      await scrubDocumentDraftItems(tx, rows.filter((row) => isDraftTextAction(row.action)).map((row) => row.id));
       return rows.map(({ id: actionId, params }) => ({ id: actionId, params }));
     });
     await markWorkIntentsExpiredForActions({

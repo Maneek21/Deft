@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { eq, and, inArray, or, sql } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import { db } from '../lib/db.js';
+import { documentTextParamsForViewer } from '../lib/document-draft-params.js';
 import { apiKeys, agentEmployees, agentActions, orgMembers, spaceMembers, spaces } from '@deft/db/schema';
 import { executeToolCall } from '../lib/agent-context.js';
 import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
@@ -450,5 +451,6 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
     return c.json({ error: { code: 'not_found', message: 'Action not found' } }, 404);
   }
 
-  return c.json(action);
+  // M7 fix round 5: a draft tool's result is shown as references (it names the document).
+  return c.json(documentTextParamsForViewer(action, actor.userId));
 });

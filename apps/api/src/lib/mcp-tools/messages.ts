@@ -15,6 +15,7 @@ import { errorResult, textResult } from './types.js';
 import { manifestsByMessageId } from '../attachment-manifests.js';
 import { boundMentionAttention } from './mention-attention.js';
 import { currentAgentActionSourceAuthoritySql } from '../agent-channel-authority.js';
+import { documentTextParamsForViewer } from '../document-draft-params.js';
 
 /**
  * Phase 12 review fix: before returning any thread content, verify the
@@ -266,6 +267,7 @@ export async function fetchUnread(
     const actionRows = await db
       .select({
         id: agentActions.id,
+        user_id: agentActions.user_id,
         action: agentActions.action,
         params: agentActions.params,
         approval_tier: agentActions.approval_tier,
@@ -288,7 +290,13 @@ export async function fetchUnread(
 
     return textResult({
       unread_messages: unreadMessages,
-      pending_actions: actionRows,
+      // M7 fix round 5: a draft's text reaches only its requester. The
+      // employee reads as its own user, so it sees the text of its own
+      // drafts only; a person's draft is "Document draft, N bytes".
+      pending_actions: actionRows.map((row) => {
+        const { user_id: _requester, ...shown } = documentTextParamsForViewer(row, shadowUserId);
+        return shown;
+      }),
       mention_attention: await boundMentionAttention(ctx),
     });
   } catch (err) {

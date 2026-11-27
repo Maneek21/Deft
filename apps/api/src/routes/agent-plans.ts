@@ -8,6 +8,7 @@ import {
   assertPlanEmployeeBindable,
   assertPlanStepsAllowedFor,
   createPlanRow,
+  PLAN_DRAFT_STEP_EMPLOYEE_ERROR,
   PLAN_EMPLOYEE_UNAVAILABLE_ERROR,
   planCreatorKeepsRoomsSql,
   PlanAccessError,
@@ -69,9 +70,11 @@ function readsPlanLiterals(plan: { user_id?: string }, viewerId: string): boolea
 
 function planAccessRefusal(err: unknown) {
   if (!(err instanceof PlanAccessError)) return null;
-  return err.message === PLAN_EMPLOYEE_UNAVAILABLE_ERROR
-    ? { body: { error: err.message, code: 'INVALID_AGENT_EMPLOYEE' }, status: 400 as const }
-    : { body: { error: err.message, code: 'FORBIDDEN' }, status: 403 as const };
+  if (err.message === PLAN_EMPLOYEE_UNAVAILABLE_ERROR) {
+    return { body: { error: err.message, code: 'INVALID_AGENT_EMPLOYEE' }, status: 400 as const };
+  }
+  // M7 fix round 5: a draft step is never handed to an agent employee.
+  return { body: { error: err.message, code: err.message === PLAN_DRAFT_STEP_EMPLOYEE_ERROR ? 'DRAFT_STEP_NOT_FOR_EMPLOYEE' : 'FORBIDDEN' }, status: 403 as const };
 }
 
 /**
@@ -247,7 +250,7 @@ agentPlanRoutes.put('/:id', async (c) => {
     if (body.title) updates.title = body.title;
     if (body.description !== undefined) updates.description = body.description;
     if (body.steps) {
-      await assertPlanStepsAllowedFor(user.org_id, user.id, body.steps);
+      await assertPlanStepsAllowedFor(user.org_id, user.id, body.steps, existing.agent_employee_id);
       // M7 fix round 1 (I2): an edited plan stores no document text either.
       updates.steps = planStepsForStorage(body.steps as any[]).map((step: any) => ({
         ...step,
@@ -301,7 +304,7 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
       );
     }
 
-    await assertPlanStepsAllowedFor(plan.org_id, plan.user_id, plan.steps);
+    await assertPlanStepsAllowedFor(plan.org_id, plan.user_id, plan.steps, plan.agent_employee_id);
 
     const [updated] = await db.transaction(async (tx) => {
       await lockPlanRoomAccess(tx, plan.org_id, plan.user_id, planId);

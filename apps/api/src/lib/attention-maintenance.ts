@@ -9,7 +9,7 @@ import {
 import { terminalizePendingModuleActions } from './module-action-terminalization.js';
 import { cancelLostRoomActions } from './lost-room-action-cancellation.js';
 import { DOCUMENT_EDIT_ACTION } from './document-suggestions.js';
-import { DOCUMENT_DRAFT_ACTION, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from './document-draft-params.js';
+import { isDraftTextAction, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from './document-draft-params.js';
 
 export const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -70,7 +70,7 @@ export async function maintainAttentionSystem(
         params: agentActions.params,
       });
     // M7 fix round 3 (I3): and its approval items name nothing, in this same commit.
-    await scrubDocumentDraftItems(tx, rows.filter((row) => row.action === DOCUMENT_DRAFT_ACTION).map((row) => row.id));
+    await scrubDocumentDraftItems(tx, rows.filter((row) => isDraftTextAction(row.action)).map((row) => row.id));
     return rows;
   });
 

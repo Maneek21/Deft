@@ -29,7 +29,7 @@ import {
   nativeAgentToolResult,
 } from './agent-module-next-reads.js';
 import { executeAction, executeActionDirect, isModuleWriteAction } from './agent-actions.js';
-import { toolInputWithContentOmitted } from './legacy-notes.js';
+import { draftToolInputForStorage, isDraftTextAction } from './document-draft-params.js';
 import { citationForStorage, documentToolCallForStorage, holdDocumentToolResponse, type DocumentRef, type WithheldRef } from './document-audience.js';
 import { CREATE_DOCUMENT_ACTION, DOCUMENT_EDIT_ACTION, runDocumentEditCall } from './agent-document-write-tools.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier, type TrustLevel } from './agent-approval.js';
@@ -910,15 +910,16 @@ export async function runAgentQuery(params: {
             approvalTier,
             { agentEmployeeId, source: 'background' },
           );
-          if (success) {
-            // F15 B-I1: a note or canvas the call wrote is a document now. The
-            // call is recorded without its content wherever this run keeps it
-            // (the assistant blocks callers store as agent_blocks, the
-            // executed actions, the history sent back to the model).
-            tool.input = toolInputWithContentOmitted(tool.name, tool.input, result) as typeof tool.input;
+          // F15 B-I1 and M7 (rule C4; fix round 5 for the note and canvas
+          // titles): a draft tool's call is recorded with each text as its size
+          // wherever this run keeps it (the assistant blocks callers store as
+          // agent_blocks, the executed actions, the history sent back to the
+          // model), run or not; once it ran, it names the document it wrote.
+          if (isDraftTextAction(tool.name)) {
+            const written = success && result && typeof result === 'object' ? result as Record<string, unknown> : {};
+            const documentId = [written.document_id, written.canvas_document_id].find((value): value is string => typeof value === 'string') ?? null;
+            tool.input = draftToolInputForStorage(tool.name, tool.input, documentId) as typeof tool.input;
           }
-          // M7 (rule C4): a document's title and Markdown are never kept with the call.
-          if (tool.name === CREATE_DOCUMENT_ACTION) tool.input = documentToolCallForStorage(tool.name, tool.input, success ? result : null).input as typeof tool.input;
           let modelResult = result;
           if (success && tool.name === CREATE_DOCUMENT_ACTION) {
             // M3: the created document is held to the conversation's audience.
@@ -973,9 +974,11 @@ export async function runAgentQuery(params: {
             agent_employee_id: agentEmployeeId ?? null,
             mcp_connection_id: mcpConnectionIds.get(tool.name) ?? null,
           });
-          // M7 (rule C4): the proposal keeps its title and Markdown for the card
-          // (agent_actions), but the call the run keeps (agent_blocks) never does.
-          if (tool.name === CREATE_DOCUMENT_ACTION) tool.input = documentToolCallForStorage(tool.name, tool.input, null).input as typeof tool.input;
+          // M7 (rule C4): the proposal keeps its text for the card (agent_actions,
+          // shown only to its requester), but the call the run keeps
+          // (agent_blocks) never does: a document draft's title and Markdown,
+          // and since fix round 5 a note's or canvas's title and content.
+          if (isDraftTextAction(tool.name)) tool.input = draftToolInputForStorage(tool.name, tool.input) as typeof tool.input;
           toolResults.push({
             type: 'tool_result' as const,
             tool_use_id: tool.id,

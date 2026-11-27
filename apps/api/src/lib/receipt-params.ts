@@ -11,7 +11,8 @@ import {
   MODULE_OPERATION_NAMES,
 } from '@deft/shared/modules';
 import { sanitizeModuleActionParamsForHistory } from './module-service.js';
-import { createDocumentInputForStorage, omittedText, storableRef } from './document-audience.js';
+import { createDocumentInputForStorage, storableRef } from './document-audience.js';
+import { draftOutcomeReferences, draftToolInputForStorage, isDraftTextAction } from './document-draft-params.js';
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
   MODULE_OPERATION_NAMES.filter(
@@ -164,23 +165,21 @@ function withoutDocumentContent(action: string, paramsValue: unknown, resultValu
   if (!DOCUMENT_CONTENT_ACTIONS.has(action) || !paramsValue || typeof paramsValue !== 'object' || Array.isArray(paramsValue)) {
     return paramsValue;
   }
-  const params = paramsValue as Record<string, unknown>;
-  const content = params.content;
   const result = resultValue && typeof resultValue === 'object' ? resultValue as Record<string, unknown> : {};
-  const documentId = typeof result.document_id === 'string' ? result.document_id
-    : typeof result.canvas_document_id === 'string' ? result.canvas_document_id : null;
-  // Rebuilt from F15's fields every time (M7 fix round 1, I1): the content as
-  // a new envelope, so neither a `content_omitted` marker nor any other field
-  // the model sent carries text through.
-  const text = (key: string, max: number) => (typeof params[key] === 'string' ? { [key]: (params[key] as string).slice(0, max) } : {});
-  const ref = (key: string) => (storableRef(params[key]) === null ? {} : { [key]: params[key] as string });
-  return {
-    ...(action === 'create_note'
-      ? { ...text('title', 500), ...(['private', 'org', 'space'].includes(params.visibility as string) ? { visibility: params.visibility } : {}), ...ref('visibility_space_id') }
-      : { ...text('space_name', 200), ...text('title', 500), ...ref('resolved_space_id') }),
-    ...ref('source_message_id'),
-    ...(content === undefined || content === null ? {} : { content: omittedText(content, documentId) }),
-  };
+  const documentId = storableRef(result.document_id) ?? storableRef(result.canvas_document_id) ?? storableRef(result.note_id);
+  // M7 fix round 5: references only. The title is draft text (the controller's
+  // rule), so it is kept as its size like the content; the receipt names the
+  // document, where it went, and the sizes (draftToolInputForStorage).
+  return draftToolInputForStorage(action, paramsValue, documentId);
+}
+
+/**
+ * A draft tool's result as a receipt signs and stores it (M7 fix round 5):
+ * references only (draftOutcomeReferences), whatever the caller passed. Any
+ * other action's result is returned as it is.
+ */
+export function sanitizeActionResultForReceipt(action: string, resultValue: unknown): unknown {
+  return isDraftTextAction(action) ? draftOutcomeReferences(action, resultValue) : resultValue;
 }
 
 /**

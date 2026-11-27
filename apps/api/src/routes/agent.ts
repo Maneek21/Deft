@@ -94,7 +94,8 @@ import {
 } from '../lib/document-send.js';
 import { clientSafeErrorText } from '../lib/client-safe-error.js';
 import {
-  DOCUMENT_DRAFT_ACTION, documentTextParamsForViewer, scrubDocumentDraftItems, settledDocumentDraftParamsSql,
+  DOCUMENT_DRAFT_ACTION, documentTextParamsForViewer, draftOutcomeReferences, isDraftTextAction, receiptForViewer, scrubDocumentDraftItems,
+  settledDocumentDraftParamsSql,
 } from '../lib/document-draft-params.js';
 
 export const agentRoutes = new Hono();
@@ -327,8 +328,11 @@ function actionParamString(params: unknown, key: string): string | null {
 }
 
 function rejectedActionLabel(action: { action: string; params: unknown }): string {
-  // M7 fix round 1 (I3): posted in the room, so a document draft or edit is never named.
+  // M7 fix round 1 (I3): posted in the room, so a document draft or edit is
+  // never named; nor, since fix round 5, a note or canvas draft.
   if (action.action === DOCUMENT_DRAFT_ACTION) return 'Defty\'s document draft';
+  if (action.action === 'create_note') return 'Defty\'s note draft';
+  if (action.action === 'write_canvas') return 'Defty\'s canvas draft';
   if (action.action === 'edit_document') return 'Defty\'s document edit';
   const actionLabel = action.action.replace(/_/g, ' ');
   const target = actionParamString(action.params, 'title')
@@ -822,17 +826,21 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
       created_at: r.created_at,
       pending_actions: actionList
         .filter((a) => a.message_id === r.id)
-        .map((a) => ({
-          id: a.id,
-          action: a.action,
-          // M7 fix round 3: a document draft's text only for the person who asked.
-          params: documentTextParamsForViewer(a, user.id).params,
-          approval_tier: a.approval_tier,
-          status: a.approval_status,
-          result: a.result,
-          executed_at: a.executed_at,
-          error: a.error,
-        })),
+        .map((a) => {
+          // M7 fix round 3: a document draft's text only for the person who
+          // asked; fix round 5: a draft tool's result as references.
+          const shown = documentTextParamsForViewer(a, user.id);
+          return {
+            id: a.id,
+            action: a.action,
+            params: shown.params,
+            approval_tier: a.approval_tier,
+            status: a.approval_status,
+            result: shown.result,
+            executed_at: a.executed_at,
+            error: a.error,
+          };
+        }),
     };
   });
 
@@ -1439,7 +1447,8 @@ async function loadOrgAction(actionId: string, orgId: string) {
 function settledApprovalResponse(c: Context, row: typeof agentActions.$inferSelect) {
   if (row.approval_status === 'approved') {
     if (row.error) return c.json(approvedButFailedBody(row.error, row.action, row.result));
-    return c.json({ status: 'approved', message: 'already approved', result: row.result ?? undefined });
+    // M7 fix round 5: a draft tool's result as references, whenever it was stored.
+    return c.json({ status: 'approved', message: 'already approved', result: draftOutcomeReferences(row.action, row.result) ?? undefined });
   }
   if (row.approval_status === 'rejected') return c.json({ status: 'rejected', message: 'already rejected' });
   if (row.approval_status === 'expired') return c.json({ error: 'Action has expired', code: 'NOT_FOUND' }, 404);
@@ -1736,8 +1745,9 @@ export async function rejectActionAsReviewer(
         reviewer,
       ))
       .returning({ id: agentActions.id });
-    // M7 fix round 3 (I3): and its approval items name nothing, in this same commit.
-    if (rejected.length > 0 && action.action === DOCUMENT_DRAFT_ACTION) await scrubDocumentDraftItems(tx, [actionId]);
+    // M7 fix round 3 (I3): and its approval items name nothing, in this same
+    // commit (a note or canvas draft's too, fix round 5).
+    if (rejected.length > 0 && isDraftTextAction(action.action)) await scrubDocumentDraftItems(tx, [actionId]);
     return rejected;
   });
   if (!updatedAction) {
@@ -2150,7 +2160,9 @@ agentRoutes.get('/actions/:id/receipt', async (c) => {
 
   return c.json({
     receipt: {
-      ...receipt,
+      // M7 fix round 5: a draft tool's receipt names the document and sizes,
+      // whenever it was signed (verified above from the stored row).
+      ...receiptForViewer(receipt),
       approver_name,
       proposer_name,
     },

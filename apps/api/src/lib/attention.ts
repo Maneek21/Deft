@@ -22,7 +22,7 @@ import { nativeDeliveryAccessSql, nativeNotificationAccessSql } from './native-m
 import { taskHiddenFromGuestSql } from './task-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import { visibleDocumentIdSql } from './document-access.js';
-import { DOCUMENT_DRAFT_ACTION, DOCUMENT_DRAFT_ITEM_BODY, documentTextHiddenFrom, draftItemBodySql } from './document-draft-params.js';
+import { DOCUMENT_DRAFT_ACTION, DOCUMENT_DRAFT_ITEM_BODY, documentTextHiddenFrom, draftItemBodySql, isDraftTextAction } from './document-draft-params.js';
 import type { AnyNotificationType } from './notification-types.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
 import {
@@ -289,6 +289,45 @@ export function projectAttentionItem<T extends { metadata: unknown }>(item: T): 
   return { ...safe, metadata };
 }
 
+type ReaderItem = {
+  org_id: string; user_id: string; kind: string; source_type: string | null; source_id: string | null; body: string | null; metadata: unknown;
+};
+
+/**
+ * M7 fix round 5 (read time): an approval item of a draft tool (a document,
+ * note or canvas draft) shows its stored body only to the action's
+ * requester, the item's reader being its `user_id`; anyone else (a fallback
+ * owner or admin, an assigned reviewer) reads DOCUMENT_DRAFT_ITEM_BODY. This
+ * covers items raised before fix round 4 named a draft to its reviewer, with
+ * no data migration. A create_document item says that body to everyone
+ * (fix round 2), and so does an item whose action is gone. Every other item
+ * is returned as it is.
+ */
+export async function withReaderDraftItemBodies<T extends ReaderItem>(items: readonly T[]): Promise<T[]> {
+  const approvals = items.filter((item) => item.kind === 'approval' && item.source_type === 'agent_action' && typeof item.source_id === 'string');
+  if (approvals.length === 0) return [...items];
+  const ids = [...new Set(approvals.map((item) => item.source_id as string))];
+  const orgIds = [...new Set(approvals.map((item) => item.org_id))];
+  const actions = await db.select({ id: agentActions.id, org_id: agentActions.org_id, action: agentActions.action, user_id: agentActions.user_id })
+    .from(agentActions)
+    .where(and(inArray(agentActions.id, ids), inArray(agentActions.org_id, orgIds)));
+  const byId = new Map(actions.map((action) => [action.id, action]));
+  return items.map((item) => {
+    if (item.kind !== 'approval' || item.source_type !== 'agent_action' || typeof item.source_id !== 'string') return item;
+    const action = byId.get(item.source_id);
+    const named = objectMetadata(item.metadata).action;
+    if (!action || action.org_id !== item.org_id) return isDraftTextAction(named) ? { ...item, body: DOCUMENT_DRAFT_ITEM_BODY } : item;
+    if (!isDraftTextAction(action.action)) return item;
+    const hidden = action.action === DOCUMENT_DRAFT_ACTION || documentTextHiddenFrom(action, item.user_id);
+    return hidden ? { ...item, body: DOCUMENT_DRAFT_ITEM_BODY } : item;
+  });
+}
+
+/** Outbound attention items for their reader: projectAttentionItem, after the draft-body rule (fix round 5). */
+export async function projectAttentionItemsForReader<T extends ReaderItem>(items: readonly T[]): Promise<T[]> {
+  return (await withReaderDraftItemBodies(items)).map(projectAttentionItem);
+}
+
 type LegacyNotification = typeof notifications.$inferSelect;
 type AgentAction = typeof agentActions.$inferSelect;
 
@@ -506,7 +545,9 @@ async function emitAttention(event: 'attention:new' | 'attention:updated', item:
   try {
     const current = await loadVisibleAttentionSnapshot(item);
     if (!current) return;
-    emitToUser(current.org_id, current.user_id, event, projectAttentionItem(current));
+    // M7 fix round 5: a draft's item body only for its requester.
+    const [shown] = await projectAttentionItemsForReader([current]);
+    emitToUser(current.org_id, current.user_id, event, shown);
   } catch (error) {
     console.warn('[attention] realtime delivery skipped:');
   }
@@ -780,10 +821,13 @@ export async function syncNotificationsToAttention(
     return [];
   });
   const projectedIds = new Set(projected.map((item) => item.id));
-  for (const item of visible) {
-    if (projectedIds.has(item.id)) {
-      emitToUser(item.org_id, item.user_id, item.event_count > 1 ? 'attention:updated' : 'attention:new', projectAttentionItem(item));
-    }
+  // M7 fix round 5: a draft's item body only for its requester.
+  const shownItems = await projectAttentionItemsForReader(visible.filter((item) => projectedIds.has(item.id))).catch((error) => {
+    console.warn('[attention] draft item projection failed; skipping realtime delivery');
+    return [];
+  });
+  for (const item of shownItems) {
+    emitToUser(item.org_id, item.user_id, item.event_count > 1 ? 'attention:updated' : 'attention:new', item);
   }
   if (options.deliver !== false) {
     await scheduleAttentionDeliveries(visible).catch((error) => {

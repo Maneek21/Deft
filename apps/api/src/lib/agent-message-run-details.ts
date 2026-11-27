@@ -6,6 +6,7 @@ import { captureRealtimeAccessGeneration, isRealtimeAccessGenerationCurrent } fr
 import { projectPendingDeftyMetadataForOutbound } from './defty-pending-action.js';
 import { canonicalDeftyActionSql, visibleModuleActionSql } from './module-action-visibility.js';
 import { visibleDocumentCondition } from './document-access.js';
+import { draftTextOmittedFromMetadata } from './document-draft-params.js';
 
 /**
  * Run details in chat message metadata follow the Defty action audience.
@@ -138,7 +139,10 @@ export function hasAgentRunDetails(metadata: unknown): boolean {
 
 /** Outbound metadata for one viewer: `withDetails` comes from agentRunDetailAudience. */
 export function projectAgentMessageMetadata<T>(metadata: T, withDetails: boolean): T {
-  const projected = projectPendingDeftyMetadataForOutbound(metadata) as unknown;
+  // M7 fix round 5: a draft's text (a note's, canvas's or document's title and
+  // text) reaches nobody through message metadata, owners and admins included,
+  // whenever the reply was stored; its requester sees it on the card.
+  const projected = draftTextOmittedFromMetadata(projectPendingDeftyMetadataForOutbound(metadata)) as unknown;
   if (!isRecord(projected)) return projected as T;
   const base = Object.hasOwn(projected, 'pending_actions')
     ? { ...projected, pending_actions: pendingActionMarkers(projected.pending_actions) }

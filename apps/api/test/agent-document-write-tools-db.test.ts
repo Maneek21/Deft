@@ -91,6 +91,14 @@ const { toolInputWithContentOmitted } = await import('../src/lib/legacy-notes.js
 const { sanitizeActionParamsForReceipt } = await import('../src/lib/receipt-params.js');
 const { maintainAttentionSystem } = await import('../src/lib/attention-maintenance.js');
 const { cancelLostRoomActions } = await import('../src/lib/lost-room-action-cancellation.js');
+const { messageRoutes } = await import('../src/routes/messages.js');
+const { fetchUnread } = await import('../src/lib/mcp-tools/messages.js');
+const { pollPendingWork } = await import('../src/lib/mcp-tools/cooperative.js');
+const { executePlan } = await import('../src/lib/agent-plans.js');
+const { humanFetch, humanAttentionGet } = await import('../src/lib/mcp-tools/human.js');
+const { formatApprovalConfirmation } = await import('../src/lib/agent-action-confirmation.js');
+const { emitMessageToSpaceViewers } = await import('../src/lib/agent-message-run-details.js');
+const { sanitizeAgentReplyActionMetadata } = await import('../src/lib/agent-action-proposals.js');
 /** The module itself, for test seams that may not exist yet (RED runs against older code). */
 const writeTools = await import('../src/lib/agent-document-write-tools.js') as Record<string, any>;
 
@@ -107,7 +115,7 @@ before(async () => {
   if (skip) return;
   fx = await setupDrivesFixture('m7', {
     routes: [{ path: '/api/agent', app: agentRoutes }, { path: '/api/documents', app: documentRoutes }, { path: '/api/agent-plans', app: agentPlanRoutes },
-      { path: '/api/inbox', app: inboxRoutes }, { path: '/api/attention', app: attentionRoutes }],
+      { path: '/api/inbox', app: inboxRoutes }, { path: '/api/attention', app: attentionRoutes }, { path: '/api/messages', app: messageRoutes }],
   });
   srv = await startCollabTestServer(fx);
   deftyId = await ensureDeftyMembership(fx.orgId);
@@ -1208,4 +1216,282 @@ test('fix round 4: a pending note draft\'s approval item names it for the person
     for (const leaked of [token('nttitle'), token('ntbody')]) assert.ok(!value.includes(leaked), `${where} shows the admin no ${leaked}`);
   }
   await setMemberActive(member, true);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 5: draft and note text gated on every surface. The controller's
+// rule: a draft's text (a pending create_document's title and Markdown, a plan
+// literal, a create_note's or write_canvas's title and content) reaches only
+// its requester, the action's user_id; once it is a document, surfaces name it
+// by document_id.
+
+/** A pending create_note proposal from `asker` in `spaceId`, with its approval item raised. */
+async function pendingNote(asker: string, spaceId: string, label: string, title: string, content: string) {
+  const callId = `toolu_m7_${label}_${run}`;
+  await askDefty({ asker, spaceId, content: 'Make a note of the agenda',
+    turns: [[{ id: callId, name: 'create_note', input: { title, content, visibility: 'private' } }]] });
+  const { rows: [action] } = await fx.client.query('SELECT id, approval_status FROM agent_actions WHERE org_id = $1 AND tool_use_id = $2', [fx.orgId, callId]);
+  assert.equal(action?.approval_status, 'pending');
+  const items = async () => (await fx.client.query(`SELECT id, user_id, body, state FROM attention_items
+    WHERE org_id = $1 AND source_type = 'agent_action' AND source_id = $2 ORDER BY created_at, id`, [fx.orgId, action.id])).rows;
+  await pollUntil(async () => (await items()).length > 0, 'the note draft has its approval item');
+  return { id: action.id as string, items };
+}
+
+/** Everything a room's messages hold (hidden rows included), as one text. */
+async function roomText(spaceId: string): Promise<string> {
+  const { rows } = await fx.client.query('SELECT content, metadata FROM messages WHERE org_id = $1 AND space_id = $2', [fx.orgId, spaceId]);
+  return text(rows);
+}
+
+test('fix round 5 (1): note and canvas outcomes posted in the room name nothing: the copy, a declined draft, an approved one with its link', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  const title = `Room ${token('rmtitle')}`;
+  const body = `Body ${token('rmbody')}`;
+  const leaks = [token('rmtitle'), token('rmbody')];
+
+  // The copy for each outcome.
+  const documentId = randomUUID();
+  const created = formatApprovalConfirmation([{ action: 'create_note', params: { title, content: body },
+    result: { note_id: documentId, document_id: documentId, title, url: `/d/${documentId}` } }]);
+  assert.match(created, /Created a document/);
+  assert.ok(created.includes(`(/d/${documentId})`), created);
+  const canvas = formatApprovalConfirmation([{ action: 'write_canvas', params: { space_name: 'team', title, content: body },
+    result: { canvas_document_id: documentId, document_id: documentId, space: 'team' } }]);
+  const failed = formatApprovalConfirmation([{ action: 'create_note', params: { title, content: body }, error: 'Note could not be saved' },
+    { action: 'write_canvas', params: { space_name: 'team', title, content: body }, error: 'boom' }]);
+  assert.match(failed, /Create note did not complete/);
+  assert.match(failed, /Write canvas did not complete/);
+  for (const [where, copy] of [['created', created], ['canvas', canvas], ['failed', failed]] as const) {
+    for (const leaked of leaks) assert.ok(!copy.includes(leaked), `the ${where} copy names no ${leaked}: ${copy}`);
+  }
+
+  // A declined note draft: the room's confirmation and the model's hidden note name nothing.
+  const room = await insertChat([member]);
+  const declined = await pendingNote(member, room, 'rmdecline', title, body);
+  const rejected = await fx.request(member, 'POST', `/api/agent/actions/${declined.id}/reject`, {});
+  assert.equal(rejected.status, 200, await rejected.clone().text());
+  const afterReject = await roomText(room);
+  assert.ok(afterReject.includes('Defty\'s note draft'), afterReject);
+  for (const leaked of leaks) assert.ok(!afterReject.includes(leaked), `the declined draft's room keeps no ${leaked}`);
+
+  // An approved note draft: the room is told a document was made, with its link.
+  const approvedRoom = await insertChat([member]);
+  const kept = await pendingNote(member, approvedRoom, 'rmapprove', title, body);
+  const approved = await fx.request(member, 'POST', `/api/agent/actions/${kept.id}/approve`, {});
+  assert.equal(approved.status, 200, await approved.clone().text());
+  const { rows: [executed] } = await fx.client.query('SELECT result FROM agent_actions WHERE id = $1', [kept.id]);
+  const noteId = executed?.result?.document_id as string;
+  assert.ok(noteId, 'the note was made');
+  const afterApprove = await roomText(approvedRoom);
+  assert.ok(afterApprove.includes('Created a document'), afterApprove);
+  assert.ok(afterApprove.includes(`/d/${noteId}`), afterApprove);
+  for (const leaked of leaks) assert.ok(!afterApprove.includes(leaked), `the approved draft's room keeps no ${leaked}`);
+});
+
+test('fix round 5 (2): an executed note keeps references only in its result, after_state and receipt, and older rows are shown that way to everyone', { skip }, async () => {
+  const { member, admin } = fx.people;
+  await setTrust('standard');
+  const title = `Kept ${token('kptitle')}`;
+  const body = `Body ${token('kpbody')}`;
+  const leaks = [token('kptitle'), token('kpbody')];
+  const room = await insertChat([member]);
+  const note = await pendingNote(member, room, 'kept', title, body);
+  const approved = await fx.request(member, 'POST', `/api/agent/actions/${note.id}/approve`, {});
+  assert.equal(approved.status, 200, await approved.clone().text());
+  const answer = await approved.text();
+  for (const leaked of leaks) assert.ok(!answer.includes(leaked), `the approval's answer holds no ${leaked}`);
+
+  const { rows: [row] } = await fx.client.query('SELECT result, after_state FROM agent_actions WHERE id = $1', [note.id]);
+  const noteId = row.result?.document_id as string;
+  assert.ok(noteId, 'the result names the document');
+  assert.equal(row.after_state?.document_id, noteId);
+  const { rows: receipts } = await fx.client.query('SELECT action_params_json, result_json FROM action_receipts WHERE action_id = $1', [note.id]);
+  assert.ok(receipts.length > 0, 'the approval has its receipt');
+  for (const leaked of leaks) {
+    assert.ok(!text(row).includes(leaked), `the action's result and after_state hold no ${leaked}`);
+    assert.ok(!text(receipts).includes(leaked), `the receipt holds no ${leaked}`);
+  }
+  assert.ok(text(receipts).includes(noteId), 'the receipt names the document');
+
+  const readersShow = async (where: string) => {
+    for (const userId of [member, admin]) {
+      for (const path of ['/api/agent/actions', '/api/agent/actions/recent?limit=100', `/api/agent/actions/${note.id}/receipt`]) {
+        const response = await fx.request(userId, 'GET', path);
+        assert.equal(response.status, 200, `${path}: ${await response.clone().text()}`);
+        const shown = await response.text();
+        assert.ok(shown.includes(note.id), `${path} names the action`);
+        for (const leaked of leaks) {
+          assert.ok(!shown.includes(leaked), `${where}: ${path} shows ${userId === admin ? 'an admin' : 'the asker'} no ${leaked}`);
+        }
+      }
+    }
+  };
+  await readersShow('now');
+
+  // Rows written before this round named the note in the result, after_state and receipt.
+  await fx.client.query('UPDATE agent_actions SET result = $2::jsonb, after_state = $3::jsonb WHERE id = $1', [note.id,
+    JSON.stringify({ note_id: noteId, document_id: noteId, title }), JSON.stringify({ document_id: noteId, title, visibility: 'private' })]);
+  await fx.client.query('UPDATE action_receipts SET action_params_json = $2::jsonb, result_json = $3::jsonb WHERE action_id = $1', [note.id,
+    JSON.stringify({ title, content: { document_id: noteId, content_omitted: true, content_bytes: 9 }, visibility: 'private' }),
+    JSON.stringify({ note_id: noteId, document_id: noteId, title })]);
+  await readersShow('older rows');
+
+  // The note and canvas receipts name the document and sizes.
+  const noteParams = sanitizeActionParamsForReceipt('create_note', { title, content: body, visibility: 'private' }, { note_id: noteId, document_id: noteId, title });
+  const canvasParams = sanitizeActionParamsForReceipt('write_canvas', { space_name: 'team', title, content: body }, { canvas_document_id: noteId, space: 'team' });
+  assert.equal((noteParams.title as any)?.content_omitted, true, text(noteParams));
+  assert.equal((canvasParams.title as any)?.content_omitted, true, text(canvasParams));
+  for (const leaked of leaks) assert.ok(!text([noteParams, canvasParams]).includes(leaked), `receipt params hold no ${leaked}`);
+});
+
+test('fix round 5 (3): an employee polling its queue sees no person\'s draft text, and a draft step a person wrote is never handed to an employee', { skip }, async () => {
+  const { member, agentUser } = fx.people;
+  const { rows: [employee] } = await fx.client.query('SELECT id, slug FROM agent_employees WHERE org_id = $1 AND user_id = $2', [fx.orgId, agentUser]);
+  assert.ok(employee, 'the fixture has an employee');
+  const humanTitle = token('emhuman');
+  const humanBody = token('emhbody');
+  const ownTitle = `Own ${token('emown')}`;
+  const insertPending = async (userId: string, params: Record<string, unknown>) => {
+    const id = randomUUID();
+    await fx.client.query(`INSERT INTO agent_actions (id, org_id, user_id, agent_employee_id, source, action, params, approval_tier, approval_status)
+      VALUES ($1, $2, $3, $4, 'plan', 'create_note', $5::jsonb, 'quick', 'pending')`, [id, fx.orgId, userId, employee.id, JSON.stringify(params)]);
+    return id;
+  };
+  const humanDraft = await insertPending(member, { title: `Note ${humanTitle}`, content: `Body ${humanBody}`, visibility: 'private' });
+  const ownDraft = await insertPending(agentUser, { title: ownTitle, content: 'Its own words', visibility: 'private' });
+  const ctx = { org_id: fx.orgId, employee_id: employee.id as string, employee_slug: employee.slug as string, trust_level: 'conservative' as const };
+  for (const [tool, result] of [['fetch_unread', await fetchUnread({}, ctx)], ['poll_pending_work', await pollPendingWork({}, ctx)]] as const) {
+    assert.notEqual(result.isError, true, text(result));
+    const pending = (JSON.parse(result.content[0]!.text) as { pending_actions: any[] }).pending_actions;
+    const theirs = pending.find((action) => action.id === humanDraft);
+    assert.ok(theirs, `${tool} lists the person's draft`);
+    assert.match(String(theirs.params?.summary), /^Document draft, \d+ bytes$/, `${tool}: ${text(theirs)}`);
+    assert.equal(theirs.params?.title?.content_omitted, true);
+    assert.equal(theirs.user_id, undefined, `${tool} keeps its shape`);
+    for (const leaked of [humanTitle, humanBody]) assert.ok(!text(result).includes(leaked), `${tool} shows the employee no ${leaked}`);
+    assert.equal(pending.find((action) => action.id === ownDraft)?.params?.title, ownTitle, `${tool} shows the employee its own draft`);
+  }
+  await fx.client.query('DELETE FROM agent_actions WHERE id = ANY($1::text[])', [[humanDraft, ownDraft]]);
+
+  // A plan a person binds to the employee can't carry a draft step.
+  const steps = [{ id: 'note', description: 'Write it down', tool: 'create_note', params: { title: `Plan ${token('emplan')}`, content: 'Plan body' } }];
+  await assert.rejects(createPlanRow({ org_id: fx.orgId, user_id: member, agent_employee_id: employee.id, title: 'Employee plan', steps }), /agent employee/);
+  const posted = await fx.request(member, 'POST', '/api/agent-plans', { title: 'Employee plan', agent_employee_id: employee.id, steps });
+  assert.equal(posted.status, 403, await posted.clone().text());
+  assert.equal(((await posted.json()) as { code?: string }).code, 'DRAFT_STEP_NOT_FOR_EMPLOYEE');
+
+  // A plan stored before this round is stopped at that step: nothing is queued for the employee.
+  const planId = randomUUID();
+  await fx.client.query(`INSERT INTO agent_plans (id, org_id, user_id, agent_employee_id, title, steps, status, current_step, context)
+    VALUES ($1, $2, $3, $4, 'Stored before', $5::jsonb, 'approved', 0, '{"created_via":"api"}'::jsonb)`,
+  [planId, fx.orgId, member, employee.id, JSON.stringify(steps.map((step) => ({ ...step, status: 'pending' })))]);
+  await executePlan(planId, fx.orgId, member);
+  const { rows: [plan] } = await fx.client.query('SELECT status, error FROM agent_plans WHERE id = $1', [planId]);
+  assert.equal(plan.status, 'paused');
+  assert.match(String(plan.error), /agent employee/);
+  const { rows: handed } = await fx.client.query('SELECT id FROM agent_actions WHERE org_id = $1 AND plan_id = $2', [fx.orgId, planId]);
+  assert.deepEqual(handed, [], 'nothing is queued for the employee');
+});
+
+test('fix round 5 (4): a note draft in message metadata reaches nobody (REST, MCP fetch and the socket, an admin included); replies and runs store its sizes', { skip }, async () => {
+  const { member, admin } = fx.people;
+  const title = `Meta ${token('mdtitle')}`;
+  const body = `Body ${token('mdbody')}`;
+  const leaks = [token('mdtitle'), token('mdbody')];
+  const draft = { title, content: body, visibility: 'private' };
+  const room = await insertChat([member, admin]);
+  const requestId = await postMessage(room, member, 'Make a note of the agenda');
+  const toolUseId = `toolu_m7_meta_${run}`;
+  // A reply stored before this round, with the draft in every run-detail field.
+  const metadata = {
+    is_agent_reply: true, reply_to_message_id: requestId,
+    agent_blocks: [{ type: 'text', text: 'I will save it.' }, { type: 'tool_use', id: toolUseId, name: 'create_note', input: draft },
+      { type: 'tool_use', id: `${toolUseId}c`, name: 'write_canvas', input: { space_name: 'team', title, content: body } }],
+    tool_calls: [{ tool: 'create_note', params: draft }],
+    action_graph: { actions: [{ id: 'n1', tool: 'create_note', params: draft }] },
+    defty_pending: { kind: 'action_draft', request_message_id: requestId, request_text: 'Make a note of the agenda', question: 'Which space?',
+      created_at: new Date().toISOString(), draft: { actions: [{ action: 'create_note', params: draft }] } },
+  };
+  const replyId = randomUUID();
+  await fx.client.query('INSERT INTO messages (id, org_id, space_id, user_id, content, metadata) VALUES ($1, $2, $3, $4, $5, $6::jsonb)',
+    [replyId, fx.orgId, room, deftyId, 'I will save it.', JSON.stringify(metadata)]);
+  await fx.client.query(`INSERT INTO agent_actions (id, org_id, user_id, conversation_id, message_id, tool_use_id, source, action, params, approval_tier, approval_status)
+    VALUES ($1, $2, $3, $4, $5, $6, 'chat', 'create_note', $7::jsonb, 'quick', 'pending')`,
+  [randomUUID(), fx.orgId, member, room, replyId, toolUseId, JSON.stringify(draft)]);
+
+  const listed = await fx.request(admin, 'GET', `/api/messages/${room}`);
+  assert.equal(listed.status, 200, await listed.clone().text());
+  const listedText = await listed.text();
+  assert.ok(listedText.includes(replyId), 'the admin reads the reply');
+  const fetched = await humanFetch({ id: `message:${replyId}` }, { org_id: fx.orgId, user_id: admin, role: 'admin', scopes: ['read:messages'] } as any);
+  assert.notEqual(fetched.isError, true, text(fetched));
+  const received: unknown[] = [];
+  const socket = { rooms: new Set([`org-user:${fx.orgId}:${admin}`, `space:${room}`]), emit: (_event: string, payload: unknown) => { received.push(payload); } };
+  const io = { to: () => ({ emit: (_event: string, payload: unknown) => { received.push(payload); } }), in: () => ({ fetchSockets: async () => [socket] }) };
+  await emitMessageToSpaceViewers(io as any, { orgId: fx.orgId, spaceId: room, event: 'message:new', message: { id: replyId, user_id: deftyId, space_id: room, metadata } });
+  assert.equal(received.length, 1, 'the admin\'s socket gets the reply');
+  for (const [where, value] of [['REST', listedText], ['MCP fetch', text(fetched)], ['socket', text(received)]] as const) {
+    assert.ok(value.includes('content_omitted'), `${where} keeps the run details, as sizes`);
+    for (const leaked of leaks) assert.ok(!value.includes(leaked), `${where} shows the admin no ${leaked}`);
+  }
+
+  // A reply stores the draft as its sizes.
+  const stored = sanitizeAgentReplyActionMetadata(metadata);
+  for (const leaked of leaks) assert.ok(!text(stored).includes(leaked), `a stored reply keeps no ${leaked}`);
+  assert.equal(stored.agent_blocks?.[1]?.input?.title?.content_omitted, true);
+
+  // A run keeps a pending note call as its sizes; the proposal keeps its text for the card.
+  nextResponses = [{ content: [{ type: 'tool_use', id: `${toolUseId}run`, name: 'create_note', input: draft }], stop_reason: 'tool_use' }];
+  const result = await runAgentQuery({
+    content: 'Save a note with the agenda.', orgId: fx.orgId, userId: member, orgName: 'M7 org', mode: 'background',
+    trustLevelOverride: 'conservative', skipVerification: true, durableNotes: false, maxIterations: 1, systemPromptOverride: 'Save notes when asked.',
+  });
+  const toolUse = (result.assistantBlocks ?? []).find((block: any) => block.type === 'tool_use') as any;
+  assert.ok(toolUse, 'the run kept the call');
+  assert.equal(toolUse.input?.title?.content_omitted, true, text(toolUse));
+  for (const leaked of leaks) assert.ok(!text(result.assistantBlocks).includes(leaked), `the run's blocks keep no ${leaked}`);
+  assert.equal(result.pendingActions[0]?.params?.title, title, 'the proposal keeps its text for its card');
+});
+
+test('fix round 5 (5): a note draft\'s approval item made before this round names nothing to a fallback admin, and settling the draft scrubs every item', { skip }, async (t) => {
+  const { member, admin } = fx.people;
+  await setTrust('standard');
+  const title = `Item ${token('ittitle')}`;
+  const room = await insertChat([member]);
+  const note = await pendingNote(member, room, 'r5item', title, `Body ${token('itbody')}`);
+  assert.ok(text(await note.items()).includes(token('ittitle')), 'the asker\'s item names the draft');
+
+  // The asker leaves; the fallback admin's item is raised.
+  t.after(() => setMemberActive(member, true));
+  await setMemberActive(member, false);
+  assert.equal((await fx.request(admin, 'GET', '/api/attention')).status, 200);
+  const adminItem = (await note.items()).find((item) => item.user_id === admin);
+  assert.ok(adminItem, 'the fallback admin has an item for the draft');
+  // An item raised before this round named the draft to its reviewer.
+  await fx.client.query('UPDATE attention_items SET body = $2 WHERE id = $1', [adminItem.id, title]);
+
+  const listed = (await (await fx.request(admin, 'GET', '/api/attention')).json()) as { items: any[] };
+  assert.equal(listed.items.find((item) => item.id === adminItem.id)?.body, 'Document draft', text(listed));
+  const one = await fx.request(admin, 'GET', `/api/attention/${adminItem.id}`);
+  assert.equal(one.status, 200);
+  const mcpList = await humanAttentionList({ lane: 'all' }, mcpCtx(admin, 'admin'));
+  const mcpGet = await humanAttentionGet({ attention_id: adminItem.id }, mcpCtx(admin, 'admin'));
+  assert.notEqual(mcpGet.isError, true, text(mcpGet));
+  assert.ok(text(mcpList).includes(adminItem.id), 'MCP lists the item');
+  for (const [where, value] of [['/api/attention', text(listed)], ['/api/attention/:id', await one.text()], ['MCP attention_list', text(mcpList)], ['MCP attention_get', text(mcpGet)]] as const) {
+    assert.ok(!value.includes(token('ittitle')), `${where} shows the fallback admin no title`);
+  }
+
+  // The person who asked still reads their own item.
+  await setMemberActive(member, true);
+  assert.ok((await (await fx.request(member, 'GET', '/api/attention')).text()).includes(token('ittitle')), 'the asker\'s own item names the draft');
+
+  // Rejecting the draft scrubs every one of its items in the same commit.
+  const rejected = await fx.request(member, 'POST', `/api/agent/actions/${note.id}/reject`, {});
+  assert.equal(rejected.status, 200, await rejected.clone().text());
+  const items = await note.items();
+  assert.ok(items.length >= 2);
+  for (const item of items) assert.equal(item.body, 'Document draft', text(item));
 });

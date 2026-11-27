@@ -56,7 +56,7 @@ import { markWorkIntentConvertedForAction, markWorkIntentFailedForAction } from 
 import { forcedApprovalFailure } from './test-failure-switches.js';
 import { isTerminalRefusalResult, wikiProposalRefusal, wikiProposalRefusalCode } from './wiki-proposal-target.js';
 import { CONNECTED_TOOL_UNAVAILABLE_ERROR } from './connected-tool-access.js';
-import { DOCUMENT_DRAFT_ACTION, scrubDocumentDraftItems } from './document-draft-params.js';
+import { isDraftTextAction, scrubDocumentDraftItems } from './document-draft-params.js';
 import { MODULE_OPERATION_DEFINITIONS, MODULE_OPERATION_NAMES } from '@deft/shared/modules';
 
 export type AgentActionRow = typeof agentActions.$inferSelect;
@@ -528,7 +528,7 @@ export async function claimPendingApproval(
     ))
     .returning({ token: claimTokenSql });
   // M7 fix round 3 (I3): an approved document draft's items name nothing, in this commit.
-  if (claimed && row.action === DOCUMENT_DRAFT_ACTION) await scrubDocumentDraftItems(tx, [row.id]);
+  if (claimed && isDraftTextAction(row.action)) await scrubDocumentDraftItems(tx, [row.id]);
   return claimed?.token ?? null;
   });
 }
