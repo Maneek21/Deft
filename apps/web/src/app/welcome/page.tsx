@@ -20,6 +20,7 @@ export default function WelcomePage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [firstMessage, setFirstMessage] = useState('Hi team — happy to be here!');
   const [posting, setPosting] = useState(false);
+  const [postError, setPostError] = useState<string | null>(null);
 
   // Redirect to login if no auth, dashboard if already done
   useEffect(() => {
@@ -62,20 +63,28 @@ export default function WelcomePage() {
       return;
     }
     setPosting(true);
+    setPostError(null);
+    let posted = false;
     try {
       const spacesRes = await api.get('/api/spaces');
       if (spacesRes.ok) {
         const spaces: { id: string; is_default: boolean; name: string }[] = await spacesRes.json();
         const target = spaces.find((s) => s.is_default) ?? spaces.find((s) => s.name === 'general') ?? spaces[0];
         if (target) {
-          await api.post(`/api/spaces/${target.id}/messages`, { content: firstMessage }).catch(() => {});
-          await api.patch('/api/auth/onboarding', { first_message_sent: true }).catch(() => {});
+          const res = await api.post(`/api/messages/${encodeURIComponent(target.id)}`, { content: firstMessage });
+          posted = res.ok;
         }
       }
-    } finally {
-      setPosting(false);
-      finish();
+    } catch {
+      posted = false;
     }
+    setPosting(false);
+    if (!posted) {
+      setPostError("Your hello wasn't posted. Try again, or skip and say hello in #general later.");
+      return;
+    }
+    await api.patch('/api/auth/onboarding', { first_message_sent: true }).catch(() => {});
+    await finish();
   };
 
   if (!user) {
@@ -251,6 +260,11 @@ export default function WelcomePage() {
                 style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)', borderRadius: '0.5rem', color: 'var(--on-surface)' }}
                 placeholder="Hi team — excited to be here!"
               />
+              {postError && (
+                <p role="alert" className="text-[0.8125rem] leading-relaxed" style={{ color: 'var(--error)' }}>
+                  {postError}
+                </p>
+              )}
               <div className="flex justify-between mt-2">
                 <button onClick={finish} className="text-[0.8125rem]" style={{ color: 'var(--on-surface-variant)' }}>Skip — finish onboarding</button>
                 <button onClick={postFirstMessage} disabled={posting}
