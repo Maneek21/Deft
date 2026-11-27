@@ -9,6 +9,10 @@ import { getApprovalTier } from '../../lib/agent-approval.js';
 import { eq, and, desc, sql, ne, lt, inArray } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
+import {
+  deftyConversationAudience, roomReadableByAudienceSql, roomReadableBySql, sharedAudience, taskVisibleToAudienceSql, tasksVisibleToAudience,
+  withLeftOutLine, type DeftyAudience,
+} from '../../lib/defty-audience.js';
 import { buildModuleReadActor } from '../../lib/agent-context.js';
 import {
   authorizedDurableAgentResult,
@@ -35,7 +39,7 @@ import { compileMessageModuleCsvImport } from '../../lib/module-csv-import.js';
 import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-import.js';
 import { buildRoomContextPackWithSources } from '../../lib/defty-room-context.js';
 import { loadPendingDeftyDraft, pendingDeftyDraftContext, type PendingDeftyDraft } from '../../lib/defty-pending-action.js';
-import { emitMessageToSpaceViewers, projectMessagesForViewer } from '../../lib/agent-message-run-details.js';
+import { emitMessageToSpaceViewers, projectAgentMessageMetadata, projectMessagesForViewer } from '../../lib/agent-message-run-details.js';
 import { promotableNoteSql } from '../../lib/agent-action-visibility.js';
 import { visibleTaskCondition, visibleTaskSql } from '../../lib/task-visibility.js';
 import { assertDeliveryOwnedBeforeCommit, claimDeftyReplySlot, DeftyDeliveryLostError, findExistingDeftyReply, isDatabaseWaitTimeout, throwIfDeliveryLost, type DeftyReplyDelivery } from '../../lib/defty-reply-guard.js';
@@ -290,6 +294,8 @@ export async function resolvePendingActionTargets(
   sourceSpaceId: string,
   actions: any[],
   userRequest = '',
+  /** The source conversation's readers (defty-audience.ts). */
+  audience?: DeftyAudience | null,
 ): Promise<{ actions: any[]; warnings: string[] }> {
   const resolvedActions: any[] = [];
   const warnings: string[] = [];
@@ -408,13 +414,18 @@ export async function resolvePendingActionTargets(
     }
 
     if (action.action === 'post_message') {
+      const heldAudience = sharedAudience(audience);
+      // In a shared conversation the candidates are rooms the asker can read,
+      // and a warning names only the rooms every reader there can read.
       const resolution = await resolveSpaceTarget(orgId, {
         spaceId: action.params.space_id ?? action.params.resolved_space_id,
         spaceName: action.params.space_name,
-      });
+      }, heldAudience ? roomReadableBySql(userId, spaces.id, spaces.org_id) : undefined);
 
       if (resolution.status !== 'resolved') {
-        warnings.push(resolution.message);
+        warnings.push(heldAudience && resolution.status === 'ambiguous'
+          ? await ambiguousSpaceWarningForAudience(heldAudience, resolution.requestedName ?? null, resolution.matches)
+          : resolution.message);
         continue;
       }
 
@@ -860,6 +871,8 @@ type PriorReplyScope = {
   parentId?: string | null;
   /** The person this reply is for: earlier replies are read as they may receive them. */
   requesterId: string;
+  /** The conversation's readers (defty-audience.ts). */
+  audience?: DeftyAudience | null;
 };
 
 /**
@@ -891,6 +904,9 @@ async function priorAgentRepliesForRequester(options: PriorReplyScope) {
     .orderBy(desc(messages.created_at))
     .limit(5);
   if (rows.length === 0) return rows;
+  // In a shared conversation an earlier reply is read as everyone there reads
+  // it: its visible text, without the requester's run details.
+  if (sharedAudience(options.audience)) return rows.map((row) => ({ ...row, metadata: projectAgentMessageMetadata(row.metadata, false) }));
   const [member] = await db
     .select({ role: orgMembers.role })
     .from(orgMembers)
@@ -942,6 +958,7 @@ export async function collectRecentAgentTaskReferences(options: PriorReplyScope 
       eq(tasks.is_deleted, false),
       inArray(sql<string>`${projects.prefix} || '-' || ${tasks.number}`, references),
       visibleTaskSql(options.requesterId),
+      taskVisibleToAudienceSql(options.audience),
     ));
   const parentIds = referencedTasks.filter((task) => !task.parent_task_id).map((task) => task.id);
   if (parentIds.length === 0) return references.slice(0, MAX_INLINE_APPROVAL_ACTIONS);
@@ -958,6 +975,7 @@ export async function collectRecentAgentTaskReferences(options: PriorReplyScope 
       eq(tasks.is_deleted, false),
       inArray(tasks.parent_task_id, parentIds),
       visibleTaskSql(options.requesterId),
+      taskVisibleToAudienceSql(options.audience),
     ))
     .orderBy(tasks.number);
   if (childTasks.length === 0) return references.slice(0, MAX_INLINE_APPROVAL_ACTIONS);
@@ -1418,6 +1436,11 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     };
 
     const isDmLike = space?.type === 'dm' || space?.type === 'group_dm' || space?.type === 'agent_conversation';
+    // Everyone who can read this conversation reads the answer: worked out
+    // once for the turn, and every read below is held to them when anyone
+    // but the asker is there (defty-audience.ts).
+    const audience = await deftyConversationAudience(orgId, spaceId, userId);
+    const heldAudience = sharedAudience(audience);
 
     // Threading rule:
     // - In channels: thread off the triggering message (or its parent thread root)
@@ -1445,6 +1468,9 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     const approvedResultHistory = async (metadata: unknown): Promise<string | null | undefined> => {
       const durableResult = durableAgentResultInMessageMetadata(metadata);
       if (!durableResult) return undefined;
+      // A durable result is a Module record, checked for the asker: a shared
+      // conversation does not carry it (Module reads are refused there).
+      if (heldAudience) return null;
       try {
         moduleHistoryActor ??= await buildModuleReadActor(orgId, userId, { conversationId: spaceId });
         if (!await authorizedDurableAgentResult({
@@ -1577,7 +1603,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     // Strip the @agent/@deft mention from the content for a cleaner prompt
     const cleanContent = content.replace(/<@[^|]*\|Defty?>/gi, '').replace(/@(agent|defty|deft)\b/gi, '').trim();
     const roomContext = space.type === 'public' || space.type === 'private' || space.type === 'group_dm'
-      ? await buildRoomContextPackWithSources({ orgId, spaceId, threadParentId: parentId ?? null, triggerMessageId: messageId, requesterId: userId })
+      ? await buildRoomContextPackWithSources({ orgId, spaceId, threadParentId: parentId ?? null, triggerMessageId: messageId, requesterId: userId, audience })
       : null;
     const roomContextPack = roomContext?.content ?? null;
     // The room pack replaces conversationHistory for channels, so carry its
@@ -1589,7 +1615,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       orgId, spaceId, threadParentId: isDmLike ? (parentId ?? null) : (parentId || messageId),
       triggerMessageId: messageId, requesterId: userId, agentUserId, triggerCreatedAt: trigger.created_at,
     });
-    const originalRoomContext = pendingClarification ? await buildRoomContextPackWithSources({ orgId, spaceId, requesterId: userId,
+    const originalRoomContext = pendingClarification ? await buildRoomContextPackWithSources({ orgId, spaceId, requesterId: userId, audience,
       triggerMessageId: pendingClarification.pending.request_message_id, threadParentId: pendingClarification.requestParentId }) : null;
     const pendingDraft: (PendingDeftyDraft & { answer: string }) | undefined = pendingClarification ? { ...pendingClarification.pending,
       draft: { ...(isRecord(pendingClarification.pending.draft) ? pendingClarification.pending.draft : {}),
@@ -1689,7 +1715,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     if (pendingDraft && !followed) {
       actionCompilerRecoveryAttempted = true;
       try {
-        compiledActionDraft = await compileDraft({ orgId, requesterId: userId, sourceSpaceId: spaceId,
+        compiledActionDraft = await compileDraft({ orgId, requesterId: userId, sourceSpaceId: spaceId, audience,
           promptContent, sourceMessageId: requestMessageId, pendingDraft,
           callerName: callerUser?.name ?? null, spaceName: space.name });
       } catch (error) {
@@ -1720,7 +1746,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       recoveryPriorTaskReferences = await collectRecentAgentTaskReferences({
         orgId,
         spaceId,
-        agentUserId,
+        agentUserId, audience,
         messageId,
         parentId: threadParentId, requesterId: userId,
         promptContent,
@@ -1777,6 +1803,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
               // to know about it.
               sourceMessageId: requestMessageId,
               conversationId: spaceId,
+              audience,
               spaceContext: space ? {
                 type: space.type as 'dm' | 'group_dm' | 'agent_conversation' | 'public' | 'private',
                 name: space.name,
@@ -1809,7 +1836,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
                 agentReplyText: queryResult.text,
                 successfulReadActions: queryResult.executedActions,
                 sourceMessageId: requestMessageId,
-                requesterId: userId, sourceSpaceId: spaceId, pendingDraft,
+                requesterId: userId, sourceSpaceId: spaceId, pendingDraft, audience,
                 projectNameHint: fallbackProjectName,
                 priorTaskReferences: recoveryPriorTaskReferences ?? [],
                 spaceName: space?.name ?? null,
@@ -1925,7 +1952,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
         const priorTaskReferences = await collectRecentAgentTaskReferences({
           orgId,
           spaceId,
-          agentUserId,
+          agentUserId, audience,
           messageId,
           parentId: threadParentId, requesterId: userId,
           promptContent,
@@ -1936,7 +1963,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
           agentReplyText: result.text,
           successfulReadActions: result.executedActions,
           sourceMessageId: requestMessageId,
-          requesterId: userId, sourceSpaceId: spaceId, pendingDraft,
+          requesterId: userId, sourceSpaceId: spaceId, pendingDraft, audience,
           projectNameHint: fallbackProjectName,
           priorTaskReferences,
           spaceName: space?.name ?? null,
@@ -1954,7 +1981,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       ? await buildReferentialStatusUpdateFallback({
         orgId,
         spaceId,
-        agentUserId,
+        agentUserId, audience,
         messageId,
         parentId: threadParentId, requesterId: userId,
         content: promptContent,
@@ -2040,7 +2067,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     const validatedPendingActions: any[] = [];
     const proposalValidationWarnings: string[] = [...(compiledActionDraft?.warnings ?? [])];
     // Resolve an omitted project before schema validation requires its name.
-    const resolvedPendingActions = await resolvePendingActionTargets(orgId, userId, spaceId, pendingActionsWithProvenance, promptContent);
+    const resolvedPendingActions = await resolvePendingActionTargets(orgId, userId, spaceId, pendingActionsWithProvenance, promptContent, audience);
     for (const action of resolvedPendingActions.actions) {
       const validation = validateRegisteredProposalAction(action);
       if (validation.ok) validatedPendingActions.push(action);
@@ -2081,23 +2108,28 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       : null;
     const taskTargets = pendingActions.flatMap((action: any) =>
       [action.params?.resolved_task_id, action.params?.task_identifier].filter((id): id is string => typeof id === 'string'));
-    const approvalTasks = taskTargets.length ? await db.select({ id: tasks.id, identifier: sql<string>`${projects.prefix} || '-' || ${tasks.number}`, title: tasks.title })
+    const askerApprovalTasks = taskTargets.length ? await db.select({ id: tasks.id, identifier: sql<string>`${projects.prefix} || '-' || ${tasks.number}`, title: tasks.title })
       .from(tasks).innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, orgId)))
       .where(and(eq(tasks.org_id, orgId), eq(tasks.is_deleted, false), eq(projects.is_deleted, false),
         eq(projects.is_archived, false), visibleTaskCondition(userId),
         sql`(${inArray(tasks.id, taskTargets)} OR ${inArray(sql`${projects.prefix} || '-' || ${tasks.number}`, taskTargets)})`)) : [];
+    // The approval text names only tasks every reader of a shared conversation can see.
+    const approvalTasksEveryoneSees = await tasksVisibleToAudience(heldAudience, askerApprovalTasks.map((task) => task.id));
+    const approvalTasks = askerApprovalTasks.filter((task) => approvalTasksEveryoneSees.has(task.id));
     const concreteApprovalReplyText = formatDeftyApprovalReply(pendingActions, approvalTasks);
     const approvalReplyText = concreteApprovalReplyText ?? referentialApprovalReplyText ?? literalPostApprovalReplyText ?? (compiledActions && compiledActionDraft?.summary
       ? normalizeApprovalSurfaceCopy(compiledActionDraft.summary)
       : normalizeApprovalSurfaceCopy(result.text));
-    const agentReplyContent = targetClarificationMessage && pendingActions.length === 0
+    // When a read was held to the readers and left something out, the reply says so.
+    const agentReplyContent = withLeftOutLine(targetClarificationMessage && pendingActions.length === 0
       ? targetClarificationMessage
       : pendingActions.length > 0
         ? [
           approvalReplyText,
           targetClarificationMessage || null,
         ].filter(Boolean).join('\n\n')
-        : writeIntentClarificationMessage || result.text;
+        : writeIntentClarificationMessage || result.text,
+      result.withheld || roomContext?.withheld || approvalTasks.length < askerApprovalTasks.length);
 
     // Insert the agent's reply as a message in the space.
     // Phase 2 — populate agent_blocks / model / tokens so <AgentMessageBlocks/>
@@ -2193,6 +2225,26 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     console.error('[agent-reply] Failed to generate agent reply:');
     throw err; // Re-throw so the PostgreSQL queue worker can retry.
   }
+}
+
+/**
+ * The "several rooms match" warning in a shared conversation: it names only
+ * the matching rooms every reader there can read (FIX158).
+ */
+async function ambiguousSpaceWarningForAudience(
+  audience: DeftyAudience,
+  requestedName: string | null,
+  matches: Array<{ id: string; name: string }>,
+): Promise<string> {
+  const ids = matches.map((match) => match.id);
+  const nameable = ids.length ? new Set((await db.select({ id: spaces.id }).from(spaces)
+    .where(and(inArray(spaces.id, ids), eq(spaces.org_id, audience.orgId), roomReadableByAudienceSql(audience, spaces.id, spaces.org_id))))
+    .map((row) => row.id)) : new Set<string>();
+  const named = matches.filter((match) => nameable.has(match.id)).map((match) => `#${match.name}`);
+  const others = matches.length - named.length;
+  const list = [named.join(', '), others > 0 ? `${others === matches.length ? '' : 'and '}${others} room${others === 1 ? '' : 's'} not everyone here can see` : '']
+    .filter(Boolean).join(' ');
+  return `Multiple spaces match "${requestedName ?? ''}": ${list}. Choose one before approving.`;
 }
 
 async function broadcastAgentReply(params: {

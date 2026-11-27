@@ -74,6 +74,11 @@ import { buildNativeAppActionActor } from './agent-app-action-actor.js';
 import { resolveNativeWikiReader, readNativeWiki, searchNativeWiki } from './native-wiki-owner.js';
 import { liveHumanCalendarEventCondition, liveEmployeeCalendarEventCondition } from './calendar-event-visibility.js';
 import { deftyMessageCitation } from './defty-message-source.js';
+import {
+  AUDIENCE_HELD_READS, SHARED_CONVERSATION_READ_UNAVAILABLE, SHARED_CONVERSATION_REFUSAL, SHARED_CONVERSATION_TOOLS,
+  answersAsDefty, deftyConversationAudience, noteVisibleToAudienceSql, projectVisibleToAudienceSql, roomReadableByAudience, roomReadableByAudienceSql,
+  sharedAudience, taskVisibleToAudienceSql, type DeftyAudience,
+} from './defty-audience.js';
 
 // Workspace-wide views of people and of the agent roster: a guest sees only
 // the people who share a space with them, so Defty does not run these for one.
@@ -116,6 +121,14 @@ export async function buildModuleReadActor(
   });
 }
 
+/**
+ * Runs one of Defty's (or an employee's) tools. For Defty in a conversation
+ * other people can read, the read is held to every reader (defty-audience.ts):
+ * a tool outside SHARED_CONVERSATION_TOOLS is refused, and a held read
+ * returns only what every reader can see, with `withheld` set when that left
+ * something out. `audience` is the turn's readers, worked out once by the
+ * caller; without it they are worked out here.
+ */
 export async function executeToolCall(
   toolName: string,
   params: Record<string, any>,
@@ -125,6 +138,41 @@ export async function executeToolCall(
   agentEmployeeId?: string,
   /** Set only by the plan executor for a plan's own create_plan step (DFX3). */
   planOrigin?: { sourceMessageId?: string; createdVia?: 'api' },
+  audience?: DeftyAudience | null,
+): Promise<{ result: any; citations: Citation[]; withheld?: boolean }> {
+  const held = conversationId && await answersAsDefty(orgId, agentEmployeeId)
+    ? sharedAudience(audience && audience.orgId === orgId && audience.conversationId === conversationId && audience.askerId === _userId
+      ? audience
+      : await deftyConversationAudience(orgId, conversationId, _userId))
+    : null;
+  if (!held) return executeToolCallFor(toolName, params, orgId, _userId, conversationId, agentEmployeeId, planOrigin, null);
+  if (!SHARED_CONVERSATION_TOOLS.has(toolName)) {
+    return { result: { error: SHARED_CONVERSATION_REFUSAL, code: SHARED_CONVERSATION_READ_UNAVAILABLE }, citations: [] };
+  }
+  const response = await executeToolCallFor(toolName, params, orgId, _userId, conversationId, agentEmployeeId, planOrigin, held);
+  if (!AUDIENCE_HELD_READS.has(toolName)) return response;
+  // Did the readers' check leave anything out? The asker's own read is run
+  // only to compare: its result never leaves this function.
+  let withheld = false;
+  try {
+    const asker = await executeToolCallFor(toolName, params, orgId, _userId, conversationId, agentEmployeeId, planOrigin, null);
+    withheld = JSON.stringify(asker.result) !== JSON.stringify(response.result);
+  } catch {
+    withheld = false;
+  }
+  return withheld ? { ...response, withheld: true } : response;
+}
+
+async function executeToolCallFor(
+  toolName: string,
+  params: Record<string, any>,
+  orgId: string,
+  _userId: string,
+  conversationId: string | undefined,
+  agentEmployeeId: string | undefined,
+  planOrigin: { sourceMessageId?: string; createdVia?: 'api' } | undefined,
+  /** The readers of a shared conversation, or null: every read below is held to them. */
+  audience: DeftyAudience | null,
 ): Promise<{ result: any; citations: Citation[] }> {
   const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
   if (policyError) return { result: { error: policyError }, citations: [] };
@@ -199,10 +247,13 @@ export async function executeToolCall(
     return employeeProjectAccessPromise;
   };
 
+  // The one task-read gate: every task row, title and count Defty reads here
+  // passes it, held to the readers in a shared conversation.
   const taskReadConditions = async (): Promise<any[]> => {
     const conditions: any[] = [
       eq(projects.is_deleted, false),
       visibleTaskCondition(_userId),
+      ...(audience ? [taskVisibleToAudienceSql(audience)] : []),
     ];
     const access = await employeeProjectAccess();
     if (!access) return conditions;
@@ -212,6 +263,13 @@ export async function executeToolCall(
   };
 
   const projectReadConditions = async (): Promise<any[]> => {
+    if (audience) {
+      const held = projectVisibleToAudienceSql(audience);
+      const access = await employeeProjectAccess();
+      if (!access || (access.resolved && access.unrestricted)) return [held];
+      if (!access.resolved) return [sql`false`];
+      return [held, inArray(projects.id, access.projectIds)];
+    }
     const access = await employeeProjectAccess();
     if (!access || (access.resolved && access.unrestricted)) return [];
     if (!access.resolved) return [sql`false`];
@@ -387,6 +445,8 @@ export async function executeToolCall(
           publicSpaceVisibleSql(spaces.type, spaces.org_id, _userId),
           sql`${spaceMembers.id} IS NOT NULL`,
         ),
+        // In a shared conversation, only rooms every reader can read.
+        ...(audience ? [roomReadableByAudienceSql(audience, messages.space_id, sql`${orgId}`)] : []),
       ];
 
       // Resolve only readable rooms, preferring exact names; never select an arbitrary partial match.
@@ -395,6 +455,7 @@ export async function executeToolCall(
           .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, _userId)))
           .where(and(eq(spaces.org_id, orgId), eq(spaces.is_archived, false),
             or(publicSpaceVisibleSql(spaces.type, spaces.org_id, _userId), sql`${spaceMembers.id} IS NOT NULL`),
+            ...(audience ? [roomReadableByAudienceSql(audience, spaces.id, spaces.org_id)] : []),
             params.space_id ? eq(spaces.id, String(params.space_id)) : ilike(spaces.name, `%${escapeSearchLike(String(params.space_name))}%`)))
           .orderBy(desc(sql`lower(${spaces.name}) = ${String(params.space_name).toLowerCase()}`), spaces.name, spaces.id).limit(51);
         const exact = rows.filter(r => r.name.toLowerCase() === String(params.space_name).toLowerCase());
@@ -405,7 +466,8 @@ export async function executeToolCall(
       }
       if (params.author_name) {
         const author = await resolveAssigneeWithMatches(String(params.author_name), orgId, { visibleTo: _userId });
-        if (!author.ok) return { result: { error: 'Message author is missing or ambiguous.', code: author.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: author.matches.slice(0, 20) }, citations: [] };
+        // People the asker can see are not always people every reader can: a shared conversation lists none.
+        if (!author.ok) return { result: { error: 'Message author is missing or ambiguous.', code: author.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', ...(audience ? {} : { matches: author.matches.slice(0, 20) }) }, citations: [] };
         conditions.push(eq(messages.user_id, author.value.id));
       }
 
@@ -518,7 +580,7 @@ export async function executeToolCall(
       }
       if (params.assignee_name) {
         const resolved = await resolveAssigneeWithMatches(String(params.assignee_name), orgId, { visibleTo: _userId });
-        if (!resolved.ok) return { result: { error: 'Assignee is missing or ambiguous.', code: resolved.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: resolved.matches.slice(0, 20) }, citations: [] };
+        if (!resolved.ok) return { result: { error: 'Assignee is missing or ambiguous.', code: resolved.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', ...(audience ? {} : { matches: resolved.matches.slice(0, 20) }) }, citations: [] };
         conditions.push(eq(tasks.assignee_id, resolved.value.id));
       }
       if (params.project_name) {
@@ -2181,7 +2243,7 @@ export async function executeToolCall(
 
     case 'wiki_search': {
       const reader = await resolveNativeWikiReader({ orgId, userId: _userId,
-        agentEmployeeId, conversationId });
+        agentEmployeeId, conversationId, audience });
       const pages = reader ? await searchNativeWiki(reader, params) : [];
       const citations: Citation[] = pages.map((p) => ({
         type: 'wiki',
@@ -2194,7 +2256,7 @@ export async function executeToolCall(
     case 'wiki_read': {
       const { slug } = params;
       const reader = await resolveNativeWikiReader({ orgId, userId: _userId,
-        agentEmployeeId, conversationId });
+        agentEmployeeId, conversationId, audience });
       const read = reader && typeof slug === 'string' ? await readNativeWiki(reader, slug) : null;
       if (!read) {
         return { result: { error: `Wiki page "${slug}" not found` }, citations: [] };
@@ -2213,7 +2275,8 @@ export async function executeToolCall(
           updated_at: read.page.updated_at,
           linked_pages: read.linked_pages,
           backlinks: read.backlinks,
-          citations: read.citations,
+          // A page's sources are checked for the asker only: a shared conversation gets none.
+          citations: audience ? [] : read.citations,
         },
         citations: [{ type: 'wiki', id: read.page.id, title: read.page.title, url: `/knowledge?slug=${encodeURIComponent(read.page.slug)}` }],
       };
@@ -2554,6 +2617,10 @@ export async function executeToolCall(
         return { result: { error: resolvedRoom.error, code: resolvedRoom.code }, citations: [] };
       }
       const room = resolvedRoom.room;
+      // A canvas is read by the people who can read its room.
+      if (audience && !(await roomReadableByAudience(audience, room.id))) {
+        return { result: { error: 'Readable room not found.', code: 'SPACE_NOT_FOUND' }, citations: [] };
+      }
       const [canvas] = await db
         .select({ id: canvases.id, title: canvases.title, content: canvases.content, updated_at: canvases.updated_at })
         .from(canvases)
@@ -2586,6 +2653,7 @@ export async function executeToolCall(
           eq(notes.org_id, orgId),
           eq(notes.is_deleted, false),
           visibleNoteCondition(_userId),
+          ...(audience ? [noteVisibleToAudienceSql(audience)] : []),
           scope === 'mine' ? eq(notes.user_id, _userId) : scope === 'org' ? eq(notes.visibility, 'org') : undefined,
           or(ilike(notes.title, pattern), sql`coalesce(${notes.content}, '') ILIKE ${pattern}`),
         ))
@@ -2609,6 +2677,7 @@ export async function executeToolCall(
           eq(notes.org_id, orgId),
           eq(notes.is_deleted, false),
           visibleNoteCondition(_userId),
+          ...(audience ? [noteVisibleToAudienceSql(audience)] : []),
         ))
         .limit(1);
       if (!row) return { result: { error: 'Note not found or not visible to caller', code: 'NOTE_NOT_FOUND' }, citations: [] };

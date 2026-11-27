@@ -110,7 +110,8 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
     await closeDb();
   });
 
-  async function providerRequestFor(t: any, userId: string, content: string): Promise<string> {
+  async function providerRequestFor(t: any, userId: string, content: string,
+    conversation: { id: string; type: 'public' | 'dm' } = { id: publicSpace, type: 'public' }): Promise<string> {
     const providerKeys = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'OLLAMA_URL'] as const;
     const savedEnv = Object.fromEntries(providerKeys.map(key => [key, env[key]]));
     const savedProcess = Object.fromEntries(providerKeys.map(key => [key, process.env[key]]));
@@ -124,8 +125,8 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
         usage: { input_tokens: 1, output_tokens: 1 } });
     });
     try {
-      await runAgentQuery({ content, orgId: orgA, userId, orgName: 'W1b Org A', conversationId: publicSpace,
-        spaceContext: { type: 'public', name: 'w1b-public' }, maxIterations: 1, skipVerification: true });
+      await runAgentQuery({ content, orgId: orgA, userId, orgName: 'W1b Org A', conversationId: conversation.id,
+        spaceContext: { type: conversation.type, name: 'w1b-conversation' }, maxIterations: 1, skipVerification: true });
     } finally {
       fetchMock.mock.restore();
       Object.assign(env, savedEnv);
@@ -141,8 +142,11 @@ describe('W1-b Defty read authorization', { skip: !canRun }, () => {
   test('A03/B01: runner fresh exact-match context excludes a private-space wiki page for a non-member', async (t) => {
     const asBob = await providerRequestFor(t, bob, `What is ${wikiCanary}?`);
     assert.ok(!asBob.includes(`codename is ${wikiCanary}`), 'private wiki content must not reach the provider for Bob');
-    const asAlice = await providerRequestFor(t, alice, `What is ${wikiCanary}?`);
-    assert.ok(asAlice.includes(`codename is ${wikiCanary}`), 'member still sees the page');
+    // FIX158: Bob reads the public room too, so Alice's private-room page stays out there.
+    const asAliceInRoom = await providerRequestFor(t, alice, `What is ${wikiCanary}?`);
+    assert.ok(!asAliceInRoom.includes(`codename is ${wikiCanary}`), 'a page not every reader of the room can see stays out of it');
+    const asAlice = await providerRequestFor(t, alice, `What is ${wikiCanary}?`, { id: dmSpace, type: 'dm' });
+    assert.ok(asAlice.includes(`codename is ${wikiCanary}`), 'member still sees the page in her own DM');
   });
 
   test('B01: search_decisions with no query does not list private-space decisions to a non-member', async () => {

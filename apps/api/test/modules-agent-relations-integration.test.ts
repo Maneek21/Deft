@@ -474,12 +474,18 @@ test('generic relation writes share governed MCP/Defty/REST record semantics', {
     assert.notEqual(humanRead.isError, true);
     assert.deepEqual(toolPayload(humanRead).record.relations, nativeRecord.relations);
 
+    // Defty's reads answer in a conversation (FIX158, defty-audience.ts): the owner's own DM here.
+    const deftyConversation = `module-relations-conversation-${suffix}`;
+    await client.query(`INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, 'Relations DM', 'dm', $3)`,
+      [deftyConversation, orgId, ownerId]);
+    await client.query(`INSERT INTO space_members (id, space_id, user_id) VALUES (gen_random_uuid()::text, $1, $2)`,
+      [deftyConversation, ownerId]);
     const deftyRead = await executeToolCall(
       'module_record_get',
       { record_id: source.record.id },
       orgId,
       ownerId,
-      `module-relations-conversation-${suffix}`,
+      deftyConversation,
     );
     assert.deepEqual(deftyRead.result.record.relations, nativeRecord.relations);
     assert.deepEqual(deftyRead.result.record.members, nativeRecord.members);
@@ -604,6 +610,8 @@ test('generic relation writes share governed MCP/Defty/REST record semantics', {
       await client.query('DELETE FROM module_installations WHERE org_id = $1', [targetOrgId]);
       await client.query('DELETE FROM audit_log WHERE org_id = $1', [targetOrgId]);
       await client.query('DELETE FROM agent_employees WHERE org_id = $1', [targetOrgId]);
+      await client.query('DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id = $1)', [targetOrgId]);
+      await client.query('DELETE FROM spaces WHERE org_id = $1', [targetOrgId]).catch(() => {});
       await client.query('DELETE FROM org_members WHERE org_id = $1', [targetOrgId]);
       await client.query('DELETE FROM orgs WHERE id = $1', [targetOrgId]);
     }

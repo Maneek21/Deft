@@ -169,6 +169,11 @@ test(
        VALUES ($1, $2, $3, 'owner', true)`,
       [`modules-accept-foreign-member-${suffix}`, foreignOrgId, foreignOwnerId],
     );
+    // Defty's reads answer in a conversation (FIX158, defty-audience.ts): the owner's own DM here.
+    await client.query(`INSERT INTO spaces (id, org_id, name, type, created_by) VALUES ($1, $2, 'Contacts DM', 'dm', $3)`,
+      [conversationId, orgId, ownerId]);
+    await client.query(`INSERT INTO space_members (id, space_id, user_id) VALUES (gen_random_uuid()::text, $1, $2)`,
+      [conversationId, ownerId]);
     await client.query(
       `INSERT INTO agent_employees
         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
@@ -778,6 +783,9 @@ test(
         await client.query('DELETE FROM module_installations WHERE org_id = $1', [orgId]);
         await client.query('DELETE FROM audit_log WHERE org_id = $1', [orgId]);
         await client.query('DELETE FROM agent_employees WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM messages WHERE space_id = $1', [conversationId]).catch(() => {});
+        await client.query('DELETE FROM space_members WHERE space_id = $1', [conversationId]);
+        await client.query('DELETE FROM spaces WHERE id = $1', [conversationId]).catch(() => {});
         await client.query('DELETE FROM org_members WHERE org_id = $1', [orgId]);
         await client.query('DELETE FROM org_members WHERE org_id = $1', [foreignOrgId]);
         await client.query('DELETE FROM orgs WHERE id = $1', [orgId]);
