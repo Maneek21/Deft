@@ -20,12 +20,14 @@ database migration: `packages/db` is unchanged since 156, and `DEFT_SCHEMA_HEAD`
 ### The welcome "Say hello in #general" is posted
 
 - The last step of the welcome tour, **Say hello in #general**, now posts your hello to
-  #general. **Post and finish** used to send it to an address that doesn't exist, so the
-  hello was lost without a word. If the hello can't be posted, the step now says "Your
-  hello wasn't posted. Try again, or skip and say hello in #general later." and stays
-  open, so you can try again or skip; trying again can't post the hello twice. The hello
-  goes only to #general: with no #general, the step says so instead of posting it to
-  another space you're in.
+  the workspace's default space (#general, unless it was renamed) or, if you see no
+  default space, to a space named general. **Post and finish** used to send it to an
+  address that doesn't exist, so the hello was lost without a word. If the hello can't be
+  posted, the step now says "Your hello wasn't posted. Try again, or skip and say hello in
+  #general later." and stays open, so you can try again or skip; trying again can't post
+  the hello twice. With neither space, the step says "There's no #general to post in.
+  Skip, and say hello in a space later." instead of posting the hello to another space
+  you're in.
 
 ### Sharing a note with a person works
 
