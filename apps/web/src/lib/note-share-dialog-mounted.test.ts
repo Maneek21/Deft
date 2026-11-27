@@ -151,9 +151,9 @@ createRoot(document.getElementById('root')).render(createElement(AuthProvider, n
     }
     if (afterShare) await afterShare(tab);
     await tab.waitForTimeout(200);
-    const sharedWith = (await dialog.locator('span').allInnerTexts()).filter((t) => /\((view|edit)\)$/.test(t));
+    const sharedWith = (await dialog.locator('span').allInnerTexts()).filter((t: string) => /\((view|edit)\)$/.test(t));
     const alerts = await tab.getByRole('alert').allInnerTexts();
-    return { offered: offered.map((t) => t.trim()), sharedWith, requests, alert: alerts.join(' ') || null };
+    return { offered: offered.map((t: string) => t.trim()), sharedWith, requests, alert: alerts.join(' ') || null };
   } finally {
     await browser.close();
   }
