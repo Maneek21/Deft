@@ -93,10 +93,28 @@ export type EditLandingInput = {
 /** The words in the asker's own message that put an edit straight in (owner, 25 Nov), unless the model lowers it. */
 export const DIRECT_EDIT_PHRASES = ['just do it', 'go ahead and edit', 'apply it', 'apply directly', 'make the change', 'edit it directly', "don't suggest"];
 
-/** A letter, digit or underscore in any script: a phrase must not run into one on either side. */
-const WORD_CHAR = /[\p{L}\p{N}_]/u;
-/** A negating word right before the phrase ("don't just do it", "do not apply it"): the asker said the opposite. */
-const NEGATED = /(?:^|[^\p{L}\p{N}_'])(?:not|never|don't|dont|cannot|can't|won't|shouldn't) $/u;
+/**
+ * A letter, combining mark, digit or underscore in any script. The patterns
+ * below carry the `u` flag, so this is matched against whole characters
+ * (code points), never one half of a UTF-16 surrogate pair (review M5).
+ */
+const WORD_CHAR = String.raw`[\p{L}\p{M}\p{N}_]`;
+/**
+ * A negating word whole, then nothing but spaces, punctuation and symbols up
+ * to the phrase ("don't just do it", "never, apply it", "don't \u2014 just do
+ * it"): the asker said the opposite (tester M5). Tested on the text before the
+ * phrase, so a word in between ("I don't mind. Just do it") ends it.
+ */
+const NEGATED = new RegExp(String.raw`(?<![\p{L}\p{M}\p{N}_'])(?:not|never|don't|dont|cannot|can't|won't|shouldn't)[^\p{L}\p{M}\p{N}_]*$`, 'u');
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
+}
+
+/** Every place `phrase` appears whole: no WORD_CHAR right before or after it. */
+function wholePhrase(phrase: string): RegExp {
+  return new RegExp(`(?<!${WORD_CHAR})${escapeRegExp(phrase)}(?!${WORD_CHAR})`, 'gu');
+}
 
 /** Lower case, typographic apostrophes as ', and every run of whitespace as one space, so a phrase matches however it was typed. */
 function normalizedMessage(text: string): string {
@@ -105,19 +123,17 @@ function normalizedMessage(text: string): string {
 
 /**
  * True when `messageText`, the asker's own message, holds one of
- * DIRECT_EDIT_PHRASES as a whole phrase in any letter case ("applying it" and
- * "make the changes" don't match), not right after a negating word.
+ * DIRECT_EDIT_PHRASES as a whole phrase in any letter case ("applying it",
+ * "make the changes" and a letter of any script against it don't match),
+ * other than after a negating word with only spaces, punctuation or symbols
+ * between.
  */
 export function askerRequestedDirect(messageText: string): boolean {
   if (typeof messageText !== 'string' || messageText.length === 0) return false;
   const text = normalizedMessage(messageText);
   for (const phrase of DIRECT_EDIT_PHRASES) {
-    for (let at = text.indexOf(phrase); at >= 0; at = text.indexOf(phrase, at + 1)) {
-      const before = at > 0 ? text[at - 1]! : '';
-      const after = text[at + phrase.length] ?? '';
-      if (WORD_CHAR.test(before) || WORD_CHAR.test(after)) continue;
-      if (NEGATED.test(text.slice(0, at))) continue;
-      return true;
+    for (const match of text.matchAll(wholePhrase(phrase))) {
+      if (!NEGATED.test(text.slice(0, match.index))) return true;
     }
   }
   return false;

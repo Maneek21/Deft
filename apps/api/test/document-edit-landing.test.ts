@@ -181,9 +181,54 @@ test('askerRequestedDirect matches each phrase whole, in any letter case, and no
     ['You can’t just do it', false],
   ];
   for (const [text, expected] of rows) assert.equal(askerRequestedDirect(text), expected, JSON.stringify(text));
-  // Anything that isn't text is no request.
+});
+
+test('a letter or mark next to a phrase stops the match, whole characters included (review M5)', () => {
+  // U+10400 and U+20000 are letters outside the Basic Multilingual Plane: two UTF-16 code units each.
+  const rows: Array<[string, boolean]> = [
+    ['\u{10400}just do it', false],
+    ['just do it\u{10400}', false],
+    ['\u{20000}apply it', false],
+    ['apply it\u{20000}', false],
+    ['go ahead and edit\u{10428}', false],
+    ['just do it́', false], // a combining accent on the last letter
+    ['́just do it', false],
+    // Characters that aren't letters, digits or marks still leave the phrase whole.
+    ['\u{1F600}just do it\u{1F600}', true],
+    ['\u{1F600} apply it', true],
+    ['just do it\u{1F44D}', true],
+    ['«just do it»', true],
+    ['(apply directly)', true],
+  ];
+  for (const [text, expected] of rows) assert.equal(askerRequestedDirect(text), expected, JSON.stringify(text));
+});
+
+test('a negating word stops the phrase across any run of spaces, punctuation and symbols (tester M5)', () => {
+  const rows: Array<[string, boolean]> = [
+    ['Never, apply it', false],
+    ["don't — just do it", false],
+    ['not: apply directly', false],
+    ["Don't... make the change", false],
+    ['never!!! just do it', false],
+    ["don't, don't suggest", false],
+    ['do not - edit it directly', false],
+    ['Never \u{1F642} just do it', false],
+    ["can't (go ahead and edit)", false],
+    // A word between the negation and the phrase ends it; a word that isn't a negation never starts one.
+    ["I don't mind. Just do it", true],
+    ['No, just do it', true],
+    ['Nothing to add, apply it', true],
+    ['knot, apply it', true],
+    ["Don't wait, just do it", true],
+    ["don't just do it... actually, just do it", true],
+  ];
+  for (const [text, expected] of rows) assert.equal(askerRequestedDirect(text), expected, JSON.stringify(text));
+});
+
+test('anything that isn\'t text is no request', () => {
   assert.equal(askerRequestedDirect(undefined as never), false);
   assert.equal(askerRequestedDirect(null as never), false);
+  assert.equal(askerRequestedDirect(42 as never), false);
 });
 
 // ---------------------------------------------------------------------------
