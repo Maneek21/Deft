@@ -4,6 +4,7 @@ import { db } from './db.js';
 import { toPlainText } from './plain-text.js';
 import { visibleTaskCondition } from './task-visibility.js';
 import { deftyMessageCitation, type DeftyMessageCitation } from './defty-message-source.js';
+import { projectVisibleToAudienceSql, taskVisibleToAudienceSql, type DeftyAudience } from './defty-audience.js';
 
 const MAX_MESSAGES = 30;
 const MAX_BODY_CHARS = 400;
@@ -120,6 +121,8 @@ type RoomContextInput = {
   threadParentId: string | null;
   triggerMessageId: string;
   requesterId: string;
+  /** The room's readers (defty-audience.ts): a task key is resolved only when every reader can see the task. */
+  audience?: DeftyAudience | null;
 };
 
 export async function buildRoomContextPack(input: RoomContextInput): Promise<string | null> {
@@ -157,7 +160,8 @@ export async function buildRoomContextPackWithSources(input: RoomContextInput): 
       .where(eq(spaceMembers.space_id, input.spaceId)).orderBy(asc(users.name)),
     // Projects have org-wide read visibility in the native project routes.
     db.select({ id: projects.id, name: projects.name, prefix: projects.prefix }).from(projects)
-      .where(and(eq(projects.org_id, input.orgId), eq(projects.is_deleted, false), eq(projects.is_archived, false)))
+      .where(and(eq(projects.org_id, input.orgId), eq(projects.is_deleted, false), eq(projects.is_archived, false),
+        projectVisibleToAudienceSql(input.audience)))
       .orderBy(asc(projects.name)),
     db.select({ id: projectSpaces.project_id }).from(projectSpaces)
       .innerJoin(projects, and(eq(projects.id, projectSpaces.project_id), eq(projects.org_id, input.orgId)))
@@ -182,6 +186,7 @@ export async function buildRoomContextPackWithSources(input: RoomContextInput): 
     .innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, input.orgId)))
     .where(and(eq(tasks.org_id, input.orgId), eq(tasks.is_deleted, false), eq(projects.is_deleted, false),
       eq(projects.is_archived, false), visibleTaskCondition(input.requesterId),
+      taskVisibleToAudienceSql(input.audience),
       or(...keys.map(key => {
         const separator = key.lastIndexOf('-');
         return and(eq(projects.prefix, key.slice(0, separator)), eq(tasks.number, Number(key.slice(separator + 1))));

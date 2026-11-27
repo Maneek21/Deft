@@ -74,13 +74,13 @@ before(async () => {
     await q(`INSERT INTO users (id, email, name, kind, is_agent) VALUES ($1, $2, $3, 'human', false)`, [id, `${role}-${run}@audience.test`, name]);
     await q('INSERT INTO org_members (id, org_id, user_id, role) VALUES (gen_random_uuid()::text, $1, $2, $3)', [org, id, role]);
   }
-  // A BYOA agent employee, limited to the other project.
+  // A BYOA agent employee; the agent test limits it to the other project.
   await q(`INSERT INTO users (id, email, name, kind, is_agent) VALUES ($1, $2, 'Ada Agent', 'agent', true)`, [agentUser, `agent-${run}@audience.test`]);
   await q(`INSERT INTO org_members (id, org_id, user_id, role) VALUES (gen_random_uuid()::text, $1, $2, 'member')`, [org, agentUser]);
   await q(`INSERT INTO agent_employees (id, org_id, user_id, name, slug, role, system_prompt, trust_level, max_daily_actions,
       daily_action_count, created_by, is_active, is_deleted, project_ids)
     VALUES ($1, $2, $3, 'Ada Agent', $4, 'custom', 'test', 'standard', 50, 0, $5, true, false, $6::text[])`,
-  [employee, org, agentUser, `ada-${run}`, owner, [otherProject]]);
+  [employee, org, agentUser, `ada-${run}`, owner, []]);
   deftyUser = await ensureDeftyMembership(org);
 
   await room(publicRoom, 'public', `open-${run}`, [owner, mia, gus, deftyUser]);
@@ -284,10 +284,28 @@ describe('FIX158 Defty answers to its audience', { skip: !url }, () => {
 
   test('an agent member counts as a reader, with its own project scope', async (t) => {
     if (!ready) { t.skip(unavailable); return; }
-    // The agent employee is limited to the other project: even the open task is out of its reach.
-    const search = await tool('search_tasks', { query: `zq${run}` }, agentRoom);
-    assert.ok(!leaksRestricted(text(search)), 'the restricted task is held back from the agent');
-    assert.ok(!text(search).includes(openTitle), 'a task outside the agent\'s project scope is held back too');
+    const unscoped = await tool('search_tasks', { query: `zq${run}` }, agentRoom);
+    assert.ok(!leaksRestricted(text(unscoped)), 'the restricted task is held back from the agent');
+    assert.ok(text(unscoped).includes(openTitle), 'an agent with no project limit sees the open task');
+    // Limited to the other project, the agent cannot see even the open task.
+    await q('UPDATE agent_employees SET project_ids = $2::text[] WHERE id = $1', [employee, [otherProject]]);
+    try {
+      const scoped = await tool('search_tasks', { query: `zq${run}` }, agentRoom);
+      assert.ok(!text(scoped).includes(openTitle), 'a task outside the agent\'s project scope is held back');
+      // An agent reads any active public room through its MCP tools, so it is a reader there too.
+      const publicScoped = await tool('search_tasks', { query: `zq${run}` }, publicRoom);
+      assert.ok(!text(publicScoped).includes(openTitle), 'the agent is a reader of a public room it has not joined');
+      // A paused employee reads nothing now: its agent is not a reader, and
+      // with only the asker reading, the room answers as a private DM does.
+      await q('UPDATE agent_employees SET is_active = false WHERE id = $1', [employee]);
+      const paused = await tool('search_tasks', { query: `zq${run}` }, publicRoom);
+      assert.ok(text(paused).includes(openTitle), 'a paused agent is not a reader of the public room');
+      assert.ok(!leaksRestricted(text(paused)), 'the public room is still shared: the restricted task stays held back');
+      const alone = await tool('search_tasks', { query: `zq${run}` }, agentRoom);
+      assert.ok(text(alone).includes(restrictedTitle), 'with the agent paused, the asker is the only reader');
+    } finally {
+      await q('UPDATE agent_employees SET project_ids = $2::text[], is_active = true WHERE id = $1', [employee, []]);
+    }
   });
 
   test('messages, notes and wiki: only what every reader can open', async (t) => {

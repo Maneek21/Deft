@@ -10,6 +10,23 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Defty answers to everyone who can read the conversation
+
+- In a room, a thread, a group DM or a DM between two people, Defty now uses only the
+  records every reader of that conversation can see: its members and guests and, for a
+  public room, everyone in the workspace who can open it, plus any agent that can read
+  it (with that agent's project limits). It used to answer with the asker's access, so a
+  reply in a public room could name a restricted task that the other people there get
+  "not found" on. Tasks and their counts, projects, messages, notes, canvases and wiki
+  pages are checked this way. So are the tasks named in the room's messages, Defty's
+  earlier replies there, and the drafts it shows for approval.
+- When Defty leaves something out because not everyone there can see it, its reply ends
+  with "Some items were left out because not everyone here can see them."
+- In those conversations, lookups that aren't checked this way (team and people reports,
+  calendars, GitHub, memory, decisions and knowledge, Modules, Apps and connected tools)
+  aren't run. Defty says to ask it in a direct message instead.
+- A 1:1 DM with Defty works exactly as before.
+
 ## [0.3.0-preview.157] — 2026-11-27 (prerelease)
 
 Changes since `v0.3.0-preview.156`: #624, #625, #626 and #627 (#624 changes only tests).

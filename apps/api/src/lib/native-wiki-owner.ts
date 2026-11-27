@@ -10,6 +10,7 @@ import { canonicalDeftyEmployeeCondition } from './defty-identity.js';
 import { employeeProjectAccessAllows, loadEmployeeProjectAccess } from './mcp-tools/employee-project-access.js';
 import { retrieveContext } from './retrieve-context.js';
 import { emailKnowledgeAudienceCondition } from './email-knowledge-visibility.js';
+import { wikiPageVisibleToAudienceSql, type DeftyAudience } from './defty-audience.js';
 import { decorateEmailKnowledgeCitations } from './email-knowledge-citations.js';
 
 /** Native agent identity is supplied by the host runner, never tool input. */
@@ -18,6 +19,8 @@ export type NativeWikiCaller = Readonly<{
   userId: string;
   agentEmployeeId?: string;
   conversationId?: string;
+  /** The readers of a shared conversation: pages are held to them (defty-audience.ts). */
+  audience?: DeftyAudience | null;
 }>;
 
 export type NativeWikiReader = Readonly<{
@@ -25,6 +28,7 @@ export type NativeWikiReader = Readonly<{
   subjectUserId: string;
   agentEmployeeId?: string;
   conversationId?: string;
+  audience?: DeftyAudience | null;
 }>;
 
 export async function resolveNativeWikiReader(caller: NativeWikiCaller): Promise<NativeWikiReader | null> {
@@ -46,10 +50,10 @@ export async function resolveNativeWikiReader(caller: NativeWikiCaller): Promise
         .where(and(eq(users.id, caller.userId), eq(users.is_agent, false), eq(orgMembers.is_active, true))).limit(1);
       if (!human) return null;
       return { orgId: caller.orgId, subjectUserId: human.id, agentEmployeeId: caller.agentEmployeeId,
-        conversationId: caller.conversationId };
+        conversationId: caller.conversationId, audience: caller.audience ?? null };
     }
     return { orgId: caller.orgId, subjectUserId: employee.user_id,
-      agentEmployeeId: caller.agentEmployeeId, conversationId: caller.conversationId };
+      agentEmployeeId: caller.agentEmployeeId, conversationId: caller.conversationId, audience: caller.audience ?? null };
   }
   const [member] = await db.select({ id: orgMembers.id })
     .from(orgMembers)
@@ -57,12 +61,12 @@ export async function resolveNativeWikiReader(caller: NativeWikiCaller): Promise
     .where(and(eq(orgMembers.org_id, caller.orgId), eq(orgMembers.user_id, caller.userId),
       eq(orgMembers.is_active, true), eq(users.is_agent, false)))
     .limit(1);
-  return member ? { orgId: caller.orgId, subjectUserId: caller.userId, conversationId: caller.conversationId } : null;
+  return member ? { orgId: caller.orgId, subjectUserId: caller.userId, conversationId: caller.conversationId, audience: caller.audience ?? null } : null;
 }
 
 function visiblePage(reader: NativeWikiReader): SQL | undefined {
   const humanVisibility = visibleWikiPageCondition(reader.subjectUserId, reader.orgId);
-  return and(emailKnowledgeAudienceCondition(reader.orgId, reader.subjectUserId, reader.conversationId, reader.agentEmployeeId), reader.agentEmployeeId
+  return and(wikiPageVisibleToAudienceSql(reader.audience), emailKnowledgeAudienceCondition(reader.orgId, reader.subjectUserId, reader.conversationId, reader.agentEmployeeId), reader.agentEmployeeId
     ? or(humanVisibility, and(eq(wikiPages.agent_employee_id, reader.agentEmployeeId),
         ne(wikiPages.scope, 'org')))
     : humanVisibility);
@@ -136,7 +140,7 @@ export async function readNativeWiki(reader: NativeWikiReader, slug: string) {
       eq(wikiPages.is_deleted, false), visiblePage(reader))).limit(1);
   if (!stillVisible) return null;
   if (!await resolveNativeWikiReader({ orgId: reader.orgId,
-    userId: reader.subjectUserId, agentEmployeeId: reader.agentEmployeeId, conversationId: reader.conversationId })) return null;
+    userId: reader.subjectUserId, agentEmployeeId: reader.agentEmployeeId, conversationId: reader.conversationId, audience: reader.audience })) return null;
   return { page: stillVisible,
     linked_pages: currentLinks.map(({ context: _context, ...link }) => link),
     backlinks: currentBacklinks.map(({ summary: _summary, context: _context, ...link }) => link),
@@ -173,7 +177,7 @@ export async function searchNativeWiki(reader: NativeWikiReader, input: {
       .map(({ slug, title }) => ({ slug, title })),
   })));
   if (!await resolveNativeWikiReader({ orgId: reader.orgId, userId: reader.subjectUserId,
-    agentEmployeeId: reader.agentEmployeeId, conversationId: reader.conversationId })) return [];
+    agentEmployeeId: reader.agentEmployeeId, conversationId: reader.conversationId, audience: reader.audience })) return [];
   await timing?.afterEnrichment?.();
   const linkedSlugs = enriched.flatMap(page => page.linked_pages.map(link => link.slug));
   const finalPages = await db.select({ id: wikiPages.id, slug: wikiPages.slug }).from(wikiPages)

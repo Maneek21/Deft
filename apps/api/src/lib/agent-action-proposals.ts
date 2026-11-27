@@ -9,6 +9,7 @@ import { getOrgAIConfig } from './org-ai-config.js';
 import { resolveProjectTarget } from './resolve-project-target.js';
 import { buildUntrustedWorkspaceContext } from './agent-untrusted-context.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { taskVisibleToAudienceSql, type DeftyAudience } from './defty-audience.js';
 import { llm } from './llm.js';
 import { truncatePlainText } from './plain-text.js';
 import { ACTION_TOOLS, AGENT_TOOLS } from './agent-tools.js';
@@ -554,6 +555,8 @@ export type CompileDeftyActionDraftParams = {
   pendingDraft?: PendingDeftyActionDraft;
   projectCandidates?: string[];
   priorTaskCandidates?: DeftyTaskReference[];
+  /** The conversation's readers (defty-audience.ts): a task is named only when every reader can see it. */
+  audience?: DeftyAudience | null;
   agentReplyText?: string;
   sourceMessageId: string;
   projectNameHint?: string | null;
@@ -813,6 +816,7 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
       .from(tasks).innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, params.orgId)))
       .where(and(eq(tasks.org_id, params.orgId), eq(tasks.is_deleted, false),
         eq(projects.is_deleted, false), eq(projects.is_archived, false), visibleTaskCondition(params.requesterId),
+        taskVisibleToAudienceSql(params.audience),
         inArray(sql`${projects.prefix} || '-' || ${tasks.number}`, clarificationKeys))).limit(5).catch(() => []);
     params = { ...params, priorTaskCandidates: candidates };
   }

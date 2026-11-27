@@ -20,6 +20,7 @@ import { selectVerifiedResponse } from './agent-response-verification.js';
 import { retrieveContext } from './retrieve-context.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
+import { deftyConversationAudience, sharedAudience, wikiPageVisibleToAudienceSql, wikiPagesVisibleToAudience, type DeftyAudience } from './defty-audience.js';
 import { isReadOnlyAgentRequest } from './agent-request-policy.js';
 import { agentToolFailure } from './agent-tool-result.js';
 import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles, containsLinkConstruct, decodedJsonText, decodeHtmlEntities, mentionsApproval, requiresRuntimeActionEvidence, hasRuntimeActionEvidence } from './agent-source-grounding.js';
@@ -212,6 +213,7 @@ export async function prepareAgentCurrentTurnMessages(params: {
   untrustedContextSections: string[];
   prefetchModuleDiscovery?: boolean;
   executeTool?: AgentToolExecutor;
+  audience?: DeftyAudience | null;
 }): Promise<Anthropic.MessageParam[]> {
   const sections = [...params.untrustedContextSections];
   const moduleListAllowed = params.prefetchModuleDiscovery !== false
@@ -226,6 +228,8 @@ export async function prepareAgentCurrentTurnMessages(params: {
         params.userId,
         params.conversationId,
         params.agentEmployeeId,
+        undefined,
+        params.audience,
       );
       catalog = compactModuleDiscovery(response.result);
     } catch {
@@ -323,6 +327,11 @@ export async function runAgentQuery(params: {
   /** Abort signal for worker-level cancellation/timeouts. */
   abortSignal?: AbortSignal;
   /**
+   * The readers of `conversationId`, worked out once for the turn
+   * (defty-audience.ts). Worked out here when not given.
+   */
+  audience?: DeftyAudience | null;
+  /**
    * Surface context — what kind of space the agent is replying in. Drives
    * tone (DM = 1:1 conversation, channel = many viewers) and is appended
    * to the system prompt. Optional; agent works without it.
@@ -349,6 +358,8 @@ export async function runAgentQuery(params: {
   citations: any[];
   pendingActions: any[];
   executedActions: any[];
+  /** True when a read was held to the conversation's readers and left something out. */
+  withheld?: boolean;
   // Phase 2 — last assistant API response, exposed so agent-reply can
   // populate metadata.agent_blocks / model / tokens_* on the inserted
   // message (parity with agent-stream-loop).
@@ -374,6 +385,16 @@ export async function runAgentQuery(params: {
   }
 
   const noTools = params.toolPolicy === 'none';
+  // Defty answers to everyone who can read the conversation: worked out once
+  // for the turn and handed to every read (defty-audience.ts).
+  const audience: DeftyAudience | null = !agentEmployeeId && params.conversationId
+    ? (params.audience && params.audience.conversationId === params.conversationId && params.audience.askerId === userId
+      && params.audience.orgId === orgId
+      ? params.audience
+      : await deftyConversationAudience(orgId, params.conversationId, userId))
+    : null;
+  const heldAudience = sharedAudience(audience);
+  let withheld = false;
 
   // Build dynamic tool list (read-only tools only — no write actions in chat mentions)
   let tools: Anthropic.Tool[] = noTools ? [] : [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS];
@@ -443,6 +464,9 @@ export async function runAgentQuery(params: {
     ? buildNoToolsSystemPrompt({ orgName, spaceType: params.spaceContext?.type, followed: params.followed })
     : buildDeftySystemPrompt({ orgName, spaceType: params.spaceContext?.type, followed: params.followed }) + connectionInfo;
   systemPrompt += `\nCurrent time: ${nowIso}. User/workspace timezone: ${workspaceTimezone}. Resolve relative dates and times in this timezone unless the user explicitly supplies another one.`;
+  if (heldAudience) {
+    systemPrompt += '\nOther people can read this conversation. Your tools here return only records everyone in it can see. Use only what they return, never records you know of from elsewhere. If a tool says to ask in a direct message, tell the person to ask you in a direct message for that.';
+  }
 
   // A no-tools run keeps the platform policy without its tool-call bullet.
   const platformPolicy = noTools ? NO_TOOLS_DEFT_PLATFORM_POLICY : IMMUTABLE_DEFT_PLATFORM_POLICY;
@@ -490,6 +514,8 @@ export async function runAgentQuery(params: {
               // own wiki visibility (private user/space pages included).
               visibleWikiPageCondition(userId, orgId),
               emailKnowledgeAudienceCondition(orgId, userId, params.conversationId, agentEmployeeId),
+              // In a shared conversation, only pages every reader can see.
+              wikiPageVisibleToAudienceSql(heldAudience),
               or(...terms.map((term) => {
                 const pattern = `%${term}%`;
                 return sql`(
@@ -502,7 +528,7 @@ export async function runAgentQuery(params: {
             .orderBy(desc(wikiPages.updated_at))
             .limit(2)
         : [];
-      const allRelevantPages = await retrieveContext({
+      const retrievedPages = await retrieveContext({
         query: searchQuery,
         org_id: orgId,
         user_id: userId,
@@ -511,6 +537,12 @@ export async function runAgentQuery(params: {
         types: ['wiki'],
         limit: 3,
       });
+      const pagesEveryoneSees = heldAudience
+        ? await wikiPagesVisibleToAudience(heldAudience, retrievedPages.map((page) => page.source_id))
+        : null;
+      const allRelevantPages = pagesEveryoneSees
+        ? retrievedPages.filter((page) => pagesEveryoneSees.has(page.source_id))
+        : retrievedPages;
 
       if (exactWikiRows.length > 0) {
         const exactWikiContext = exactWikiRows.map((p) => {
@@ -586,7 +618,9 @@ export async function runAgentQuery(params: {
     conversationId: params.conversationId,
     agentEmployeeId,
     untrustedContextSections,
-    prefetchModuleDiscovery: !systemPromptOverride && !noTools,
+    // Module discovery is not offered in a shared conversation (defty-audience.ts).
+    prefetchModuleDiscovery: !systemPromptOverride && !noTools && !heldAudience,
+    audience,
   });
 
   let allCitations: any[] = [];
@@ -602,7 +636,10 @@ export async function runAgentQuery(params: {
         userId,
         params.conversationId,
         agentEmployeeId,
+        undefined,
+        audience,
       );
+      if (read.withheld) withheld = true;
       return { result: read.result, sources: read.citations };
     },
   });
@@ -908,14 +945,17 @@ export async function runAgentQuery(params: {
             ? { ...(tool.input as Record<string, unknown>), query: 'blocked' }
             : tool.input as Record<string, unknown>, content, params.spaceContext, params.conversationId)
           : tool.input as any;
-        const { result: rawResult, citations } = await executeToolCall(
+        const { result: rawResult, citations, withheld: readWithheld } = await executeToolCall(
           readToolName,
           readInput,
           orgId,
           userId,
           params.conversationId,
           agentEmployeeId,
+          undefined,
+          audience,
         );
+        if (readWithheld) withheld = true;
         const result = mode === 'chat_mention' ? formatDeftyChatReadResult(readToolName, rawResult) : rawResult;
         executedActions.push({
           actionId: null,
@@ -1003,6 +1043,7 @@ export async function runAgentQuery(params: {
     citations: allCitations,
     pendingActions,
     executedActions,
+    ...(withheld ? { withheld: true } : {}),
     model: reasonModel,
     tokensIn: totalTokensIn,
     tokensOut: totalTokensOut,

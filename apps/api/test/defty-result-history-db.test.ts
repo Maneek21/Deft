@@ -169,7 +169,10 @@ after(async () => {
   await closeDb();
 });
 
-for (const type of ['public', 'group_dm']) {
+// FIX158: in a public room the workspace's other member can read the answer,
+// so a durable Module result (whose audience is the action's) stays out
+// there; see the public-room test below. These rooms only the owner reads.
+for (const type of ['private', 'group_dm']) {
   test(`${type} room pack retains authorized durable module result identities`, { skip: !canRun }, async () => {
     assert.ok(client && app);
     await client.query('UPDATE spaces SET type=$1 WHERE id=$2', [type, SPACE_ID]);
@@ -200,6 +203,27 @@ for (const type of ['public', 'group_dm']) {
     await updateModuleInstallation(ownerActor, 'contacts', {enabled:true});
   });
 }
+
+test('FIX158: a public room another member can read carries no durable Module result', { skip: !canRun }, async () => {
+  assert.ok(client && app);
+  await client.query('UPDATE spaces SET type=$1 WHERE id=$2', ['public', SPACE_ID]);
+  const pending = await insertPendingCreate(null);
+  assert.equal((await app.request(`/api/agent/actions/${pending.actionId}/approve`, { method: 'POST' })).status, 200);
+  const stored = (await client.query(`SELECT id, metadata FROM messages WHERE org_id=$1 AND metadata->>'approval_execution_result_for_action_id'=$2`, [ORG_ID, pending.actionId])).rows[0];
+  const recordId = stored.metadata.approval_execution_result.record_id;
+  await client.query('UPDATE messages SET parent_id=$1 WHERE id=$2', [pending.sourceMessageId, stored.id]);
+  const triggerId = randomUUID();
+  await client.query('INSERT INTO messages(id,org_id,space_id,user_id,content,parent_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)', [triggerId,ORG_ID,SPACE_ID,OWNER_ID,'What record did you just create?',pending.sourceMessageId,new Date(Date.now()+1000)]);
+  let captured: any;
+  const runQuery = async (input: any) => {
+    captured = input;
+    return { text:'I created that record.', pendingActions:[], executedActions:[], citations:[], assistantBlocks:[], model:'stub', tokensIn:0, tokensOut:0 };
+  };
+  await handleAgentReply({id:randomUUID(),name:'agent-reply',attempts:1,data:{orgId:ORG_ID,spaceId:SPACE_ID,userId:OWNER_ID,messageId:triggerId,parentId:pending.sourceMessageId,content:'What record did you just create?',orgName:'History test'}}, {runQuery:runQuery as any});
+  assert.ok(captured);
+  assert.equal(captured.untrustedContextSections.join('\n').includes(recordId), false,
+    'the workspace member can read this public room: the action-audience result stays out of it');
+});
 
 test('W2a3-R3-2: a stored execution result enters history only for its action audience', { skip: !canRun }, async () => {
   assert.ok(client && app);

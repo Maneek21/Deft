@@ -1,7 +1,8 @@
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, or, sql, type SQLWrapper } from 'drizzle-orm';
 import { spaceMembers, spaces, wikiPages } from '@deft/db/schema';
 
-export function visibleWikiPageCondition(userId: string, orgId?: string) {
+/** `userId` may be a column, for a check over several people (defty-audience.ts). */
+export function visibleWikiPageCondition(userId: string | SQLWrapper, orgId?: string) {
   const ordinary = or(
     eq(wikiPages.scope, 'org'),
     eq(wikiPages.user_id, userId),
