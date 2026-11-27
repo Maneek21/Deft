@@ -254,6 +254,7 @@ jobs:
           src/lib/report-problem-mounted.test.ts
           src/lib/report-problem-reopen-mounted.test.ts
           src/lib/signup-install-ping-mounted.test.ts
+          src/lib/welcome-first-message-mounted.test.ts
           src/lib/note-share-dialog-mounted.test.ts
           src/lib/two-step-recovery-mounted.test.ts
           src/lib/agent-management-mounted.test.ts
