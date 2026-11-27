@@ -55,7 +55,7 @@ jobs:
           fi
           test "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -ge 8388608
           test "$(df -Pk . | awk 'NR==2 {print $4}')" -ge 8388608
-      - uses: pnpm/action-setup@v6.1.0
+      - uses: pnpm/action-setup@v6.1.1
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
@@ -175,7 +175,7 @@ jobs:
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.1.0
+      - uses: pnpm/action-setup@v6.1.1
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
