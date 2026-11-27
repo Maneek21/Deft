@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { Logo } from '@/components/brand/logo';
 import { Sparkles, MessageSquare, ListChecks, Users, ArrowRight, Check } from 'lucide-react';
 
@@ -20,6 +21,10 @@ export default function WelcomePage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [firstMessage, setFirstMessage] = useState('Hi team — happy to be here!');
   const [posting, setPosting] = useState(false);
+  const [postError, setPostError] = useState<string | null>(null);
+  // One Idempotency-Key per hello, kept across retries, as in the chat composer:
+  // a retry after a lost answer cannot post the hello twice.
+  const helloIntent = useRef<ReturnType<typeof createNativeCreateIntent> | null>(null);
 
   // Redirect to login if no auth, dashboard if already done
   useEffect(() => {
@@ -62,20 +67,38 @@ export default function WelcomePage() {
       return;
     }
     setPosting(true);
+    setPostError(null);
+    let failure: string | null = "Your hello wasn't posted. Try again, or skip and say hello in #general later.";
     try {
       const spacesRes = await api.get('/api/spaces');
       if (spacesRes.ok) {
         const spaces: { id: string; is_default: boolean; name: string }[] = await spacesRes.json();
-        const target = spaces.find((s) => s.is_default) ?? spaces.find((s) => s.name === 'general') ?? spaces[0];
-        if (target) {
-          await api.post(`/api/spaces/${target.id}/messages`, { content: firstMessage }).catch(() => {});
-          await api.patch('/api/auth/onboarding', { first_message_sent: true }).catch(() => {});
+        // Only #general: never another space the person happens to be in.
+        const target = spaces.find((s) => s.is_default) ?? spaces.find((s) => s.name === 'general');
+        if (!target) {
+          failure = "There's no #general to post in. Skip, and say hello in a space later.";
+        } else {
+          const body = { content: firstMessage };
+          helloIntent.current ??= createNativeCreateIntent('welcome-hello');
+          const key = await helloIntent.current.keyFor({ space_id: target.id, ...body });
+          const res = await api.post(`/api/messages/${encodeURIComponent(target.id)}`, body, { headers: { 'Idempotency-Key': key } });
+          if (res.ok) {
+            helloIntent.current.acknowledgeSuccess(key);
+            failure = null;
+          }
         }
       }
-    } finally {
-      setPosting(false);
-      finish();
+    } catch {
+      // No answer: the message above, and a retry reuses the key.
     }
+    if (failure) {
+      setPosting(false);
+      setPostError(failure);
+      return;
+    }
+    // Posted: the button stays disabled until onboarding is finished.
+    await api.patch('/api/auth/onboarding', { first_message_sent: true }).catch(() => {});
+    await finish();
   };
 
   if (!user) {
@@ -251,6 +274,11 @@ export default function WelcomePage() {
                 style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)', borderRadius: '0.5rem', color: 'var(--on-surface)' }}
                 placeholder="Hi team — excited to be here!"
               />
+              {postError && (
+                <p role="alert" className="text-[0.8125rem] leading-relaxed" style={{ color: 'var(--error)' }}>
+                  {postError}
+                </p>
+              )}
               <div className="flex justify-between mt-2">
                 <button onClick={finish} className="text-[0.8125rem]" style={{ color: 'var(--on-surface-variant)' }}>Skip — finish onboarding</button>
                 <button onClick={postFirstMessage} disabled={posting}
