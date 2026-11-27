@@ -61,6 +61,7 @@ import {
   recoverInterruptedApproval,
   tryWithApprovalLease,
   withApprovalLease,
+  withApprovalLeaseWithin,
   type ClaimToken,
 } from './agent-action-execution-lease.js';
 import { AppError } from './app-errors.js';
@@ -127,6 +128,7 @@ import {
   NOT_REQUESTER_MESSAGE,
   prepareSuggestionForApproval,
   releaseSuggestionClaimInTx,
+  suggestionApplyLeaseWaitMs,
   suggestionReviewerRefusal,
   suggestionRetryOf,
   suggestionRetryRefusal,
@@ -1196,22 +1198,29 @@ export async function approveAction(
     suggestionClaim?: SuggestionClaim;
   } = {},
 ): Promise<ApprovalResolverResult> {
-  const seen: { suggestionClaimed?: boolean } = {};
+  const seen: { suggestionToken?: string } = {};
+  const locked = async (lease: DbAdvisoryLease) => {
+    const outcome = await approveActionLocked(actionId, approverUserId, { ...options, seen }, lease);
+    // An edit suggestion this request claimed, for an approval that didn't
+    // start, goes back to pending before the lease is released: only its own
+    // claim (the token), and not once the lease is lost (fix rounds 1 and 2, I1).
+    if (seen.suggestionToken && outcome.status === 'error' && outcome.code !== 'LEASE_LOST' && !lease.lost) {
+      await releaseSuggestionClaimInTx(db, actionId, seen.suggestionToken);
+    }
+    return outcome;
+  };
   // The execution lease is held for the whole approval so a recovery can
-  // tell a live executor from one that is gone.
-  const result = await withApprovalLease(
-    actionId,
-    async (lease) => {
-      const outcome = await approveActionLocked(actionId, approverUserId, { ...options, seen }, lease);
-      // An edit suggestion this request claimed, for an approval that didn't
-      // start, goes back to pending before the lease is released. A request
-      // that claimed nothing never touches it (fix round 1, I1).
-      if (seen.suggestionClaimed && outcome.status === 'error' && outcome.code !== 'LEASE_LOST') {
-        await releaseSuggestionClaimInTx(db, actionId);
-      }
-      return outcome;
-    },
-  );
+  // tell a live executor from one that is gone. An apply from the document
+  // review waits for it at most suggestionApplyLeaseWaitMs (N2), then answers
+  // that the suggestion is being resolved, having changed nothing.
+  let result: ApprovalResolverResult;
+  if (options.suggestionClaim) {
+    const held = await withApprovalLeaseWithin(actionId, suggestionApplyLeaseWaitMs(), locked);
+    if (!held.acquired) return { status: 'error', code: 'SUGGESTION_ALREADY_RESOLVING', message: 'This suggestion is already being applied, or has been settled' };
+    result = held.value;
+  } else {
+    result = await withApprovalLease(actionId, locked);
+  }
   if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
     await publishApprovalResolution(actionId, approverUserId);
   }
@@ -1230,8 +1239,8 @@ async function approveActionLocked(
     /** Maintenance resume of a decision already recorded under `approverUserId`. */
     resume?: boolean;
     suggestionClaim?: SuggestionClaim;
-    /** Set once this request has claimed the action's edit suggestion, for approveAction. */
-    seen?: { suggestionClaimed?: boolean };
+    /** This request's claim token once it has claimed the action's edit suggestion, for approveAction. */
+    seen?: { suggestionToken?: string };
   },
   lease: DbAdvisoryLease,
 ): Promise<ApprovalResolverResult> {
@@ -1534,9 +1543,10 @@ async function approveActionLocked(
   // before the action is (lib/document-suggestions.ts): the document must
   // still be at the revision the asker saw, or nothing changes.
   if (row.action === DOCUMENT_EDIT_ACTION && !resumesApprovedModule) {
+    if (lease.lost) return leaseLost(actionId);
     const claim = await prepareSuggestionForApproval(row.org_id, row.id, options.suggestionClaim ?? null);
     if (claim.refusal) return { status: 'error', code: claim.refusal.code, message: claim.refusal.message };
-    if (claim.claimed && options.seen) options.seen.suggestionClaimed = true;
+    if (claim.claimToken && options.seen) options.seen.suggestionToken = claim.claimToken;
   }
 
   // Phase 12 review fix — atomic claim. Two concurrent callers could both
@@ -1545,6 +1555,8 @@ async function approveActionLocked(
   // returns zero rows, we lost the race and return the idempotent result.
   if (!resumesApprovedModule) {
     await reviewerRecheckPoint('before_decision', actionId);
+    // An edit suggestion's approval doesn't claim the action once its lease is lost.
+    if (row.action === DOCUMENT_EDIT_ACTION && lease.lost) return leaseLost(actionId);
     // The requester's room-access lock (shared) first, so the claiming
     // statement never reads access from before a loss that commits while it
     // waits (lib/room-access-lock.ts).
@@ -1646,6 +1658,8 @@ async function approveActionLocked(
         {
           agentEmployeeId: row.agent_employee_id ?? undefined,
           trustedHumanMcpPrincipal: hasHumanMcpBulkProvenance(row),
+          // The edit suggestion this approval claimed: the executor writes only under it.
+          ...(options.seen?.suggestionToken ? { suggestionClaimToken: options.seen.suggestionToken } : {}),
         },
       );
       toolResult = {
@@ -1710,7 +1724,7 @@ async function approveActionLocked(
         ))
         .returning({ id: agentActions.id });
       if (!back) return false;
-      await releaseSuggestionClaimInTx(tx, actionId);
+      if (options.seen?.suggestionToken) await releaseSuggestionClaimInTx(tx, actionId, options.seen.suggestionToken);
       return true;
     });
     if (reopened) {
@@ -1765,7 +1779,9 @@ async function approveActionLocked(
       // A failed approval closes its edit suggestion in this commit, whatever
       // stopped it: the source check above, or anything the executor didn't
       // settle itself (fix round 1, I3).
-      if (row.action === DOCUMENT_EDIT_ACTION) await syncSuggestionWithAction(tx, row.id, 'cancelled');
+      if (row.action === DOCUMENT_EDIT_ACTION && options.seen?.suggestionToken) {
+        await syncSuggestionWithAction(tx, row.id, 'cancelled', options.seen.suggestionToken);
+      }
     } else {
       await markWorkIntentConvertedForAction({
         actionId: row.id,

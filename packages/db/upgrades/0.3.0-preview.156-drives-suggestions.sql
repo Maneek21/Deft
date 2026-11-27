@@ -91,8 +91,9 @@ CREATE TRIGGER document_user_settings_member_check
 -- action. It keeps the content the edit was proposed on (base_json, at
 -- base_revision), the operations and the content they give (proposed_json),
 -- and the top-level blocks they change. Only the person who asked reviews it.
--- Applying claims it ('applying', with the blocks chosen and the revision
--- they were reviewed at); the outcome is 'accepted' (every changed block),
+-- Applying claims it ('applying', with the blocks chosen, the revision they
+-- were reviewed at and the claiming request's claim_token, which every later
+-- write by that request must match); the outcome is 'accepted' (every changed block),
 -- 'partially_accepted', 'rejected', 'expired' (14 days without review) or
 -- 'cancelled' (the asker lost edit or the conversation it came from). The
 -- document key is org-qualified; deleting the action removes its suggestion.
@@ -110,6 +111,7 @@ CREATE TABLE document_suggestions (
   changed_block_ids text[] NOT NULL,
   selected_block_ids text[],
   reviewed_revision bigint,
+  claim_token text,
   status text NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'applying', 'accepted', 'partially_accepted', 'rejected', 'expired', 'cancelled')),
   applied_block_ids text[],

@@ -32,6 +32,7 @@ import {
   documentSuggestionExpiryKey, ensureDocumentSuggestionExpiry, nextDocumentSuggestionExpiryRun,
 } from '../src/workers/handlers/document-suggestion-expiry.js';
 import { APPROVAL_INTERRUPTED_ERROR } from '../src/lib/agent-action-execution-lease.js';
+import * as suggestionsModule from '../src/lib/document-suggestions.js';
 import { pollUntil, startCollabTestServer, type CollabTestServer } from './fixtures/collab-client.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -812,5 +813,150 @@ test('fix round 1 (I3): an interrupted approval, settled by recovery, closes its
   assert.ok(settled.executed_at);
   assert.equal(settled.error, APPROVAL_INTERRUPTED_ERROR);
   assert.equal((await suggestion(s.suggestionId)).status, 'cancelled');
+  assert.deepEqual(await blocks(d.id), before);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 2 (re-review I1, N1, N2)
+
+/** The backend holding the action's approval lease, or null. */
+async function leaseHolderPid(actionId: string): Promise<number | null> {
+  const { rows } = await fx!.client.query(`SELECT pid FROM pg_locks
+    WHERE locktype = 'advisory' AND granted AND objsubid = 1 AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`,
+  [`agent-approval:${actionId}`]);
+  return rows[0]?.pid ?? null;
+}
+
+async function claimOf(suggestionId: string): Promise<{ status: string; claim_token: string | null; selected_block_ids: string[] | null }> {
+  const { rows: [row] } = await fx!.client.query('SELECT status, claim_token, selected_block_ids FROM document_suggestions WHERE id = $1', [suggestionId]);
+  return row;
+}
+
+test('fix round 2 (I1): a request whose lease is lost mid-request neither releases nor overwrites the new holder\'s claim', { skip: !url && SKIP }, async () => {
+  const d = await threeBlocks();
+  const before = await blocks(d.id);
+  const s = await suggest(d, { ops: [{ op: 'replace', block_id: d.a, markdown: 'Alpha, tightened' }, { op: 'replace', block_id: d.b, markdown: 'Beta, tightened' }] });
+  const at = await revision(d.id);
+  let staleToken: string | null = null;
+  // After this request's claim, before it claims the action: its advisory connection dies, and another request now holds the claim.
+  _setReviewerRecheckHookForTest(async (point, id) => {
+    if (point !== 'before_decision' || id !== s.actionId) return;
+    staleToken = (await claimOf(s.suggestionId)).claim_token;
+    const pid = await leaseHolderPid(s.actionId);
+    assert.ok(pid, 'the request holds the lease');
+    await fx!.client.query('SELECT pg_terminate_backend($1)', [pid]);
+    await pollUntil(async () => (await leaseHolderPid(s.actionId)) === null, 'the lease is gone');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await fx!.client.query("UPDATE document_suggestions SET claim_token = 'the-new-holder', selected_block_ids = ARRAY[$2], updated_at = now() WHERE id = $1",
+      [s.suggestionId, d.b]);
+  });
+  let answer: { status: number; body: any };
+  try {
+    answer = await call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: [d.a], revision: at });
+  } finally {
+    _setReviewerRecheckHookForTest(null);
+  }
+  assert.ok(staleToken, 'the request claimed with a token of its own');
+  assert.equal(answer!.status, 409, JSON.stringify(answer!.body));
+  assert.equal(answer!.body.code, 'SUGGESTION_ALREADY_RESOLVING');
+  // The new holder's claim is as it left it; nothing was applied.
+  assert.deepEqual(await claimOf(s.suggestionId), { status: 'applying', claim_token: 'the-new-holder', selected_block_ids: [d.b] });
+  assert.equal((await action(s.actionId)).approval_status, 'pending');
+  assert.deepEqual(await blocks(d.id), before);
+  // A write under the old token changes nothing either.
+  await suggestionsModule.releaseSuggestionClaimInTx(db, s.actionId, staleToken!);
+  await db.transaction((tx) => suggestionsModule.syncSuggestionWithAction(tx, s.actionId, 'cancelled', staleToken!));
+  assert.deepEqual(await claimOf(s.suggestionId), { status: 'applying', claim_token: 'the-new-holder', selected_block_ids: [d.b] });
+});
+
+test('fix round 2 (N1): replace then delete of a block someone already deleted brings nothing back', { skip: !url && SKIP }, async () => {
+  const d = await threeBlocks();
+  // The reviewed proposal deletes B: its replacement is deleted again.
+  const s = await suggest(d, { ops: [{ op: 'replace', block_id: d.b, markdown: 'Beta, tightened' }, { op: 'delete', block_id: d.b }] });
+  assert.deepEqual((await suggestion(s.suggestionId)).changed_block_ids, [d.b]);
+  await removeBlocks(d.id, fx!.people.member2, [d.b]);
+  const review = await call(fx!.people.member, 'GET', reviewPath(d, s));
+  assert.deepEqual(review.body.suggestion.blocks.map((block: { block_id: string; after: unknown }) => [block.block_id, block.after]), [[d.b, null]]);
+  const applied = await call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: [d.b], revision: review.body.suggestion.revision });
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  assert.equal(applied.body.status, 'accepted');
+  assert.deepEqual(await blocks(d.id), [[d.a, 'Alpha'], [d.c, 'Gamma']]);
+});
+
+test('fix round 2 (N1): an insert_after chain whose anchor is gone goes in at its place in the proposal, the chain root at the end', { skip: !url && SKIP }, async () => {
+  const d = await threeBlocks();
+  const s = await suggest(d, { ops: [{ op: 'insert_after', block_id: d.b, markdown: 'Xray' }, { op: 'insert_after', block_id: d.b, markdown: 'Yankee' }] });
+  const [x, y] = (await suggestion(s.suggestionId)).changed_block_ids as [string, string];
+  await removeBlocks(d.id, fx!.people.member2, [d.b]);
+  const review = await call(fx!.people.member, 'GET', reviewPath(d, s));
+  // X followed B in the proposal; B is gone, so X (the chain's root) goes to the end, and Y follows X.
+  const applied = await call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: 'all', revision: review.body.suggestion.revision });
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  assert.equal(applied.body.status, 'accepted');
+  assert.deepEqual(applied.body.applied_block_ids, [x, y]);
+  assert.deepEqual(await blocks(d.id), [[d.a, 'Alpha'], [d.c, 'Gamma'], [x, 'Xray'], [y, 'Yankee']]);
+  const undone = await call(fx!.people.member, 'POST', `/api/documents/agent-edits/${s.actionId}/undo`);
+  assert.deepEqual([...undone.body.restored_block_ids].sort(), [x, y].sort());
+  assert.deepEqual(await blocks(d.id), [[d.a, 'Alpha'], [d.c, 'Gamma']]);
+
+  // Choosing only Y: its previous sibling in the proposal (X) isn't coming, so Y goes to the end alone.
+  const e = await threeBlocks();
+  const t = await suggest(e, { ops: [{ op: 'insert_after', block_id: e.b, markdown: 'Xray' }, { op: 'insert_after', block_id: e.b, markdown: 'Yankee' }] });
+  const [, onlyY] = (await suggestion(t.suggestionId)).changed_block_ids as [string, string];
+  await removeBlocks(e.id, fx!.people.member2, [e.b]);
+  const second = await call(fx!.people.member, 'POST', applyPath(e, t), { block_ids: [onlyY], revision: await revision(e.id) });
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  assert.equal(second.body.status, 'partially_accepted');
+  assert.deepEqual(await blocks(e.id), [[e.a, 'Alpha'], [e.c, 'Gamma'], [onlyY, 'Yankee']]);
+});
+
+test('fix round 2 (N1): a mixed choice applies the reviewed result block by block', { skip: !url && SKIP }, async () => {
+  // A B C D: replace A, delete B, replace C with two blocks, insert after D.
+  const doc = await blocksDoc('Alpha', 'Beta', 'Gamma', 'Delta');
+  const [a, b, c, dd] = doc.ids as [string, string, string, string];
+  const d: Doc = { id: doc.id, a, b, c };
+  const s = await suggest(d, { ops: [
+    { op: 'replace', block_id: a, markdown: 'Alpha 2' }, { op: 'delete', block_id: b },
+    { op: 'replace', block_id: c, markdown: 'Gamma 2\n\nGamma 3' }, { op: 'insert_after', block_id: dd, markdown: 'Echo' },
+  ] });
+  const changed = (await suggestion(s.suggestionId)).changed_block_ids;
+  const [, , , g3, echo] = changed as [string, string, string, string, string];
+  assert.deepEqual(changed.slice(0, 3), [a, b, c]);
+  // Someone deletes C meanwhile; the asker takes everything but A.
+  await removeBlocks(doc.id, fx!.people.member2, [c]);
+  const applied = await call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: [b, c, g3, echo], revision: await revision(doc.id) });
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  assert.equal(applied.body.status, 'partially_accepted');
+  assert.deepEqual(applied.body.applied_block_ids, [b, c, g3, echo]);
+  // B deleted; C' (gone) back after its previous sibling in the proposal (A), G3 after C'; Echo after D; A unchanged.
+  assert.deepEqual(await blocks(doc.id), [[a, 'Alpha'], [c, 'Gamma 2'], [g3, 'Gamma 3'], [dd, 'Delta'], [echo, 'Echo']]);
+});
+
+test('fix round 2 (N2): an apply that cannot get the approval lease in time answers 409 and changes nothing', { skip: !url && SKIP }, async () => {
+  const d = await threeBlocks();
+  const before = await blocks(d.id);
+  const s = await suggest(d);
+  const setWait = (suggestionsModule as { _setSuggestionApplyLeaseWaitForTest?: (ms: number) => void })._setSuggestionApplyLeaseWaitForTest;
+  assert.equal(typeof setWait, 'function', 'the apply path has a lease deadline');
+  setWait!(1_500);
+  let late: Promise<unknown> | undefined;
+  try {
+    await holdingApprovalLease(s.actionId, async () => {
+      const started = Date.now();
+      const attempt = call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: 'all', revision: await revision(d.id) });
+      late = attempt;
+      const answer = await Promise.race([attempt, new Promise<'still waiting'>((resolve) => setTimeout(() => resolve('still waiting'), 8_000))]);
+      assert.notEqual(answer, 'still waiting', 'the apply gave up within its deadline');
+      const settled = answer as { status: number; body: any };
+      assert.equal(settled.status, 409, JSON.stringify(settled.body));
+      assert.equal(settled.body.code, 'SUGGESTION_ALREADY_RESOLVING');
+      assert.ok(Date.now() - started >= 1_400, 'it waited for the lease first');
+      assert.deepEqual(await claimOf(s.suggestionId), { status: 'pending', claim_token: null, selected_block_ids: null });
+    });
+  } finally {
+    setWait?.(10_000);
+    await late;
+  }
+  assert.equal((await action(s.actionId)).approval_status, 'pending');
   assert.deepEqual(await blocks(d.id), before);
 });

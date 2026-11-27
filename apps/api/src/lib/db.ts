@@ -124,17 +124,23 @@ async function connectAdvisoryWithin(timeoutMs: number): Promise<pg.PoolClient |
  * `pg_try_advisory_lock` whether the holder is still alive. With
  * `wait: false` the call returns `{ acquired: false }` promptly when the
  * lock is held elsewhere or no advisory connection frees up within
- * `acquireTimeoutMs`. If the holder connection fails, `lease.lost` turns
- * true and the broken connection is discarded instead of reused.
+ * `acquireTimeoutMs`. With `wait: true` and `waitTimeoutMs`, it waits in
+ * the lock's queue as a plain wait does, but for both the connection and the
+ * lock together at most that long, then returns `{ acquired: false }`
+ * (`pool_busy` or `held`) having run nothing. If the holder connection
+ * fails, `lease.lost` turns true and the broken connection is discarded
+ * instead of reused.
  */
 export async function withDbAdvisoryLease<T>(
   key: string,
-  options: { wait: boolean; acquireTimeoutMs?: number },
+  options: { wait: boolean; acquireTimeoutMs?: number; waitTimeoutMs?: number },
   run: (lease: DbAdvisoryLease) => Promise<T>,
 ): Promise<DbAdvisoryLeaseResult<T>> {
-  const client = options.wait
+  const started = Date.now();
+  const deadline = options.wait ? options.waitTimeoutMs : undefined;
+  const client = options.wait && deadline === undefined
     ? await advisoryPool.connect()
-    : await connectAdvisoryWithin(options.acquireTimeoutMs ?? ADVISORY_LEASE_ACQUIRE_TIMEOUT_MS);
+    : await connectAdvisoryWithin(deadline ?? options.acquireTimeoutMs ?? ADVISORY_LEASE_ACQUIRE_TIMEOUT_MS);
   if (!client) return { acquired: false, reason: 'pool_busy' };
   let lostError: Error | null = null;
   const onError = (error: Error) => { lostError = error; };
@@ -143,7 +149,21 @@ export async function withDbAdvisoryLease<T>(
   client.on('end', onEnd);
   let acquired = false;
   try {
-    if (options.wait) {
+    if (options.wait && deadline !== undefined) {
+      // lock_timeout ends the queued wait at the deadline; the connection's
+      // own setting is put back before anything else runs on it.
+      const left = Math.max(1, Math.round(deadline - (Date.now() - started)));
+      const { rows: [setting] } = await client.query<{ previous: string }>(
+        "SELECT current_setting('lock_timeout') AS previous, set_config('lock_timeout', $1, false)", [`${left}ms`]);
+      try {
+        await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
+        acquired = true;
+      } catch (error) {
+        if ((error as { code?: unknown }).code !== '55P03') throw error;
+      } finally {
+        await client.query("SELECT set_config('lock_timeout', $1, false)", [setting?.previous ?? '0']);
+      }
+    } else if (options.wait) {
       await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
       acquired = true;
     } else {

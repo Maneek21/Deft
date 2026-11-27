@@ -98,6 +98,20 @@ export async function withApprovalLease<T>(
   return held.value;
 }
 
+/**
+ * Run with the action's execution lease, waiting for a current holder at
+ * most `timeoutMs` (a free advisory connection and the lock both). Returns
+ * `{ acquired: false }` when it didn't come in time, having run nothing.
+ * Waiters keep their place in the lock's queue, as withApprovalLease's do.
+ */
+export function withApprovalLeaseWithin<T>(
+  actionId: string,
+  timeoutMs: number,
+  run: (lease: DbAdvisoryLease) => Promise<T>,
+) {
+  return withDbAdvisoryLease(approvalLeaseKey(actionId), { wait: true, waitTimeoutMs: timeoutMs }, run);
+}
+
 /** Condition true only while the row still carries this request's claim. */
 export function ownsClaim(token: ClaimToken) {
   return sql`${agentActions.approved_at} = ${token}::timestamp`;

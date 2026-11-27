@@ -1559,6 +1559,8 @@ export async function executeAction(
     agentEmployeeId?: string;
     /** Set only by the approval resolver after it validates persisted MCP provenance. */
     trustedHumanMcpPrincipal?: boolean;
+    /** Set only by the approval resolver: the claim token of the edit suggestion this approval claimed. */
+    suggestionClaimToken?: string;
   },
 ): Promise<{ success: boolean; result: any; error?: string }> {
   const agentEmployeeId = options?.agentEmployeeId ?? null;
@@ -1706,7 +1708,7 @@ export async function executeAction(
       // blocks, through the one writer (lib/document-suggestions.ts, M6). M7 adds
       // the direct path for an edit with no suggestion.
       case DOCUMENT_EDIT_ACTION:
-        return executeDocumentEditAction({ orgId, actionId });
+        return executeDocumentEditAction({ orgId, actionId, claimToken: options?.suggestionClaimToken });
 
       case DOCUMENT_SEND_ACTION: {
         let documentActorUserId = userId;

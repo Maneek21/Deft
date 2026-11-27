@@ -300,6 +300,8 @@ export const documentSuggestions = pgTable('document_suggestions', {
   changed_block_ids: text('changed_block_ids').array().notNull(),
   selected_block_ids: text('selected_block_ids').array(),
   reviewed_revision: bigint('reviewed_revision', { mode: 'number' }),
+  /** The claiming request's token while 'applying'; null otherwise. */
+  claim_token: text('claim_token'),
   status: text('status').$type<DocumentSuggestionStatus>().default('pending').notNull(),
   applied_block_ids: text('applied_block_ids').array(),
   resolved_at: timestamp('resolved_at'),
