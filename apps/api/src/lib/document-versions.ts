@@ -54,6 +54,14 @@
 // from there today.) A changed title is announced after the commit
 // (`document:updated`, rule C4).
 //
+// An agent's direct edit (M4, lib/document-edit.ts) is stored as an `agent`
+// version named "Agent edit: {summary}", with the agent's and the asker's ids
+// in edit_details, so no row names a person a reader may not see. The list
+// and a version read show it as "{agent}, at {asker}'s request: {summary}"
+// for each viewer, each name through the people-visibility rules and "A
+// collaborator" for someone hidden from them (a guest with edit who shares no
+// chat with the asker, say).
+//
 // `document_attachments.in_current` (consult change) is kept by a second
 // stored listener: on every derived store, for that document only, a row is
 // current exactly when its file id is in the stored content (an image's
@@ -73,10 +81,11 @@
 // startDocumentVersioning registers both listeners; the API's entry point
 // (server.ts) calls it at startup. Logs are fixed text; a failing listener
 // is logged by runStoredListeners.
-import { and, desc, eq, gt, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, sql, type SQL } from 'drizzle-orm';
 import type { PgTransactionConfig } from 'drizzle-orm/pg-core';
 import * as Y from 'yjs';
 import { documentAttachments, documents, documentVersions, type DocumentVersionKind } from '@deft/db/documents';
+import { users } from '@deft/db/schema';
 import { applyJsonToYDoc, ensureBlockIds, yDocToJson } from '@deft/doc-schema';
 import { onDocumentStored, type DocumentStoredEvent, type JSONContent } from '../collab/persistence.js';
 import { readCurrentDocument } from '../collab/server.js';
@@ -85,6 +94,7 @@ import { documentRoleFor, roleAtLeast } from './document-access.js';
 import { emitDocumentUpdated } from './document-access-events.js';
 import { DocumentRefusal } from './documents.js';
 import { DocumentWriteRefused, writeDocument } from './document-writer.js';
+import { canSeePerson, peopleViewer, visiblePersonIds } from './people-visibility.js';
 import { enqueue, QUEUE_NAMES } from './queues.js';
 
 export type VersionKind = DocumentVersionKind;
@@ -381,6 +391,48 @@ export type VersionSummary = {
   created_at: Date; size_bytes: number;
 };
 
+/** The name shown for a person the viewer may not see (the people-visibility rules). */
+export const HIDDEN_PERSON_NAME = 'A collaborator';
+
+/** "Defty, at Sam's request: Tidy the intro": an agent version's credit, with the names a viewer may read (the header). */
+export function agentVersionCredit(agent: string, asker: string, summary: string): string {
+  return summary ? `${agent}, at ${asker}'s request: ${summary}` : `${agent}, at ${asker}'s request`;
+}
+
+/** An agent version's credit, from its edit_details (lib/document-edit.ts); null on every other version. */
+const creditColumns = {
+  credit_agent_id: sql<string | null>`CASE WHEN ${documentVersions.kind} = 'agent' THEN ${documentVersions.edit_details}->>'agent_user_id' END`,
+  credit_asker_id: sql<string | null>`CASE WHEN ${documentVersions.kind} = 'agent' THEN ${documentVersions.edit_details}->>'asker_user_id' END`,
+  credit_summary: sql<string | null>`CASE WHEN ${documentVersions.kind} = 'agent' THEN ${documentVersions.edit_details}->>'summary' END`,
+};
+type CreditColumns = { credit_agent_id: string | null; credit_asker_id: string | null; credit_summary: string | null };
+
+/**
+ * The rows as `userId` reads them (the header): an agent version is named by
+ * its credit, each person by name only when the viewer may see them. Reads
+ * through `tx`, in the caller's snapshot.
+ */
+async function creditedFor<T extends { name: string | null }>(tx: Tx, orgId: string, userId: string, rows: Array<T & CreditColumns>): Promise<T[]> {
+  const people = new Set<string>();
+  for (const row of rows) {
+    if (row.credit_agent_id && row.credit_asker_id) {
+      people.add(row.credit_agent_id);
+      people.add(row.credit_asker_id);
+    }
+  }
+  let display = (_id: string) => HIDDEN_PERSON_NAME;
+  if (people.size > 0) {
+    const visible = await visiblePersonIds(await peopleViewer(orgId, userId, tx), tx);
+    const named = await tx.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, [...people]));
+    const names = new Map(named.map((person) => [person.id, person.name]));
+    display = (id) => (canSeePerson(visible, id) ? names.get(id) ?? HIDDEN_PERSON_NAME : HIDDEN_PERSON_NAME);
+  }
+  return rows.map(({ credit_agent_id: agentId, credit_asker_id: askerId, credit_summary: summary, ...rest }) => {
+    const row = rest as unknown as T;
+    return agentId && askerId ? { ...row, name: agentVersionCredit(display(agentId), display(askerId), summary ?? '') } : row;
+  });
+}
+
 /**
  * The document's versions, newest first, `limit` at a time; `before` (a
  * version id of this document) continues after that version. `nextBefore`
@@ -397,11 +449,11 @@ export async function listVersions(i: { orgId: string; userId: string; documentI
           FROM document_versions cursor_version
           WHERE cursor_version.id = ${i.before} AND cursor_version.org_id = ${i.orgId} AND cursor_version.document_id = ${i.documentId})`
       : undefined;
-    const rows = await tx.select(summaryColumns).from(documentVersions)
+    const rows = await tx.select({ ...summaryColumns, ...creditColumns }).from(documentVersions)
       .where(and(eq(documentVersions.org_id, i.orgId), eq(documentVersions.document_id, i.documentId), after))
       .orderBy(desc(documentVersions.created_at), desc(documentVersions.id))
       .limit(limit + 1);
-    const versions = rows.slice(0, limit);
+    const versions = await creditedFor<VersionSummary>(tx, i.orgId, i.userId, rows.slice(0, limit));
     return { versions, nextBefore: rows.length > limit ? versions[versions.length - 1]!.id : null };
   }, READ_SNAPSHOT);
 }
@@ -412,11 +464,12 @@ export async function getVersion(i: { orgId: string; userId: string; documentId:
 > {
   return db.transaction(async (tx) => {
     await assertHistoryAccess(tx, i.orgId, i.userId, i.documentId);
-    const [row] = await tx.select({ ...summaryColumns, content_json: documentVersions.content_json }).from(documentVersions).where(and(
+    const [found] = await tx.select({ ...summaryColumns, ...creditColumns, content_json: documentVersions.content_json }).from(documentVersions).where(and(
       eq(documentVersions.org_id, i.orgId), eq(documentVersions.document_id, i.documentId), eq(documentVersions.id, i.versionId),
     )).limit(1);
-    if (!row) throw versionNotFound();
-    return { ...row, content_json: row.content_json as JSONContent };
+    if (!found) throw versionNotFound();
+    const [row] = await creditedFor<VersionSummary & { content_json: unknown }>(tx, i.orgId, i.userId, [found]);
+    return { ...row!, content_json: row!.content_json as JSONContent };
   }, READ_SNAPSHOT);
 }
 

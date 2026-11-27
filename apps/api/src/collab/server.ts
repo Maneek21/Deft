@@ -1873,6 +1873,12 @@ export async function readCurrentDocument(documentId: string, orgId: string,
  * is: the live copy takes a change only after the commit, so nobody sees it
  * and no listener runs. Keep it short: socket updates to the document wait
  * while it runs.
+ *
+ * `beforeMutate` is the caller's own check in the write's transaction, with
+ * the document row locked, after every check above has passed and before
+ * `mutate` runs (an agent edit's "was this action already applied", M4).
+ * Whatever it throws rolls the write back, before anything is changed or
+ * measured, and is thrown from writeDocument as it is.
  */
 export async function writeDocument(i: {
   orgId: string;
@@ -1883,6 +1889,7 @@ export async function writeDocument(i: {
   requiredRole?: DocRole | null;
   mutate: (doc: Y.Doc) => void;
   reason: DocumentWriteReason;
+  beforeMutate?: (tx: Tx) => Promise<void>;
   inTransaction?: DocumentWriteInTransaction;
 }): Promise<{ revision: number; sizeBytes: number }> {
   const requiredRole = i.requiredRole === undefined ? 'edit' : i.requiredRole;
@@ -1917,6 +1924,7 @@ export async function writeDocument(i: {
         if (!drive || drive.suggestOnly) throw new DocumentWriteRefused('FORBIDDEN');
       }
       if (i.expectedRevision !== undefined && row.revision !== i.expectedRevision) throw new DocumentWriteRefused('REVISION_CHANGED');
+      await i.beforeMutate?.(tx);
     },
     // The access fence a socket frame passes (rule C3), right before commit:
     // only the document row is locked, so a drive or share loss can commit

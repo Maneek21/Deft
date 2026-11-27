@@ -18,14 +18,14 @@ import test, { after, before } from 'node:test';
 import * as Y from 'yjs';
 import { blockHash, ensureBlockIds, jsonToText, jsonToYDoc, yDocToJson } from '@deft/doc-schema';
 import { setCollabLimitsForTest } from '../src/collab/limits.js';
-import { readCurrentDocument } from '../src/collab/server.js';
+import { collabTestSeams, readCurrentDocument } from '../src/collab/server.js';
 import { closeDb } from '../src/lib/db.js';
 import { startDocumentCrossReferences } from '../src/lib/document-cross-references.js';
 import {
   applyDocumentEditDirect, applyOpsToJson, DocumentEditRefused, undoAgentEdit, type DocumentEditOp,
 } from '../src/lib/document-edit.js';
 import { startDocumentVersioning } from '../src/lib/document-versions.js';
-import { writeDocument } from '../src/lib/document-writer.js';
+import { DocumentWriteRefused, writeDocument } from '../src/lib/document-writer.js';
 import { ensureDeftyMembership } from '../src/lib/ensure-defty-membership.js';
 import { documentRoutes } from '../src/routes/documents.js';
 import { handleCrossReference } from '../src/workers/handlers/cross-reference.js';
@@ -106,11 +106,13 @@ async function liveBlocks(documentId: string): Promise<Array<{ id: string; type:
   }
 }
 
+type Highlight = { blockIds: string[]; agentUserId: string; askerUserId: string; until: string };
+
 /** `deft_meta.agent_highlights` in the document's current state. */
-async function highlights(documentId: string): Promise<Array<{ blockIds: string[]; label: string; until: string }>> {
+async function highlights(documentId: string): Promise<Highlight[]> {
   const doc = await liveDoc(documentId);
   try {
-    return (doc.getMap('deft_meta').get('agent_highlights') ?? []) as Array<{ blockIds: string[]; label: string; until: string }>;
+    return (doc.getMap('deft_meta').get('agent_highlights') ?? []) as Highlight[];
   } finally {
     doc.destroy();
   }
@@ -187,6 +189,41 @@ async function personInsertsAfter(documentId: string, afterId: string, id: strin
       fragment.insert(index + 1, [element]);
     },
   });
+}
+
+/** Deletes the top-level block `id`, through the one writer as `userId`. */
+async function personDeletes(documentId: string, id: string, userId: string): Promise<void> {
+  await writeDocument({
+    orgId: fx!.orgId, documentId, actor: { kind: 'user', userId }, reason: 'import',
+    mutate: (doc) => {
+      const fragment = doc.getXmlFragment('default');
+      const index = fragment.toArray().findIndex((child) => child instanceof Y.XmlElement && child.getAttribute('id') === id);
+      assert.ok(index >= 0);
+      fragment.delete(index, 1);
+    },
+  });
+}
+
+type EditResult = Awaited<ReturnType<typeof deftyEdit>>;
+
+/**
+ * Runs the same action twice at once: the second run starts while the first
+ * is inside its write (after its store, before its commit), so any check it
+ * makes before the write sees nothing yet, and it then waits for the writer.
+ */
+async function runTwiceAtOnce(t: { after(fn: () => void): void }, documentId: string, ops: DocumentEditOp[], actionId: string) {
+  const race: { second: Promise<EditResult> | null } = { second: null };
+  collabTestSeams.beforeWriteCommit = async (id) => {
+    if (id !== documentId || race.second) return;
+    race.second = deftyEdit(documentId, ops, { actionId });
+    race.second.catch(() => undefined); // awaited below
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  };
+  t.after(() => { collabTestSeams.beforeWriteCommit = null; });
+  const first = await deftyEdit(documentId, ops, { actionId });
+  collabTestSeams.beforeWriteCommit = null;
+  assert.ok(race.second, 'the second run started while the first was writing');
+  return { first, second: await race.second };
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +313,9 @@ test('a direct edit creates one agent version credited to the asker and the agen
   // A highlight from long ago, pruned by the next edit.
   await writeDocument({
     orgId: fx!.orgId, documentId: doc, actor: { kind: 'user', userId: people.member }, reason: 'import',
-    mutate: (d) => d.getMap('deft_meta').set('agent_highlights', [{ blockIds: ['blk-b'], label: 'Old via Defty', until: '2026-01-01T00:00:00.000Z' }]),
+    mutate: (d) => d.getMap('deft_meta').set('agent_highlights', [
+      { blockIds: ['blk-b'], agentUserId: deftyId, askerUserId: people.member2, until: '2026-01-01T00:00:00.000Z' },
+    ]),
   });
 
   const actionId = randomUUID();
@@ -294,23 +333,32 @@ test('a direct edit creates one agent version credited to the asker and the agen
   assert.equal(agentVersions.length, 1, 'one agent version');
   const version = agentVersions[0]!;
   assert.equal(result.versionId, version.id);
-  assert.equal(version.name, "Defty, at member's request: Tidy the intro");
+  assert.equal(version.name, 'Agent edit: Tidy the intro', 'the stored name names nobody');
   assert.equal(version.created_by, people.member, 'credited to the asker');
   assert.equal(version.agent_user_id, deftyId, 'and to the agent');
   assert.equal(version.action_id, actionId);
   assert.deepEqual(blocks.map((block) => block.text), (version.content_json.content ?? []).map((node) => jsonToText({ type: 'doc', content: [node] })));
   const details = version.edit_details;
   assert.equal(details.action_id, actionId);
+  assert.equal(details.agent_user_id, deftyId);
+  assert.equal(details.asker_user_id, people.member);
+  assert.equal(details.summary, 'Tidy the intro');
   assert.deepEqual(details.changed_block_ids, ['blk-a', added]);
   assert.equal(jsonToText({ type: 'doc', content: [details.before['blk-a']] }), 'Alpha');
   assert.equal(details.before[added], null);
   assert.equal(details.after_hashes['blk-a'], blockHash(blocks[0]!.node));
   assert.equal(details.after_hashes[added], blockHash(blocks[2]!.node));
 
+  // Someone who may see the asker reads the credit with names (F8's list, per viewer).
+  const listed = await call(people.member2, 'GET', `/api/documents/${doc}/versions`);
+  assert.equal(listed.body.versions.find((row: { id: string }) => row.id === version.id).name, "Defty, at member's request: Tidy the intro");
+
   const marks = await highlights(doc);
   assert.equal(marks.length, 1, 'the stale highlight is pruned and the new one appended');
+  assert.deepEqual(Object.keys(marks[0]!).sort(), ['agentUserId', 'askerUserId', 'blockIds', 'until'], 'people by id only, no names');
   assert.deepEqual(marks[0]!.blockIds, ['blk-a', added]);
-  assert.equal(marks[0]!.label, 'member via Defty');
+  assert.equal(marks[0]!.agentUserId, deftyId);
+  assert.equal(marks[0]!.askerUserId, people.member);
   const until = Date.parse(marks[0]!.until);
   assert.equal(new Date(until).toISOString(), marks[0]!.until, 'until is ISO 8601');
   assert.ok(until >= startedAt + 30 * 60_000 - 1_000 && until <= Date.now() + 30 * 60_000 + 1_000, 'until is 30 minutes after the edit');
@@ -530,4 +578,130 @@ test('a Defty edit naming a task key links the task, checked as the asker; a for
     data: { sourceType: 'document', sourceId: forged, content: '', orgId, userId: people.agentUser, askerId: people.owner },
   });
   assert.deepEqual(await linkedFrom(forged), []);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1 (review I1–I4, and the tester's two sequences)
+
+test('I1: two runs of the same delete at once write once, and the second is not refused BLOCK_NOT_FOUND', { skip: !url && SKIP }, async (t) => {
+  const doc = await fx!.insertDocument({
+    driveId: fx!.workspaceDriveId, title: 'Delete race', json: canonical(docOf(paragraph('blk-a', 'Alpha'), paragraph('blk-b', 'Bravo'))),
+  });
+  const actionId = randomUUID();
+  const { first, second } = await runTwiceAtOnce(t, doc, [{ op: 'delete', block_id: 'blk-b' }], actionId);
+  assert.equal(second.versionId, first.versionId);
+  assert.deepEqual(second.changedBlockIds, ['blk-b']);
+  assert.deepEqual((await liveBlocks(doc)).map((block) => block.id), ['blk-a']);
+  assert.equal((await versionRows(doc)).filter((row) => row.kind === 'agent').length, 1);
+});
+
+test('I1: a retry of an append near the size cap gets the first run back, not TOO_LARGE', { skip: !url && SKIP }, async (t) => {
+  t.after(setCollabLimitsForTest({ docMaxBytes: 8_000 }));
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Near the cap', json: canonical(docOf(paragraph('blk-a', 'Alpha'))) });
+  let text = '';
+  for (let i = 0; text.length < 5_000; i += 1) text += `${i.toString(36)} `;
+  const actionId = randomUUID();
+  const { first, second } = await runTwiceAtOnce(t, doc, [{ op: 'append', markdown: text }], actionId);
+  assert.equal(second.versionId, first.versionId);
+  assert.equal((await liveBlocks(doc)).length, 2, 'appended once');
+});
+
+test('tester: duplicate deletes under Promise.allSettled both return the saved version', { skip: !url && SKIP }, async () => {
+  const doc = await fx!.insertDocument({
+    driveId: fx!.workspaceDriveId, title: 'Settled race', json: canonical(docOf(paragraph('blk-a', 'Alpha'), paragraph('blk-b', 'Bravo'))),
+  });
+  const actionId = randomUUID();
+  const settled = await Promise.allSettled([
+    deftyEdit(doc, [{ op: 'delete', block_id: 'blk-b' }], { actionId }),
+    deftyEdit(doc, [{ op: 'delete', block_id: 'blk-b' }], { actionId }),
+  ]);
+  for (const outcome of settled) assert.equal(outcome.status, 'fulfilled', outcome.status === 'rejected' ? String(outcome.reason) : '');
+  const [x, y] = settled.map((outcome) => (outcome as PromiseFulfilledResult<EditResult>).value);
+  assert.equal(x!.versionId, y!.versionId);
+  assert.deepEqual(x!.changedBlockIds, ['blk-b']);
+  assert.deepEqual(y!.changedBlockIds, ['blk-b']);
+});
+
+test('I2: a replay after the asker lost access or was lowered to view is refused by the writer, not answered from the saved version', { skip: !url && SKIP }, async () => {
+  const { people } = fx!;
+  for (const change of ['removed', 'lowered to view'] as const) {
+    const drive = await fx!.insertDrive({ kind: 'private' });
+    await fx!.addDriveMember(drive, { user: people.member }, 'edit');
+    const doc = await fx!.insertDocument({ driveId: drive, title: `Replay ${change}`, json: canonical(docOf(paragraph('blk-a', 'Alpha'))) });
+    const actionId = randomUUID();
+    const ops: DocumentEditOp[] = [{ op: 'replace', block_id: 'blk-a', markdown: 'Alpha by Defty' }];
+    await deftyEdit(doc, ops, { actionId });
+    if (change === 'removed') await fx!.client.query('DELETE FROM drive_members WHERE drive_id = $1 AND principal_id = $2', [drive, people.member]);
+    else await fx!.addDriveMember(drive, { user: people.member }, 'view');
+    await assert.rejects(deftyEdit(doc, ops, { actionId }), (error: unknown) => {
+      assert.ok(error instanceof DocumentWriteRefused, `the asker ${change}: ${String(error)}`);
+      assert.equal(error.code, 'FORBIDDEN');
+      return true;
+    });
+  }
+});
+
+test('tester: a retry naming a person from another workspace as the asker is refused, never answered with the first run', { skip: !url && SKIP }, async () => {
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Outsider retry', json: canonical(docOf(paragraph('blk-a', 'Alpha'))) });
+  const actionId = randomUUID();
+  const ops: DocumentEditOp[] = [{ op: 'replace', block_id: 'blk-a', markdown: 'Alpha by Defty' }];
+  const first = await deftyEdit(doc, ops, { actionId });
+  let answered: EditResult | null = null;
+  await assert.rejects((async () => { answered = await deftyEdit(doc, ops, { actionId, askerId: fx!.people.outsider }); })(), (error: unknown) => {
+    assert.ok(error instanceof DocumentWriteRefused, String(error));
+    assert.equal(error.code, 'FORBIDDEN');
+    return true;
+  });
+  assert.equal(answered, null, `not answered with ${first.versionId}`);
+});
+
+test('I3: a guest with edit who cannot see the asker gets no name from the live state, the version list or the version detail', { skip: !url && SKIP }, async () => {
+  const { people } = fx!;
+  const asker = await fx!.addPerson({ role: 'member' });
+  await fx!.client.query("UPDATE users SET name = 'Zelda Quill' WHERE id = $1", [asker]);
+  const doc = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Names', json: canonical(docOf(paragraph('blk-a', 'Alpha'))) });
+  await fx!.share(doc, { user: people.guest }, 'edit');
+  const { versionId } = await deftyEdit(doc, [{ op: 'replace', block_id: 'blk-a', markdown: 'Alpha by Defty' }],
+    { askerId: asker, summary: 'Tidy the opening' });
+
+  // The live state every viewer receives names people by id only.
+  const live = await liveDoc(doc);
+  const meta = live.getMap('deft_meta').toJSON() as { agent_highlights: Highlight[] };
+  live.destroy();
+  assert.ok(!JSON.stringify(meta).includes('Zelda'), 'no name in the live state');
+  assert.deepEqual(meta.agent_highlights.map((h) => [h.agentUserId, h.askerUserId]), [[deftyId, asker]]);
+
+  const [stored] = (await versionRows(doc)).filter((row) => row.kind === 'agent');
+  assert.equal(stored!.name, 'Agent edit: Tidy the opening');
+  assert.ok(!JSON.stringify(stored).includes('Zelda'), 'no name in the version row');
+
+  const list = await call(people.guest, 'GET', `/api/documents/${doc}/versions`);
+  assert.equal(list.status, 200);
+  assert.ok(!JSON.stringify(list.body).includes('Zelda'), 'no name in the version list');
+  const listed = list.body.versions.find((row: { id: string }) => row.id === versionId);
+  assert.equal(listed.name, "A collaborator, at A collaborator's request: Tidy the opening");
+  const detail = await call(people.guest, 'GET', `/api/documents/${doc}/versions/${versionId}`);
+  assert.equal(detail.status, 200);
+  assert.ok(!JSON.stringify(detail.body).includes('Zelda'), 'no name in the version detail');
+  assert.equal(detail.body.version.name, listed.name);
+
+  // Someone who may see everyone reads the names.
+  const forMember = await call(people.member, 'GET', `/api/documents/${doc}/versions/${versionId}`);
+  assert.equal(forMember.body.version.name, "Defty, at Zelda Quill's request: Tidy the opening");
+});
+
+test('I4: undo keeps a deleted chain in order when its outside neighbour is gone', { skip: !url && SKIP }, async () => {
+  const { people } = fx!;
+  const doc = await fx!.insertDocument({
+    driveId: fx!.workspaceDriveId, title: 'Chain',
+    json: canonical(docOf(paragraph('blk-a', 'Alpha'), paragraph('blk-b', 'Bravo'), paragraph('blk-c', 'Charlie'), paragraph('blk-d', 'Delta'))),
+  });
+  const actionId = randomUUID();
+  await deftyEdit(doc, [{ op: 'delete', block_id: 'blk-c' }, { op: 'delete', block_id: 'blk-b' }], { actionId });
+  await personDeletes(doc, 'blk-a', people.member2);
+  assert.deepEqual((await liveBlocks(doc)).map((block) => block.id), ['blk-d']);
+  const undone = await undoAgentEdit({ orgId: fx!.orgId, actionId, userId: people.member });
+  assert.deepEqual([...undone.restoredBlockIds].sort(), ['blk-b', 'blk-c']);
+  assert.deepEqual(undone.conflictedBlockIds, []);
+  assert.deepEqual((await liveBlocks(doc)).map((block) => block.id), ['blk-d', 'blk-b', 'blk-c']);
 });

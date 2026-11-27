@@ -25,39 +25,50 @@
 // When an id the operations name isn't there, the whole edit is refused
 // (DocumentEditRefused, BLOCK_NOT_FOUND, with the ids) and nothing is written.
 //
-// Credit: in the write's own transaction, an `agent` version named
-// "{agent}, at {asker}'s request: {summary}", by the asker, with the agent
-// and the action id, and edit_details { action_id, changed_block_ids, before
-// (each changed block before the edit, null for an added one),
-// after_hashes (each changed block's blockHash after it, null for a deleted
-// one), previous_sibling_ids (each deleted block's previous top-level
-// block, null for the first) }. Automatic versions are paused around the
-// write, as a restore pauses them. Highlight: the live document's Y map
-// `deft_meta`, key `agent_highlights`, gets { blockIds, label: "{asker} via
-// {agent}", until: server time + 30 minutes, ISO 8601 } appended, and entries
-// whose time has passed are dropped. Audit: logAuditEvent `edit_document`
-// with the action id only, never content.
+// Credit: in the write's own transaction, an `agent` version by the asker,
+// with the agent and the action id, and edit_details { action_id,
+// agent_user_id, asker_user_id, summary, changed_block_ids, before (each
+// changed block before the edit, null for an added one), after_hashes (each
+// changed block's blockHash after it, null for a deleted one),
+// previous_sibling_ids (each deleted block's previous top-level block, null
+// for the first) }. Names are never stored where a reader may not see the
+// person (review I3, people-visibility rules): the version is named "Agent
+// edit: {summary}", and F8's version list and detail show "{agent}, at
+// {asker}'s request: {summary}" resolved for each viewer, "A collaborator"
+// for someone hidden from them (document-versions.ts). Automatic versions are
+// paused around the write, as a restore pauses them. Highlight: the live
+// document's Y map `deft_meta`, key `agent_highlights`, gets { blockIds,
+// agentUserId, askerUserId, until: server time + 30 minutes, ISO 8601 }
+// appended, people by id only (the editor resolves names per viewer, as F12's
+// presence does), and entries whose time has passed are dropped. Audit:
+// logAuditEvent `edit_document` with the action id only, never content.
 //
 // Retry-safe: an action already applied to the document (its `agent`
-// version, at most one per action by F2's partial unique index) is returned
-// without writing; the check is made again inside the write, with the
-// document row locked, so two runs at once write once.
+// version, at most one per action by F2's partial unique index) writes
+// nothing and returns that version. The check is the writer's `beforeMutate`
+// (review I1, I2): inside the write, with the document row locked, after
+// every writer check (the asker's role, the drive setting, Defty's identity)
+// and before anything changes or is measured. So two runs at once write once,
+// a retry is never refused BLOCK_NOT_FOUND or TOO_LARGE for the first run's
+// change, and a retry by an actor or asker who has lost the right gets the
+// writer's refusal, never the first run's references.
 //
 // Undo (POST /api/documents/agent-edits/:actionId/undo): through the one
 // writer as the person undoing, reason `restore`, needs edit. For each block
 // the edit changed, compared with the live document: a block whose hash is
 // still the edit's is put back as it was before (an added one removed); a
 // deleted block still missing goes back after its previous sibling (at the
-// start when it was first; at the end when that neighbour is gone too); a
-// block already as it was before needs nothing; any other is conflicted and
-// left alone. A `restore` version records the undo, and the undone blocks
-// leave the highlight. Undoing an action again restores nothing and reports
-// no conflicts; when nothing can be restored nothing is written.
+// start when it was first); a block already as it was before needs nothing;
+// any other is conflicted and left alone. When a deleted run's outside
+// neighbour is gone, the run's first block goes to the end and the rest
+// follow it in order (review I4). A `restore` version records the undo, and
+// the undone blocks leave the highlight. An undo already made (checked in
+// `beforeMutate`) restores nothing and reports no conflicts; when nothing can
+// be restored nothing is written.
 import { createHash, randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import * as Y from 'yjs';
 import { documentVersions } from '@deft/db/documents';
-import { users } from '@deft/db/schema';
 import { blockHash, DOCUMENT_FRAGMENT, jsonToYDoc, markdownToJson, topLevelBlocks } from '@deft/doc-schema';
 import { deriveContent, type JSONContent } from '../collab/persistence.js';
 import { logAuditEvent } from './audit.js';
@@ -88,11 +99,20 @@ export const AGENT_HIGHLIGHT_MS = 30 * 60 * 1000;
 const HIGHLIGHT_MAP = 'deft_meta';
 const HIGHLIGHT_KEY = 'agent_highlights';
 
-type AgentHighlight = { blockIds: string[]; label: string; until: string };
+/** One entry of `deft_meta.agent_highlights`: people by id only (the header). */
+type AgentHighlight = { blockIds: string[]; agentUserId: string; askerUserId: string; until: string };
+
+/** The stored name of an agent version: it names nobody (the header). */
+export function agentEditVersionName(summary: string): string {
+  return summary ? `Agent edit: ${summary}` : 'Agent edit';
+}
 
 /** What an agent version's edit_details holds (the header). */
 type EditDetails = {
   action_id: string;
+  agent_user_id: string;
+  asker_user_id: string;
+  summary: string;
   changed_block_ids: string[];
   before: Record<string, JSONContent | null>;
   after_hashes: Record<string, string | null>;
@@ -301,7 +321,8 @@ function applyToFragment(doc: Y.Doc, next: JSONContent, changedBlockIds: string[
 
 function isHighlight(value: unknown): value is AgentHighlight {
   const h = value as AgentHighlight | null;
-  return typeof h === 'object' && h !== null && Array.isArray(h.blockIds) && typeof h.label === 'string' && typeof h.until === 'string';
+  return typeof h === 'object' && h !== null && Array.isArray(h.blockIds) && typeof h.agentUserId === 'string'
+    && typeof h.askerUserId === 'string' && typeof h.until === 'string';
 }
 
 /** Sets the highlights: entries whose time has passed are dropped, then `change` gives the list to keep. */
@@ -318,7 +339,9 @@ function updateHighlights(doc: Y.Doc, change: (current: AgentHighlight[]) => Age
 }
 
 /** Runs the edit on the live document `doc` (the header); returns its edit_details. */
-function editInDoc(doc: Y.Doc, i: { actionId: string; ops: DocumentEditOp[]; selectedBlockIds?: string[]; label: string }): EditDetails {
+function editInDoc(doc: Y.Doc, i: {
+  actionId: string; agentUserId: string; askerId: string; summary: string; ops: DocumentEditOp[]; selectedBlockIds?: string[];
+}): EditDetails {
   const current = contentOf(doc);
   const result = applyOpsToJson(current, i.ops, { idSeed: i.actionId, selectedBlockIds: i.selectedBlockIds });
   if (result.missingBlockIds.length > 0) throw new DocumentEditRefused('BLOCK_NOT_FOUND', result.missingBlockIds);
@@ -326,7 +349,10 @@ function editInDoc(doc: Y.Doc, i: { actionId: string; ops: DocumentEditOp[]; sel
 
   const after = hashesOf(contentOf(doc));
   const order = (current.content ?? []).map(idOf);
-  const details: EditDetails = { action_id: i.actionId, changed_block_ids: result.changedBlockIds, before: result.before, after_hashes: {}, previous_sibling_ids: {} };
+  const details: EditDetails = {
+    action_id: i.actionId, agent_user_id: i.agentUserId, asker_user_id: i.askerId, summary: i.summary,
+    changed_block_ids: result.changedBlockIds, before: result.before, after_hashes: {}, previous_sibling_ids: {},
+  };
   const afterHashes = new Map<string, string | null>();
   const previousIds = new Map<string, string | null>();
   for (const id of result.changedBlockIds) {
@@ -341,7 +367,7 @@ function editInDoc(doc: Y.Doc, i: { actionId: string; ops: DocumentEditOp[]; sel
 
   const shown = result.changedBlockIds.filter((id) => after.has(id));
   const until = new Date(Date.now() + AGENT_HIGHLIGHT_MS).toISOString();
-  updateHighlights(doc, (list) => [...list, { blockIds: shown, label: i.label, until }]);
+  updateHighlights(doc, (list) => [...list, { blockIds: shown, agentUserId: i.agentUserId, askerUserId: i.askerId, until }]);
   return details;
 }
 
@@ -364,31 +390,17 @@ async function appliedEdit(x: Executor, orgId: string, documentId: string, actio
   return { versionId: row.id, changedBlockIds: Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [] };
 }
 
-async function namesOf(ids: string[]): Promise<Map<string, string>> {
-  const rows = await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, ids));
-  return new Map(rows.map((row) => [row.id, row.name]));
-}
-
 /**
  * Applies the agent's operations straight into the document (the header), at
  * the asker's request, as one write through writeDocument. Returns the agent
  * version and the changed block ids; an action already applied returns its
- * version and writes nothing. Throws DocumentEditRefused (BLOCK_NOT_FOUND)
- * or the writer's DocumentWriteRefused (FORBIDDEN, TOO_LARGE, BUSY,
- * INVALID_CONTENT), having written nothing.
+ * version and writes nothing, once the writer's checks have passed. Throws
+ * DocumentEditRefused (BLOCK_NOT_FOUND) or the writer's DocumentWriteRefused
+ * (FORBIDDEN, TOO_LARGE, BUSY, INVALID_CONTENT), having written nothing.
  */
 export async function applyDocumentEditDirect(i: { orgId: string; documentId: string; agentUserId: string; askerId: string;
   actionId: string; ops: DocumentEditOp[]; summary: string; selectedBlockIds?: string[] }): Promise<{ versionId: string; changedBlockIds: string[] }> {
-  const applied = await appliedEdit(db, i.orgId, i.documentId, i.actionId);
-  if (applied) return applied;
-
-  const names = await namesOf([i.agentUserId, i.askerId]);
-  const agentName = names.get(i.agentUserId) ?? 'An agent';
-  const askerName = names.get(i.askerId) ?? 'someone';
   const summary = i.summary.trim();
-  const versionName = summary ? `${agentName}, at ${askerName}'s request: ${summary}` : `${agentName}, at ${askerName}'s request`;
-  const label = `${askerName} via ${agentName}`;
-
   const outcome: { details: EditDetails | null; versionId: string | null } = { details: null, versionId: null };
   try {
     await withAutomaticVersionsPaused(i.orgId, i.documentId, () => writeDocument({
@@ -396,16 +408,21 @@ export async function applyDocumentEditDirect(i: { orgId: string; documentId: st
       documentId: i.documentId,
       actor: { kind: 'agent', userId: i.agentUserId, askerId: i.askerId, actionId: i.actionId },
       reason: 'agent_edit',
+      // After the writer's checks, with the row locked, before anything changes (the header).
+      beforeMutate: async (tx) => {
+        const already = await appliedEdit(tx, i.orgId, i.documentId, i.actionId);
+        if (already) throw new AlreadyApplied(already);
+      },
       mutate: (doc) => {
-        outcome.details = editInDoc(doc, { actionId: i.actionId, ops: i.ops, selectedBlockIds: i.selectedBlockIds, label });
+        outcome.details = editInDoc(doc, {
+          actionId: i.actionId, agentUserId: i.agentUserId, askerId: i.askerId, summary, ops: i.ops, selectedBlockIds: i.selectedBlockIds,
+        });
       },
       // The credit commits with the content, or neither does.
       inTransaction: async (tx, { afterJson }) => {
-        const already = await appliedEdit(tx, i.orgId, i.documentId, i.actionId);
-        if (already) throw new AlreadyApplied(already);
         const created = await createVersionInTx(tx, {
-          orgId: i.orgId, documentId: i.documentId, kind: 'agent', name: versionName, createdBy: i.askerId, agentUserId: i.agentUserId,
-          actionId: i.actionId, editDetails: outcome.details, json: afterJson,
+          orgId: i.orgId, documentId: i.documentId, kind: 'agent', name: agentEditVersionName(summary), createdBy: i.askerId,
+          agentUserId: i.agentUserId, actionId: i.actionId, editDetails: outcome.details, json: afterJson,
         });
         outcome.versionId = created.id;
       },
@@ -431,8 +448,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 function detailsOf(value: unknown): EditDetails | null {
   if (!isRecord(value) || typeof value.action_id !== 'string' || !isStringArray(value.changed_block_ids)) return null;
   if (!isRecord(value.before) || !isRecord(value.after_hashes)) return null;
+  const text = (field: unknown) => (typeof field === 'string' ? field : '');
   return {
     action_id: value.action_id,
+    agent_user_id: text(value.agent_user_id),
+    asker_user_id: text(value.asker_user_id),
+    summary: text(value.summary),
     changed_block_ids: value.changed_block_ids,
     before: value.before as Record<string, JSONContent | null>,
     after_hashes: value.after_hashes as Record<string, string | null>,
@@ -485,26 +506,29 @@ function undoInDoc(doc: Y.Doc, details: EditDetails): { restored: string[]; conf
       restored.push(id);
     }
     // Deleted blocks go back after their previous sibling, which may be one of them.
+    const putBack = (id: string, at: number) => {
+      fragment.insert(at, [elementFor(withId(own(details.before, id)!, id))]);
+      restored.push(id);
+    };
+    const previousOf = (id: string) => own(details.previous_sibling_ids, id) ?? null;
     let pending = missing;
     while (pending.length > 0) {
       const waiting: string[] = [];
       for (const id of pending) {
-        const previous = own(details.previous_sibling_ids, id) ?? null;
+        const previous = previousOf(id);
         const at = previous === null ? 0 : indexById(fragment, previous) + 1;
-        if (previous !== null && at === 0) {
-          waiting.push(id);
-          continue;
-        }
-        fragment.insert(at, [elementFor(withId(own(details.before, id)!, id))]);
-        restored.push(id);
+        if (previous !== null && at === 0) waiting.push(id);
+        else putBack(id, at);
       }
       if (waiting.length === pending.length) {
-        // Their neighbour is gone: they go back at the end rather than not at all.
-        for (const id of waiting) {
-          fragment.insert(fragment.length, [elementFor(withId(own(details.before, id)!, id))]);
-          restored.push(id);
-        }
-        break;
+        // A run whose outside neighbour is gone: its first block goes to the
+        // end (rather than not at all), and the rest follow it in order on
+        // the next pass. Its first block is the one whose previous sibling
+        // isn't itself waiting.
+        const waitingIds = new Set(waiting);
+        const root = waiting.find((id) => !waitingIds.has(previousOf(id)!)) ?? waiting[0]!;
+        putBack(root, fragment.length);
+        waiting.splice(waiting.indexOf(root), 1);
       }
       pending = waiting;
     }
@@ -519,7 +543,6 @@ function undoInDoc(doc: Y.Doc, details: EditDetails): { restored: string[]; conf
 /** Undoes one document's edit as `userId`, through the one writer (the header). */
 async function undoDocumentEdit(i: { orgId: string; actionId: string; userId: string },
   version: { id: string; documentId: string; name: string | null; details: EditDetails }): Promise<{ restored: string[]; conflicted: string[] }> {
-  if (await undoneAlready(db, i.orgId, version.documentId, i.actionId)) return { restored: [], conflicted: [] };
   const outcome: { restored: string[]; conflicted: string[] } = { restored: [], conflicted: [] };
   try {
     await withAutomaticVersionsPaused(i.orgId, version.documentId, () => writeDocument({
@@ -528,6 +551,10 @@ async function undoDocumentEdit(i: { orgId: string; actionId: string; userId: st
       actor: { kind: 'user', userId: i.userId },
       reason: 'restore',
       requiredRole: 'edit',
+      // An undo already made: nothing restored, no conflicts (checked after the writer's checks, with the row locked).
+      beforeMutate: async (tx) => {
+        if (await undoneAlready(tx, i.orgId, version.documentId, i.actionId)) throw new UndoWritesNothing([]);
+      },
       mutate: (doc) => {
         const result = undoInDoc(doc, version.details);
         if (result.restored.length === 0) throw new UndoWritesNothing(result.conflicted);
@@ -535,7 +562,6 @@ async function undoDocumentEdit(i: { orgId: string; actionId: string; userId: st
         outcome.conflicted = result.conflicted;
       },
       inTransaction: async (tx, { afterJson }) => {
-        if (await undoneAlready(tx, i.orgId, version.documentId, i.actionId)) throw new UndoWritesNothing([]);
         await createVersionInTx(tx, {
           orgId: i.orgId, documentId: version.documentId, kind: 'restore', name: `Undo of ${version.name ?? 'an agent edit'}`, createdBy: i.userId,
           editDetails: {
