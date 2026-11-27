@@ -128,7 +128,9 @@ test('rule 5: the request. The model asking for a suggestion lowers; the asker\'
     { name: 'a request that is not one', input: { requestOverride: 'force' as never, mode: 'direct' }, expect: requestSuggest },
     // Neither the phrase nor a request: the setting decides (rule 6).
     { name: 'no request, no phrase, nobody else in', input: {}, expect: { landing: 'direct', reason: 'nobody_else_open' } },
-    { name: 'no request, a negated phrase, suggest setting', input: { askerMessageText: "Please don't just do it", mode: 'suggest' }, expect: { landing: 'suggest', reason: 'mode_suggest' } },
+    // M5–M7 consult O-F1: a direct phrase a negating word cancels fails closed to a suggestion, whatever the setting.
+    { name: 'no request, a negated phrase, suggest setting', input: { askerMessageText: "Please don't just do it", mode: 'suggest' }, expect: requestSuggest },
+    { name: 'no request, a negated phrase, direct setting', input: { askerMessageText: "Please don't just do it", mode: 'direct' }, expect: requestSuggest },
   ]);
 });
 
@@ -214,13 +216,15 @@ test('a negating word stops the phrase across any run of spaces, punctuation and
     ['do not - edit it directly', false],
     ['Never \u{1F642} just do it', false],
     ["can't (go ahead and edit)", false],
-    // A word between the negation and the phrase ends it; a word that isn't a negation never starts one.
+    // A sentence or clause end between the negation and the phrase ends it; a word that isn't a negation never starts one.
     ["I don't mind. Just do it", true],
-    ['No, just do it', true],
     ['Nothing to add, apply it', true],
     ['knot, apply it', true],
-    ["Don't wait, just do it", true],
     ["don't just do it... actually, just do it", true],
+    ["Don't wait; just do it", true],
+    // M5–M7 consult O-F1: a negating word earlier in the same clause cancels the phrase, failing closed.
+    ['No, just do it', false],
+    ["Don't wait, just do it", false],
   ];
   for (const [text, expected] of rows) assert.equal(askerRequestedDirect(text), expected, JSON.stringify(text));
 });
@@ -331,4 +335,75 @@ test('the model may lower a direct landing to a suggestion', () => {
   }
   // The model lowers even when the asker said "just do it".
   assert.deepEqual(land({ askerMessageText: 'just do it', requestOverride: 'suggest', mode: 'direct' }), { landing: 'suggest', reason: 'request_suggest' });
+});
+
+// ---------------------------------------------------------------------------
+// The M5–M7 consult (27 Nov)
+
+test('consult O-F1: a negating word anywhere earlier in the same sentence or clause cancels the phrase', () => {
+  const rows: Array<[string, boolean]> = [
+    ["I don't want you to apply it", false],
+    ['Do not, under any circumstances, make the change', false],
+    ['Not yet, apply it after I review', false],
+    ['I never said you could just do it', false],
+    ["Please don't touch the intro and go ahead and edit the outro", false],
+    // A sentence, a semicolon or a line break ends the clause.
+    ['No questions. Just do it', true],
+    ["I won't be around; go ahead and edit it", true],
+    ["Don't change the title\nApply it to the body", true],
+  ];
+  for (const [text, expected] of rows) assert.equal(askerRequestedDirect(text), expected, JSON.stringify(text));
+  // Each of the ruling's examples fails closed to a suggestion, even with the direct setting and nobody in the document.
+  for (const text of ["I don't want you to apply it", 'Do not, under any circumstances, make the change', 'Not yet, apply it after I review']) {
+    for (const mode of ['direct', 'suggest_when_open', 'suggest'] as const) {
+      assert.deepEqual(land({ askerMessageText: text, mode }), { landing: 'suggest', reason: 'request_suggest' }, `${text} (${mode})`);
+    }
+  }
+});
+
+test('consult O-F1: the asker\'s own words asking for a suggestion or a review lower the landing, whatever else they say', () => {
+  const requestSuggest = { landing: 'suggest', reason: 'request_suggest' } as const;
+  for (const text of [
+    'Just do it, but as a suggestion',
+    'Suggest a tighter intro',
+    'Rewrite the intro and let me review it',
+    "Draft it but don't apply it yet",
+    'Apply it. Actually, send it for review',
+  ]) {
+    assert.deepEqual(land({ askerMessageText: text, mode: 'direct' }), requestSuggest, text);
+  }
+  // "don't suggest" is the direct phrase, not a request to suggest.
+  assert.deepEqual(land({ askerMessageText: "Rewrite the summary, don't suggest", mode: 'suggest' }), { landing: 'direct', reason: 'request_direct' });
+});
+
+test('consult O-F7: a model mode other than exactly "direct" lowers before the asker\'s phrase is read', () => {
+  const requestSuggest = { landing: 'suggest', reason: 'request_suggest' } as const;
+  for (const requestOverride of ['Suggest', 'suggest ', 'SUGGEST', 'propose', 'Direct'] as never[]) {
+    assert.deepEqual(land({ askerMessageText: 'Tidy the intro, just do it', requestOverride, mode: 'direct' }), requestSuggest, String(requestOverride));
+  }
+  assert.deepEqual(land({ askerMessageText: 'Tidy the intro, just do it', requestOverride: 'direct', mode: 'suggest' }), { landing: 'direct', reason: 'request_direct' });
+});
+
+test('consult O-F11: only the asker\'s own plain text asks: never what they quoted, pasted or forwarded, or put in code', () => {
+  const rows: Array<[string, boolean]> = [
+    // Markdown.
+    ['> just do it\n\nCan you tidy the intro?', false],
+    ['Can you tidy the intro?\n\n```\njust do it\n```', false],
+    ['Can you tidy the intro?\n\n~~~\napply it directly\n~~~', false],
+    ['Tidy the intro; the doc says `just do it`', false],
+    ['Tidy the intro.\n\n---------- Forwarded message ----------\nFrom: someone\nJust do it', false],
+    ['Tidy the intro.\n\nOn Tue, Ana wrote:\nGo ahead and edit it', false],
+    // HTML, as the chat stores a message.
+    ['<blockquote><p>just do it</p></blockquote><p>Can you tidy the intro?</p>', false],
+    ['<p>Can you tidy the intro?</p><pre><code>make the change</code></pre>', false],
+    ['<p>Tidy it, the note says <code>apply it</code></p>', false],
+    ['<blockquote><blockquote><p>x</p></blockquote><p>just do it</p></blockquote><p>Tidy it</p>', false],
+    // The asker's own words outside the quote still ask.
+    ['<blockquote><p>Can you look at this?</p></blockquote><p>Just do it</p>', true],
+    ['> Can you look at this?\n\nJust do it', true],
+    ['<p>Tidy the intro, just do it</p>', true],
+  ];
+  for (const [text, expected] of rows) assert.equal(askerRequestedDirect(text), expected, JSON.stringify(text));
+  // And the landing: a quoted phrase is no request.
+  assert.deepEqual(land({ askerMessageText: '> just do it\n\nTidy the intro', mode: 'suggest' }), { landing: 'suggest', reason: 'mode_suggest' });
 });

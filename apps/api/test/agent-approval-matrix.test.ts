@@ -402,7 +402,8 @@ test('matrix: edit_document in chat mode is direct only for standard/autonomous 
           const got = chatEditLanding(input, call.params);
           const label = `${trust} / ${role} / ${landing.name} / ${JSON.stringify(call.params)}`;
           // A mode the model sends that isn't "suggest" lowers a landing that only the setting made direct (M5 rule 5).
-          const lowered = call.requestOverride !== undefined && !landing.input.askerMessageText;
+          // M5–M7 consult O-F7: any mode other than exactly "direct" lowers, before the asker's phrase is read.
+          const lowered = call.requestOverride !== undefined;
           const expected = trust !== 'conservative' && canEdit(role) && landing.direct && !call.destructive && !lowered;
           assert.equal(got.landing === 'direct', expected, label);
           if (got.landing === 'direct') directs += 1;
@@ -415,9 +416,9 @@ test('matrix: edit_document in chat mode is direct only for standard/autonomous 
     }
   }
   assert.ok(directs > 0, 'some edits do go straight in');
-  // The phrase with a destructive mode: M5 alone would land it direct; the guard never does.
+  // The phrase with a destructive mode: the mode itself lowers it now (consult O-F7), so it never goes straight in.
   assert.deepEqual(chatEditLanding(editInput({ mode: 'suggest', requestOverride: 'delete' as never, askerMessageText: 'just do it' }), { mode: 'delete' }),
-    { landing: 'suggest', reason: 'destructive_call' });
+    { landing: 'suggest', reason: 'request_suggest' });
 });
 
 test('M7: edit_document and create_document are quick-tier registered actions; neither is destructive by name', () => {

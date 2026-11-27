@@ -29,6 +29,12 @@
 //     The message is the asker's own words, passed by the caller: never
 //     document text, a tool result or the model's arguments, so nothing the
 //     agent read can make an edit direct.
+//     The M5–M7 consult (27 Nov): any model mode other than exactly
+//     'direct' lowers (O-F7); the asker's own words asking for a suggestion
+//     or a review, or a direct phrase a negating word cancels anywhere
+//     earlier in its sentence or clause, lower too (O-F1); and only the
+//     asker's own plain text is read, never what they quoted, pasted,
+//     forwarded or put in code (askerOwnText, O-F11).
 //  6. The asker's setting (agentEditModeFor; `suggest_when_open` when they
 //     have saved none): `direct` goes straight in; `suggest` suggests;
 //     `suggest_when_open` suggests while another person has the document open
@@ -99,44 +105,138 @@ export const DIRECT_EDIT_PHRASES = ['just do it', 'go ahead and edit', 'apply it
  * (code points), never one half of a UTF-16 surrogate pair (review M5).
  */
 const WORD_CHAR = String.raw`[\p{L}\p{M}\p{N}_]`;
+/** The negating words (consult O-F1: "no" and the other contractions too). */
+const NEGATING_WORDS = String.raw`not|no|nor|never|don't|dont|doesn't|didn't|cannot|can't|cant|won't|wont|shouldn't|wouldn't|mustn't`;
 /**
  * A negating word whole, then nothing but spaces, punctuation and symbols up
  * to the phrase ("don't just do it", "never, apply it", "don't \u2014 just do
  * it"): the asker said the opposite (tester M5). Tested on the text before the
- * phrase, so a word in between ("I don't mind. Just do it") ends it.
+ * phrase.
  */
-const NEGATED = new RegExp(String.raw`(?<![\p{L}\p{M}\p{N}_'])(?:not|never|don't|dont|cannot|can't|won't|shouldn't)[^\p{L}\p{M}\p{N}_]*$`, 'u');
+const NEGATED = new RegExp(String.raw`(?<![\p{L}\p{M}\p{N}_'])(?:${NEGATING_WORDS})[^\p{L}\p{M}\p{N}_]*$`, 'u');
+/**
+ * A negating word anywhere in the same sentence or clause before the phrase
+ * (consult O-F1): "I don't want you to apply it", "Do not, under any
+ * circumstances, make the change", "Not yet, apply it after I review". The
+ * clause is the text after the last `.`, `!`, `?`, `;` or line break before
+ * the phrase, so "I don't mind. Just do it" still asks. Fails closed: such a
+ * phrase never puts an edit straight in.
+ */
+const NEGATING_WORD = new RegExp(String.raw`(?<![\p{L}\p{M}\p{N}_'])(?:${NEGATING_WORDS})(?![\p{L}\p{M}\p{N}_'])`, 'u');
+const CLAUSE_END = /[.!?;\n]/gu;
+
+/** The text before `index` back to the start of its sentence or clause. */
+function clauseBefore(text: string, index: number): string {
+  const before = text.slice(0, index);
+  let start = 0;
+  for (const match of before.matchAll(CLAUSE_END)) start = match.index + 1;
+  return before.slice(start);
+}
+
+/**
+ * The words in the asker's own message that ask for a suggestion or a review
+ * (consult O-F1): any of them lowers the landing to a suggestion, whatever
+ * else the message says. "suggest" right after a negating word ("don't
+ * suggest", one of DIRECT_EDIT_PHRASES) doesn't count.
+ */
+export const SUGGEST_EDIT_PHRASES = [
+  'suggest', 'suggestion', 'suggestions', 'as a suggestion', 'let me review', 'for review', 'for me to review',
+  'review it first', 'review first', 'after i review', "don't apply", 'do not apply',
+];
 
 function escapeRegExp(text: string): string {
   return text.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
 }
 
-/** Every place `phrase` appears whole: no WORD_CHAR right before or after it. */
+/** Every place `phrase` appears whole: no WORD_CHAR right before or after it, a space or a line break between its words. */
 function wholePhrase(phrase: string): RegExp {
-  return new RegExp(`(?<!${WORD_CHAR})${escapeRegExp(phrase)}(?!${WORD_CHAR})`, 'gu');
-}
-
-/** Lower case, typographic apostrophes as ', and every run of whitespace as one space, so a phrase matches however it was typed. */
-function normalizedMessage(text: string): string {
-  return text.normalize('NFKC').replace(/[\u2018\u2019\u02BC]/gu, "'").replace(/\s+/gu, ' ').toLowerCase();
+  return new RegExp(`(?<!${WORD_CHAR})${escapeRegExp(phrase).replace(/ /gu, '[ \\n]')}(?!${WORD_CHAR})`, 'gu');
 }
 
 /**
- * True when `messageText`, the asker's own message, holds one of
- * DIRECT_EDIT_PHRASES as a whole phrase in any letter case ("applying it",
- * "make the changes" and a letter of any script against it don't match),
- * other than after a negating word with only spaces, punctuation or symbols
- * between.
+ * Lower case, typographic apostrophes as ', each run of whitespace as one
+ * space (a run holding a line break as one line break, so it still ends a
+ * clause), so a phrase matches however it was typed.
+ */
+function normalizedMessage(text: string): string {
+  return text.normalize('NFKC').replace(/[\u2018\u2019\u02BC]/gu, "'")
+    .replace(/\s+/gu, (run) => (/[\n\r\u2028\u2029]/u.test(run) ? '\n' : ' ')).toLowerCase();
+}
+
+const HTML_ENTITIES: Record<string, string> = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&apos;': "'", '&nbsp;': ' ' };
+
+/**
+ * The asker's own plain text of a stored message (consult O-F11): what they
+ * quoted, pasted or forwarded is left out, so someone else's "just do it"
+ * never asks. Removed: HTML blockquotes, preformatted and code elements,
+ * Markdown fenced code blocks and inline code, Markdown quote lines (`>`),
+ * and everything from a forwarded or quoted-reply marker on ("---------
+ * Forwarded message ---------", "Begin forwarded message:", "On \u2026 wrote:").
+ * The remaining tags become spaces (a block or line break tag a line break).
+ */
+export function askerOwnText(messageText: string): string {
+  if (typeof messageText !== 'string') return '';
+  let text = messageText;
+  // Innermost blockquote first, until none is left.
+  const innermostQuote = /<blockquote\b[^>]*>(?:(?!<blockquote\b)[\s\S])*?<\/blockquote\s*>/giu;
+  for (let previous = ''; previous !== text;) { previous = text; text = text.replace(innermostQuote, '\n'); }
+  text = text.replace(/<blockquote\b[^>]*>[\s\S]*$/giu, '\n'); // an unclosed one runs to the end
+  text = text.replace(/<(pre|code)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, ' ').replace(/<(pre|code)\b[^>]*>[\s\S]*$/giu, ' ');
+  text = text.replace(/<(?:br|\/?(?:p|div|li|ul|ol|h[1-6]|tr|table))\b[^>]*>/giu, '\n').replace(/<[^>]*>/gu, ' ');
+  text = text.replace(/&(?:amp|lt|gt|quot|#39|apos|nbsp);/gu, (entity) => HTML_ENTITIES[entity] ?? ' ');
+  // Markdown: fenced blocks (an unclosed fence runs to the end), inline code, quote lines.
+  text = text.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?^[ \t]*\1[^\n]*$/gmu, ' ').replace(/^[ \t]*(```|~~~)[\s\S]*$/mu, ' ');
+  text = text.replace(/`[^`\n]*`/gu, ' ');
+  text = text.replace(/^[ \t]*>.*$/gmu, '');
+  // A forwarded or quoted reply: the asker's own words are what comes before it.
+  const marker = /^[ \t]*(?:-{2,}[ \t]*(?:forwarded|original) message[ \t]*-{2,}|begin forwarded message:|on\b.{0,200}\bwrote:)[ \t]*$/imu.exec(text);
+  if (marker) text = text.slice(0, marker.index);
+  return text;
+}
+
+/**
+ * True when `messageText`, the asker's own message (askerOwnText: never what
+ * they quoted, pasted or forwarded), holds one of DIRECT_EDIT_PHRASES as a
+ * whole phrase in any letter case ("applying it", "make the changes" and a
+ * letter of any script against it don't match), other than after a negating
+ * word: right before it (only spaces, punctuation or symbols between), or
+ * anywhere earlier in the same sentence or clause (consult O-F1).
  */
 export function askerRequestedDirect(messageText: string): boolean {
   if (typeof messageText !== 'string' || messageText.length === 0) return false;
-  const text = normalizedMessage(messageText);
+  const text = normalizedMessage(askerOwnText(messageText));
+  return directPhraseMatches(text).some((match) => !match.negated);
+}
+
+/** Each DIRECT_EDIT_PHRASES match in normalized `text`, and whether a negating word cancels it (consult O-F1). */
+function directPhraseMatches(text: string): Array<{ negated: boolean }> {
+  const found: Array<{ negated: boolean }> = [];
   for (const phrase of DIRECT_EDIT_PHRASES) {
     for (const match of text.matchAll(wholePhrase(phrase))) {
-      if (!NEGATED.test(text.slice(0, match.index))) return true;
+      found.push({ negated: NEGATED.test(text.slice(0, match.index)) || NEGATING_WORD.test(clauseBefore(text, match.index)) });
     }
   }
-  return false;
+  return found;
+}
+
+/**
+ * True when the asker's own message asks for a suggestion or a review
+ * (consult O-F1): one of SUGGEST_EDIT_PHRASES ("suggest it", "let me
+ * review", "don't apply", "as a suggestion"; a "suggest" right after a
+ * negating word, as in "don't suggest", isn't one), or a direct phrase a
+ * negating word cancels ("I don't want you to apply it"): either fails
+ * closed to a suggestion.
+ */
+export function askerRequestedSuggest(messageText: string): boolean {
+  if (typeof messageText !== 'string' || messageText.length === 0) return false;
+  const text = normalizedMessage(askerOwnText(messageText));
+  for (const phrase of SUGGEST_EDIT_PHRASES) {
+    for (const match of text.matchAll(wholePhrase(phrase))) {
+      if (phrase.startsWith('suggest') && NEGATED.test(text.slice(0, match.index))) continue;
+      return true;
+    }
+  }
+  return directPhraseMatches(text).some((match) => match.negated);
 }
 
 /** Where the edit lands, by the rules in the header. */
@@ -145,7 +245,10 @@ export function decideEditLanding(i: EditLandingInput): EditLanding {
   if (!roleAtLeast(i.askerRole, 'edit')) return { landing: 'refuse', reason: 'asker_cannot_edit' };
   if (i.trustLevel !== 'standard' && i.trustLevel !== 'autonomous') return { landing: 'suggest', reason: 'conservative_trust' };
   if (i.drive.agentSuggestOnly !== false) return { landing: 'suggest', reason: 'drive_suggest_only' };
-  if (i.requestOverride === 'suggest') return { landing: 'suggest', reason: 'request_suggest' };
+  // Consult O-F7: any request other than exactly 'direct' lowers, before the asker's phrase is read.
+  if (i.requestOverride !== null && i.requestOverride !== undefined && i.requestOverride !== 'direct') return { landing: 'suggest', reason: 'request_suggest' };
+  // Consult O-F1: the asker's own words asking for a suggestion or a review lower it too.
+  if (askerRequestedSuggest(i.askerMessageText ?? '')) return { landing: 'suggest', reason: 'request_suggest' };
   if (askerRequestedDirect(i.askerMessageText ?? '')) return { landing: 'direct', reason: 'request_direct' };
   if (i.requestOverride !== null && i.requestOverride !== undefined) return { landing: 'suggest', reason: 'request_suggest' };
   switch (i.mode) {
