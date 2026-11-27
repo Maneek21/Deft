@@ -223,7 +223,14 @@ test('App Run approve and reject routes stay on the governed approval resolver',
   const resolver = await readFile(join(sourceRoot, 'lib/agent-approval-resolver.ts'), 'utf8');
   assert.match(
     resolver,
-    /return action === 'email_send' \|\| action === 'app_record_mirror_nominate' \|\| action === APP_RUN_APPROVAL_ACTION \|\| MCP_ACTION_KINDS\.has\(action\)/,
+    /return action === 'email_send' \|\| action === 'app_record_mirror_nominate' \|\| action === APP_RUN_APPROVAL_ACTION \|\| action === DOCUMENT_EDIT_ACTION \|\| MCP_ACTION_KINDS\.has\(action\);/,
+  );
+  // An agent's document edit suggestion (M6) is routed here and decided by its asker alone: no owner, admin or internal fallback.
+  const suggestions = await readFile(join(sourceRoot, 'lib/document-suggestions.ts'), 'utf8');
+  assert.match(suggestions, /export const DOCUMENT_EDIT_ACTION = 'edit_document';/);
+  assert.match(
+    resolver,
+    /if \(row\.action === DOCUMENT_EDIT_ACTION\) \{\r?\n    const asker = options\.requesterId \?\? await loadActionRequesterId\(row\);\r?\n    return membership !== null && asker === userId \? null : 'only the person who asked may review this suggestion';\r?\n  \}/,
   );
   // Historical native proposals remain routable to a denial, never a new Send.
   assert.match(resolver, /if\(row\.source==='native_email'\|\|row\.action==='email_send'\)return \{status:'error',code:'UNSUPPORTED_ACTION',message:'The built-in mailbox action is retired'\}/);

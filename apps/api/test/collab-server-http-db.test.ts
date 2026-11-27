@@ -1265,8 +1265,9 @@ test('an access-loss barrier that is never finished is retired after ten minutes
   mock.timers.enable({ apis: ['setTimeout'] });
   try {
     const generation = currentAccessGeneration();
-    // No hooks are registered in this file, so the transaction isn't touched.
-    await applyAccessLossInTx({} as never, { orgId: fx!.orgId, documentIds: [documentId] });
+    // In a real transaction, as every caller runs it: the registered consumers
+    // (M6's suggestion cancellation) run too, and find nothing for this document.
+    await db.transaction((tx) => applyAccessLossInTx(tx, { orgId: fx!.orgId, documentIds: [documentId] }));
     assert.equal(accessChange.accessLossBarrierCovers(fx!.orgId, documentId, userId), true);
     mock.timers.tick(accessChange.ACCESS_LOSS_BARRIER_TIMEOUT_MS - 1);
     assert.equal(accessChange.accessLossBarrierCovers(fx!.orgId, documentId, userId), true, 'only finishAccessLoss closes it before then');

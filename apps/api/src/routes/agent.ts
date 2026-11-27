@@ -53,7 +53,7 @@ import {
   sanitizeModuleActionParamsForReceipt,
   hasHumanMcpBulkProvenance,
 } from '../lib/agent-approval-resolver.js';
-import { isSuggestionApprovalCode } from '../lib/document-suggestions.js';
+import { isSuggestionApprovalCode, NOT_REQUESTER_MESSAGE, suggestionReviewerRefusal } from '../lib/document-suggestions.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { markWorkIntentDismissedForAction } from '../lib/work-intents.js';
 import { getIO } from '../socket.js';
@@ -1162,6 +1162,18 @@ agentRoutes.get('/actions/:id/task-link-review', async (c) => {
  */
 export type ActionReviewer = { id: string; org_id: string; role?: string; sid?: string };
 
+/**
+ * The answer for an action `user` doesn't review: 404, except that an agent's
+ * document edit suggestion someone else asked for is 403 NOT_REQUESTER for
+ * anyone who can open its document (lib/document-suggestions.ts), on the
+ * card, the Inbox and MCP alike.
+ */
+async function notReviewableAnswer(c: Context, user: ActionReviewer, actionId: string): Promise<Response> {
+  if (await suggestionReviewerRefusal(user.org_id, actionId, user.id) === 'NOT_REQUESTER') {
+    return c.json({ error: NOT_REQUESTER_MESSAGE, code: 'NOT_REQUESTER' }, 403);
+  }
+  return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+}
 
 agentRoutes.post('/actions/:id/approve', (c) => approveActionAsReviewer(c, c.get('user'), c.req.param('id')));
 
@@ -1176,7 +1188,7 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
       reviewableActionSql(user),
     ))
     .limit(1);
-  if (!action) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  if (!action) return notReviewableAnswer(c, user, actionId);
 
   // Resolver-owned MCP writes and App Run releases enter the shared approval
   // boundary. Legacy Defty actions (create_task/update_task_status/…) still
@@ -1276,7 +1288,7 @@ export async function approveActionAsReviewer(c: Context, user: ActionReviewer, 
       // card sends the asker to review it in the document (lib/document-suggestions.ts).
       const statusCode =
         result.code === 'NOT_FOUND' ? 404
-        : result.code === 'FORBIDDEN' ? 403
+        : result.code === 'FORBIDDEN' || result.code === 'NOT_REQUESTER' ? 403
         : result.code === 'BUSY' ? 503
         : isSuggestionApprovalCode(result.code) ? 409
         : 400;
@@ -1604,9 +1616,7 @@ export async function rejectActionAsReviewer(
     ))
     .limit(1);
 
-  if (!action) {
-    return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  }
+  if (!action) return notReviewableAnswer(c, user, actionId);
 
   // Resolver-owned MCP writes and App Run releases use the same idempotent,
   // permission-checked rejection boundary.
@@ -1615,7 +1625,7 @@ export async function rejectActionAsReviewer(
     if (result.status === 'error') {
       const statusCode =
         result.code === 'NOT_FOUND' ? 404
-        : result.code === 'FORBIDDEN' ? 403
+        : result.code === 'FORBIDDEN' || result.code === 'NOT_REQUESTER' ? 403
         : 400;
       return c.json({ error: result.message, code: result.code }, statusCode);
     }

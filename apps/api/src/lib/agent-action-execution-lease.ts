@@ -51,6 +51,7 @@ import {
   WORKSPACE_PLAN_IMPORT_ACTION,
 } from './workspace-plan-import.js';
 import { DOCUMENT_SEND_ACTION, sanitizeDocumentSendParams } from './document-send.js';
+import { DOCUMENT_EDIT_ACTION, syncSuggestionWithAction } from './document-suggestions.js';
 import { markWorkIntentConvertedForAction, markWorkIntentFailedForAction } from './work-intents.js';
 import { forcedApprovalFailure } from './test-failure-switches.js';
 import { isTerminalRefusalResult, wikiProposalRefusal, wikiProposalRefusalCode } from './wiki-proposal-target.js';
@@ -157,26 +158,33 @@ function scrubsTerminalParams(action: string): boolean {
 
 /**
  * Terminal-fail an interrupted approval. Conditional on the observed claim;
- * moves the claim forward so the lost owner's writes no longer match.
+ * moves the claim forward so the lost owner's writes no longer match. A
+ * document edit suggestion the approval had claimed closes in the same
+ * commit (lib/document-suggestions.ts; one that was applied before the
+ * interruption is already settled and stays so).
  */
 export async function settleInterruptedApproval(row: AgentActionRow, token: ClaimToken): Promise<boolean> {
-  const [settled] = await db
-    .update(agentActions)
-    .set({
-      executed_at: new Date(),
-      error: APPROVAL_INTERRUPTED_ERROR,
-      result: { lifecycle_state: 'interrupted', interrupted_at: new Date().toISOString() },
-      approved_at: sql`${agentActions.approved_at} + interval '1 microsecond'`,
-      ...(scrubsTerminalParams(row.action) ? { params: terminalHistoryParams(row.action, row.params) as any } : {}),
-    })
-    .where(and(
-      eq(agentActions.id, row.id),
-      eq(agentActions.org_id, row.org_id),
-      eq(agentActions.approval_status, 'approved'),
-      isNull(agentActions.executed_at),
-      ownsClaim(token),
-    ))
-    .returning({ id: agentActions.id });
+  const settled = await db.transaction(async (tx) => {
+    const [stamped] = await tx
+      .update(agentActions)
+      .set({
+        executed_at: new Date(),
+        error: APPROVAL_INTERRUPTED_ERROR,
+        result: { lifecycle_state: 'interrupted', interrupted_at: new Date().toISOString() },
+        approved_at: sql`${agentActions.approved_at} + interval '1 microsecond'`,
+        ...(scrubsTerminalParams(row.action) ? { params: terminalHistoryParams(row.action, row.params) as any } : {}),
+      })
+      .where(and(
+        eq(agentActions.id, row.id),
+        eq(agentActions.org_id, row.org_id),
+        eq(agentActions.approval_status, 'approved'),
+        isNull(agentActions.executed_at),
+        ownsClaim(token),
+      ))
+      .returning({ id: agentActions.id });
+    if (stamped && row.action === DOCUMENT_EDIT_ACTION) await syncSuggestionWithAction(tx, row.id, 'cancelled');
+    return stamped;
+  });
   if (!settled) return false;
   if (row.source === 'defty_capture') {
     await markWorkIntentFailedForAction({

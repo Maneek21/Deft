@@ -26,19 +26,26 @@
 // Conflicts: a changed block conflicts when its hash in the current document
 // differs from its hash in base_json (a block the edit adds never does). The
 // asker may apply a conflicted block anyway: they chose, and it replaces
-// what is there now. A block someone has since deleted can't be applied.
+// what is there now. A chosen block someone has since deleted goes back with
+// its proposed content after its previous sibling in the base (M4's undo
+// placement, the end when that neighbour is gone too); a chosen deletion of
+// a block already gone does nothing and counts as applied.
 //
 // Applying, from the document (POST /api/documents/:id/suggestions/:sid/apply
-// { block_ids, revision }): one atomic claim, pending to 'applying' with the
-// blocks chosen and the revision they were reviewed at; a second claim gets
-// 409 SUGGESTION_ALREADY_RESOLVING. Then the approval resolver's approveAction
-// (lib/agent-approval-resolver.ts) as the asker, which checks the reviewer
-// rule and the source rooms and claims the action. Approving from the chat
-// card or the Inbox goes through approveAction alone: prepareSuggestionForApproval
-// claims every block at the revision the suggestion was made on, which is
-// what the card shows; when the document has moved since, the answer is 409
-// REVIEW_IN_DOCUMENT and the card sends the asker to the review. A claim
-// whose approval doesn't start goes back to pending.
+// { block_ids, revision }) or from the chat card, the Inbox or MCP, goes
+// through the approval resolver's approveAction (lib/agent-approval-
+// resolver.ts) as the asker. It holds the action's approval lease for the
+// whole approval and, under it, after the reviewer rule and the source
+// rooms, prepareSuggestionForApproval makes one atomic claim: pending to
+// 'applying' with the blocks chosen (every block, from the card) and the
+// revision they were reviewed at (the suggestion's own, from the card), only
+// while the document is still at it. Only the lease holder claims a
+// suggestion or puts a claim back, so a request that loses the race never
+// touches the row: it waits for the lease and then finds the action decided
+// (409 SUGGESTION_ALREADY_RESOLVING). A moved document is 409
+// REVISION_CHANGED from the review, or REVIEW_IN_DOCUMENT from the card,
+// which sends the asker to the review. A claim whose approval stops short
+// goes back to pending before the lease is released.
 //
 // The executor (executeDocumentEditAction, the `edit_document` case of
 // executeAction; moved here from M7) applies the claimed blocks with M4's
@@ -72,7 +79,7 @@
 // changing the content. It also sweeps suggestions whose asker lost edit by a
 // path no hook covers, and puts back in step a suggestion whose action ended
 // some other way.
-import { and, asc, eq, inArray, lt, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import * as Y from 'yjs';
 import { agentActions, users } from '@deft/db/schema';
 import { documents, documentSuggestions, documentVersions, type DocumentSuggestionStatus } from '@deft/db/documents';
@@ -115,7 +122,7 @@ const OPEN_STATUSES: DocumentSuggestionStatus[] = ['pending', 'applying'];
 // Refusals (routes/documents.ts answers them with their status and code)
 
 const notFound = () => new DocumentRefusal(404, 'NOT_FOUND', 'Suggestion not found');
-const notRequester = () => new DocumentRefusal(403, 'NOT_REQUESTER', 'Only the person who asked for this edit can review it');
+const notRequester = () => new DocumentRefusal(403, 'NOT_REQUESTER', NOT_REQUESTER_MESSAGE);
 const resolving = () => new DocumentRefusal(409, 'SUGGESTION_ALREADY_RESOLVING', 'This suggestion is already being applied, or has been settled');
 const invalidBlocks = () => new DocumentRefusal(400, 'VALIDATION_ERROR', 'Choose changes from this suggestion');
 
@@ -161,6 +168,12 @@ async function currentContent(x: Executor, orgId: string, documentId: string): P
 function blocksById(json: unknown): Map<string, JSONContent> {
   if (!isRecord(json)) return new Map();
   return new Map(topLevelBlocks(json as JSONContent).map((block) => [block.id, block.node]));
+}
+
+/** Each top-level block of `json` with the block before it (null for the first): where a deleted block goes back. */
+function previousSiblingIds(json: unknown): Record<string, string | null> {
+  const ids = isRecord(json) ? topLevelBlocks(json as JSONContent).map((block) => block.id) : [];
+  return Object.fromEntries(ids.map((id, at) => [id, at > 0 ? ids[at - 1]! : null]));
 }
 
 /** `ops` when every entry is a well-formed operation (M4's DocumentEditOp), else VALIDATION_ERROR. */
@@ -273,7 +286,13 @@ export async function syncSuggestionWithAction(tx: Tx, actionId: string, status:
   }).where(and(eq(documentSuggestions.action_id, actionId), inArray(documentSuggestions.status, OPEN_STATUSES)));
 }
 
-/** A claim whose approval never started (its action is still pending) goes back to pending, its choice dropped. */
+/**
+ * A claim back to pending, its choice dropped, while its action is still
+ * pending (its approval never started). Only the holder of the action's
+ * approval lease calls it (fix round 1, I1): the request that made the
+ * claim, after its approval stopped short, or the next lease holder, which
+ * can only find a claim still there if the request that made it has ended.
+ */
 export async function releaseSuggestionClaimInTx(x: Executor, actionId: string): Promise<void> {
   await x.execute(sql`UPDATE document_suggestions claimed
     SET status = 'pending', selected_block_ids = NULL, reviewed_revision = NULL, updated_at = now()
@@ -282,65 +301,64 @@ export async function releaseSuggestionClaimInTx(x: Executor, actionId: string):
         WHERE claim_action.id = claimed.action_id AND claim_action.org_id = claimed.org_id AND claim_action.approval_status = 'pending')`);
 }
 
-/** A claim left behind (its request ended before its approval started) for longer than STALE_CLAIM_MS goes back to pending. */
-async function releaseStaleClaim(actionId: string): Promise<void> {
-  await db.execute(sql`UPDATE document_suggestions stale
-    SET status = 'pending', selected_block_ids = NULL, reviewed_revision = NULL, updated_at = now()
-    WHERE stale.action_id = ${actionId} AND stale.status = 'applying'
-      AND stale.updated_at < now() - (${STALE_CLAIM_MS} * interval '1 millisecond')
-      AND EXISTS (SELECT 1 FROM agent_actions stale_action
-        WHERE stale_action.id = stale.action_id AND stale_action.org_id = stale.org_id AND stale_action.approval_status = 'pending')`);
-}
+/**
+ * What the asker chose in the document review (applySuggestion): the blocks
+ * (each one the suggestion changes, in its order) and the revision the review
+ * was read at, or the suggestion's own when the apply named none
+ * (`fromReview` false).
+ */
+export type SuggestionClaim = { selectedBlockIds: string[]; reviewedRevision: number; fromReview: boolean };
+
+/** prepareSuggestionForApproval's answer: whether this request claimed the suggestion, or why not. */
+export type SuggestionClaimResult = { claimed: boolean; refusal?: undefined } | { claimed: false; refusal: SuggestionApprovalRefusal };
 
 /**
- * How the asker's apply route claimed the suggestion before approving it
- * (applySuggestion): `fromReview` when the revision is the one the review
- * in the document was read at, not the one the suggestion was made on.
+ * Claims an `edit_document` action's suggestion for this approval. The
+ * approval resolver runs it while it holds the action's approval lease,
+ * after the reviewer rule and as late as it can before claiming the action
+ * (fix round 1, I1): so only the lease holder ever moves a suggestion to
+ * 'applying', and a request that loses the race never touches the row.
+ *
+ * With `request` (the document review) the claim takes the asker's blocks
+ * and the revision they reviewed; without (the chat card, the Inbox, MCP) it
+ * takes every block at the revision the suggestion was made on, which is
+ * what the card showed. Either way one statement claims it only while it is
+ * pending and the document is still at that revision; otherwise nothing
+ * changes and the answer is REVISION_CHANGED (the review) or
+ * REVIEW_IN_DOCUMENT (the card), or SUGGESTION_ALREADY_RESOLVING once it is
+ * no longer pending. A claim found still in place under the lease was left
+ * by a request that ended, and goes back to pending first. An action with no
+ * suggestion goes on unclaimed, and the executor answers it.
  */
-export type SuggestionClaim = { fromReview: boolean };
-
-/**
- * The approval resolver's check for an `edit_document` action, run as late as
- * it can be before the action is claimed (after the reviewer rule): null to
- * go on, or why not, with nothing changed. With `claim` the asker's apply
- * route already claimed the suggestion with their choice: the document must
- * still be at the revision it was claimed at. Without (the chat card, the
- * Inbox, MCP) the suggestion is claimed here with every block at the
- * revision it was made on, which is what the card showed; a document that
- * has moved since sends the asker to review it in the document. An action
- * with no suggestion goes on, and the executor answers it.
- */
-export async function prepareSuggestionForApproval(orgId: string, actionId: string, claim: SuggestionClaim | null): Promise<SuggestionApprovalRefusal | null> {
+export async function prepareSuggestionForApproval(orgId: string, actionId: string, request: SuggestionClaim | null): Promise<SuggestionClaimResult> {
   const [s] = await db.select({
-    id: documentSuggestions.id, status: documentSuggestions.status, documentId: documentSuggestions.document_id,
-    baseRevision: documentSuggestions.base_revision, reviewedRevision: documentSuggestions.reviewed_revision,
+    id: documentSuggestions.id, status: documentSuggestions.status, changed: documentSuggestions.changed_block_ids,
+    baseRevision: documentSuggestions.base_revision,
   }).from(documentSuggestions).where(and(eq(documentSuggestions.action_id, actionId), eq(documentSuggestions.org_id, orgId))).limit(1);
-  if (!s) return null;
-  if (claim) {
-    if (s.status !== 'applying') return { code: 'SUGGESTION_ALREADY_RESOLVING', message: RESOLVING_MESSAGE };
-    const [doc] = await db.select({ revision: documents.revision }).from(documents)
-      .where(and(eq(documents.id, s.documentId), eq(documents.org_id, orgId), eq(documents.is_deleted, false))).limit(1);
-    if (!doc || doc.revision !== s.reviewedRevision) {
-      await releaseSuggestionClaimInTx(db, actionId);
-      return suggestionRetryRefusal('REVISION_CHANGED', claim.fromReview);
-    }
-    return null;
+  if (!s) return { claimed: false };
+  if (s.status === 'applying') await releaseSuggestionClaimInTx(db, actionId);
+  const selected = request ? s.changed.filter((id) => request.selectedBlockIds.includes(id)) : s.changed;
+  if (request && (selected.length === 0 || selected.length !== new Set(request.selectedBlockIds).size)) {
+    return { claimed: false, refusal: { code: 'NOTHING_TO_APPLY', message: NOTHING_TO_APPLY_MESSAGE } };
   }
-  // A claim an apply left behind doesn't block the card for long.
-  if (s.status === 'applying') await releaseStaleClaim(actionId);
-  // One statement: still pending, and the document still at the revision the suggestion was made on.
-  const result = await db.execute(sql`UPDATE document_suggestions card
-    SET status = 'applying', selected_block_ids = card.changed_block_ids, reviewed_revision = card.base_revision, updated_at = now()
-    WHERE card.id = ${s.id} AND card.status = 'pending'
-      AND EXISTS (SELECT 1 FROM documents card_document WHERE card_document.org_id = card.org_id
-        AND card_document.id = card.document_id AND NOT card_document.is_deleted AND card_document.revision = card.base_revision)
-    RETURNING card.id`);
-  if ((result.rows as unknown[]).length > 0) return null;
+  const revision = request ? request.reviewedRevision : s.baseRevision;
+  const claimed = await db.update(documentSuggestions)
+    .set({ status: 'applying', selected_block_ids: selected, reviewed_revision: revision, updated_at: new Date() })
+    .where(and(
+      eq(documentSuggestions.id, s.id), eq(documentSuggestions.status, 'pending'),
+      sql`EXISTS (SELECT 1 FROM ${documents} WHERE ${documents.org_id} = ${documentSuggestions.org_id}
+        AND ${documents.id} = ${documentSuggestions.document_id} AND NOT ${documents.is_deleted} AND ${documents.revision} = ${revision})`,
+    ))
+    .returning({ id: documentSuggestions.id });
+  if (claimed.length > 0) return { claimed: true };
   const [after] = await db.select({ status: documentSuggestions.status }).from(documentSuggestions)
     .where(eq(documentSuggestions.id, s.id)).limit(1);
-  return after?.status === 'pending'
-    ? { code: 'REVIEW_IN_DOCUMENT', message: REVIEW_IN_DOCUMENT_MESSAGE }
-    : { code: 'SUGGESTION_ALREADY_RESOLVING', message: RESOLVING_MESSAGE };
+  return {
+    claimed: false,
+    refusal: after?.status === 'pending'
+      ? suggestionRetryRefusal('REVISION_CHANGED', request?.fromReview === true)
+      : { code: 'SUGGESTION_ALREADY_RESOLVING', message: RESOLVING_MESSAGE },
+  };
 }
 
 /**
@@ -411,6 +429,8 @@ export async function executeDocumentEditAction(i: { orgId: string; actionId: st
       reason: 'suggestion',
       expectedRevision: s.reviewed_revision,
       skipMissing: true,
+      // A chosen block someone deleted since goes back with its proposed content at its place in the base (fix round 1, I2).
+      reinsertMissing: previousSiblingIds(s.base_json),
       // The outcome commits with the content, or neither does.
       inTransaction: async (tx, edit) => {
         const [claimed] = await tx.update(documentSuggestions)
@@ -462,6 +482,26 @@ async function askersSuggestion(i: { orgId: string; suggestionId: string; userId
   if (!(await documentRoleFor(i.userId, i.orgId, row.document_id))) throw notFound();
   if (row.asker_user_id !== i.userId) throw notRequester();
   return row;
+}
+
+/** The refusal every review path gives someone other than the asker who can open the document. */
+export const NOT_REQUESTER_MESSAGE = 'Only the person who asked for this edit can review it';
+
+/**
+ * How a review path that isn't the document routes (the chat card, the Inbox,
+ * MCP, the resolver) refuses `userId` on action `actionId` (fix round 1):
+ * 'NOT_REQUESTER' (403) when it is an edit suggestion someone else asked for
+ * and `userId` can open its document; 'NOT_FOUND' (404) when they can't, so
+ * nothing about it is told; null when it is no edit suggestion, or theirs.
+ */
+export async function suggestionReviewerRefusal(orgId: string, actionId: string, userId: string): Promise<'NOT_REQUESTER' | 'NOT_FOUND' | null> {
+  const [action] = await db.select({ action: agentActions.action }).from(agentActions)
+    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId))).limit(1);
+  if (action?.action !== DOCUMENT_EDIT_ACTION) return null;
+  const [s] = await db.select({ documentId: documentSuggestions.document_id, asker: documentSuggestions.asker_user_id })
+    .from(documentSuggestions).where(and(eq(documentSuggestions.action_id, actionId), eq(documentSuggestions.org_id, orgId))).limit(1);
+  if (!s || s.asker === userId) return null;
+  return (await documentRoleFor(userId, orgId, s.documentId)) ? 'NOT_REQUESTER' : 'NOT_FOUND';
 }
 
 /** Each person's name as `viewerId` may read it (the people-visibility rules), "A collaborator" for someone hidden. */
@@ -580,6 +620,7 @@ function refusalOf(result: { status: string; code?: string; message?: string }):
     case 'REVISION_CHANGED': return new DocumentRefusal(409, 'REVISION_CHANGED', REVISION_CHANGED_MESSAGE);
     case 'NOTHING_TO_APPLY': return new DocumentRefusal(409, 'NOTHING_TO_APPLY', NOTHING_TO_APPLY_MESSAGE);
     case 'BUSY': return new DocumentWriteRefused('BUSY');
+    case 'NOT_REQUESTER': return notRequester();
     case 'FORBIDDEN': return new DocumentRefusal(403, 'FORBIDDEN', 'You can no longer act on this suggestion');
     case 'EXECUTE_FAILED': return new DocumentRefusal(409, 'SUGGESTION_NOT_APPLIED', 'This suggestion could not be applied, so it was closed. Ask again for a new one.');
     default: return resolving();
@@ -589,39 +630,28 @@ function refusalOf(result: { status: string; code?: string; message?: string }):
 /**
  * Applies the blocks `blockIds` (each one the suggestion changes, or 'all')
  * of the asker's suggestion, as reviewed at `revision` (the review's; when
- * left out, the revision the suggestion was made on, as the card does): the
- * claim, then approveAction (the header). 409 SUGGESTION_ALREADY_RESOLVING
- * when another apply or a decision came first; 409 REVISION_CHANGED (or
+ * left out, the revision the suggestion was made on, as the card does),
+ * through approveAction (the header): the resolver claims the suggestion with
+ * this choice while it holds the action's approval lease, so this request
+ * never writes the row itself. 409 SUGGESTION_ALREADY_RESOLVING when another
+ * apply or a decision came first; 409 REVISION_CHANGED (or
  * REVIEW_IN_DOCUMENT without `revision`) when the document has moved, with
- * the suggestion pending again. Returns the outcome, the blocks applied and
- * the agent version.
+ * the suggestion pending. Returns the outcome, the blocks applied and the
+ * agent version.
  */
 export async function applySuggestion(i: { orgId: string; suggestionId: string; userId: string; blockIds: string[] | 'all';
   revision?: number; documentId?: string }): Promise<{ status: 'accepted' | 'partially_accepted'; appliedBlockIds: string[]; versionId: string }> {
-  let row = await askersSuggestion(i);
-  if (row.status === 'applying') {
-    await releaseStaleClaim(row.action_id);
-    row = await askersSuggestion(i);
-  }
-  if (row.status !== 'pending') throw resolving();
+  const row = await askersSuggestion(i);
+  // 'applying' goes on to the lease, which tells a live claim (409) from one a request left behind.
+  if (row.status !== 'pending' && row.status !== 'applying') throw resolving();
   const chosen = i.blockIds === 'all' ? new Set(row.changed_block_ids) : new Set(i.blockIds);
   if (chosen.size === 0 || [...chosen].some((id) => !row.changed_block_ids.includes(id))) throw invalidBlocks();
   const selected = row.changed_block_ids.filter((id) => chosen.has(id));
-  const claimed = await db.update(documentSuggestions)
-    .set({ status: 'applying', selected_block_ids: selected, reviewed_revision: i.revision ?? row.base_revision, updated_at: new Date() })
-    .where(and(eq(documentSuggestions.id, row.id), eq(documentSuggestions.org_id, i.orgId), eq(documentSuggestions.status, 'pending'),
-      eq(documentSuggestions.asker_user_id, i.userId)))
-    .returning({ id: documentSuggestions.id });
-  if (claimed.length === 0) throw resolving();
 
   const { approveAction } = await import('./agent-approval-resolver.js');
-  let result: Awaited<ReturnType<typeof approveAction>>;
-  try {
-    result = await approveAction(row.action_id, i.userId, { suggestionClaim: { fromReview: i.revision !== undefined } });
-  } catch (error) {
-    await releaseSuggestionClaimInTx(db, row.action_id);
-    throw error;
-  }
+  const result = await approveAction(row.action_id, i.userId, {
+    suggestionClaim: { selectedBlockIds: selected, reviewedRevision: i.revision ?? row.base_revision, fromReview: i.revision !== undefined },
+  });
   if (result.status === 'approved' && !result.decidedElsewhere) {
     const [done] = await db.select({ status: documentSuggestions.status, applied: documentSuggestions.applied_block_ids })
       .from(documentSuggestions).where(eq(documentSuggestions.id, row.id)).limit(1);
@@ -635,7 +665,6 @@ export async function applySuggestion(i: { orgId: string; suggestionId: string; 
     }
     throw resolving();
   }
-  await releaseSuggestionClaimInTx(db, row.action_id);
   throw refusalOf(result);
 }
 
@@ -746,7 +775,8 @@ export function expiredSuggestionNote(createdAt: Date, byDefty: boolean): string
  */
 export async function expireStaleSuggestions(now: Date): Promise<number> {
   const cutoff = new Date(now.getTime() - SUGGESTION_TTL_MS);
-  const stale = and(eq(agentActions.action, DOCUMENT_EDIT_ACTION), eq(agentActions.approval_status, 'pending'), lt(agentActions.created_at, cutoff));
+  // 14 days or more (the tester's exactly-14-days case): an action expires once; a second pass finds it no longer pending.
+  const stale = and(eq(agentActions.action, DOCUMENT_EDIT_ACTION), eq(agentActions.approval_status, 'pending'), lte(agentActions.created_at, cutoff));
   const orgs = await db.selectDistinct({ orgId: agentActions.org_id }).from(agentActions).where(stale).limit(100);
   let count = 0;
   for (const { orgId } of orgs) {
@@ -800,7 +830,8 @@ export async function cancelLostDocumentSuggestions(): Promise<number> {
 }
 
 /**
- * Puts open suggestions back in step with their actions (bounded): a claim
+ * Puts open suggestions back in step with their actions (bounded), each
+ * under its action's approval lease, skipped while someone holds it: a claim
  * whose approval never started, older than ten minutes, goes back to
  * pending; one whose action was rejected is 'rejected'; one whose action
  * expired, or was approved and ran without applying it, is 'cancelled'.
@@ -813,13 +844,18 @@ export async function repairSuggestions(now: Date): Promise<void> {
     .where(and(inArray(documentSuggestions.status, OPEN_STATUSES), outOfStepSql(staleClaim)))
     .orderBy(asc(documentSuggestions.created_at))
     .limit(BATCH);
+  if (rows.length === 0) return;
+  // Loaded when needed: the lease module imports the executor's module, which imports this one.
+  const { tryWithApprovalLease } = await import('./agent-action-execution-lease.js');
   for (const row of rows) {
-    if (row.actionStatus === 'pending') {
-      await releaseSuggestionClaimInTx(db, row.actionId);
-      continue;
-    }
-    const outcome = row.actionStatus === 'rejected' ? 'rejected' : 'cancelled';
-    await db.transaction((tx) => syncSuggestionWithAction(tx, row.actionId, outcome));
+    await tryWithApprovalLease(row.actionId, { acquireTimeoutMs: 250 }, async () => {
+      if (row.actionStatus === 'pending') {
+        await releaseSuggestionClaimInTx(db, row.actionId);
+        return;
+      }
+      const outcome = row.actionStatus === 'rejected' ? 'rejected' : 'cancelled';
+      await db.transaction((tx) => syncSuggestionWithAction(tx, row.actionId, outcome));
+    });
   }
 }
 

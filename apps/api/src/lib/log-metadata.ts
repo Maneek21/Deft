@@ -23,7 +23,7 @@ const JOB_NAMES = new Set([
   'manager-pulse', 'burnout-detect', 'weekly-digest', 'wiki-lint', 'agent-daily-reset',
   'reminder-fire', 'scheduled-message-send', 'agent-heartbeat', 'heartbeat-native',
   'trigger-dispatch', 'ics-sync', 'github-sync-scan', 'github-sync-connection',
-  'chat-observation-backfill', 'attention-maintenance', 'app-integration-notification',
+  'chat-observation-backfill', 'attention-maintenance', 'document-suggestion-expiry', 'app-integration-notification',
   'attention-delivery', 'notification-attention-sync',
 ]);
 

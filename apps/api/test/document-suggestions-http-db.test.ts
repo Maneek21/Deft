@@ -31,7 +31,8 @@ import { spaceRoutes } from '../src/routes/spaces.js';
 import {
   documentSuggestionExpiryKey, ensureDocumentSuggestionExpiry, nextDocumentSuggestionExpiryRun,
 } from '../src/workers/handlers/document-suggestion-expiry.js';
-import { startCollabTestServer, type CollabTestServer } from './fixtures/collab-client.js';
+import { APPROVAL_INTERRUPTED_ERROR } from '../src/lib/agent-action-execution-lease.js';
+import { pollUntil, startCollabTestServer, type CollabTestServer } from './fixtures/collab-client.js';
 import { setupDrivesFixture, type DrivesFixture } from './fixtures/drives-fixture.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
@@ -291,9 +292,22 @@ test('only the asker may apply or reject; anyone else gets 403 NOT_REQUESTER', {
     const rejected = await call(viewer, 'POST', rejectPath(d, s));
     assert.equal(rejected.status, 403, 'reject');
     assert.equal(rejected.body.code, 'NOT_REQUESTER');
+    // The chat card, the Inbox and MCP approve and reject through the action routes: the same answer.
+    for (const verb of ['approve', 'reject']) {
+      const card = await call(viewer, 'POST', `/api/agent/actions/${s.actionId}/${verb}`, {});
+      assert.equal(card.status, 403, `card ${verb}: ${JSON.stringify(card.body)}`);
+      assert.equal(card.body.code, 'NOT_REQUESTER', `card ${verb}`);
+    }
   }
-  assert.equal((await call(fx!.people.guest, 'POST', applyPath(d, s), { block_ids: 'all' })).status, 404);
-  assert.equal((await call(fx!.people.outsider, 'POST', rejectPath(d, s))).status, 404);
+  // Someone who can't open the document learns nothing: 404, as for no suggestion at all.
+  for (const stranger of [fx!.people.guest, fx!.people.outsider]) {
+    for (const [method, path, body] of [['POST', applyPath(d, s), { block_ids: 'all' }], ['POST', rejectPath(d, s), undefined],
+      ['POST', `/api/agent/actions/${s.actionId}/approve`, {}], ['POST', `/api/agent/actions/${s.actionId}/reject`, {}]] as const) {
+      const answer = await call(stranger, method, path, body);
+      assert.equal(answer.status, 404, `${path}: ${JSON.stringify(answer.body)}`);
+      assert.equal(answer.body.code, 'NOT_FOUND');
+    }
+  }
   // A block the suggestion doesn't change, an empty choice and an unknown key are 400.
   for (const body of [{ block_ids: [d.b] }, { block_ids: [] }, { block_ids: 'all', extra: true }, { revision: 1 }]) {
     assert.equal((await call(fx!.people.member, 'POST', applyPath(d, s), body)).status, 400, JSON.stringify(body));
@@ -430,6 +444,19 @@ test('a suggestion pending for 14 days expires, closes its action and leaves a v
   await expireStaleSuggestions(new Date());
   assert.equal((await fx!.client.query("SELECT 1 FROM document_versions WHERE document_id = $1 AND kind = 'named'", [d.id])).rowCount, 1);
 
+  // Exactly 14 days old at a fixed now expires too (14 days or more), once.
+  const e = await threeBlocks();
+  const exact = await suggest(e);
+  const fixedNow = new Date();
+  const created = new Date(fixedNow.getTime() - 14 * DAY).toISOString().replace('Z', '');
+  await fx!.client.query('UPDATE document_suggestions SET created_at = $2::timestamp WHERE id = $1', [exact.suggestionId, created]);
+  await fx!.client.query('UPDATE agent_actions SET created_at = $2::timestamp WHERE id = $1', [exact.actionId, created]);
+  await expireStaleSuggestions(fixedNow);
+  await expireStaleSuggestions(fixedNow);
+  assert.equal((await suggestion(exact.suggestionId)).status, 'expired');
+  assert.equal((await action(exact.actionId)).approval_status, 'expired');
+  assert.equal((await fx!.client.query("SELECT 1 FROM document_versions WHERE document_id = $1 AND kind = 'named'", [e.id])).rowCount, 1);
+
   // The daily job: each day's run has its own key, scheduled once.
   assert.equal(documentSuggestionExpiryKey(new Date('2026-11-27T10:00:00Z')), 'document-suggestion-expiry:2026-11-27');
   assert.equal(nextDocumentSuggestionExpiryRun(new Date('2026-11-27T02:00:00Z')).toISOString(), '2026-11-27T03:00:00.000Z');
@@ -501,10 +528,12 @@ test("an admin can't approve or reject someone else's suggestion", { skip: !url 
   const before = await blocks(d.id);
   // Asked in the public team chat, which owners and admins read.
   const s = await suggest(d, { room: fx!.spaces.team });
+  // Both can open the document (the open Workspace drive): 403 NOT_REQUESTER, whichever check refuses them.
   const refusedFor = async (userId: string) => {
     for (const verb of ['approve', 'reject']) {
       const answer = await call(userId, 'POST', `/api/agent/actions/${s.actionId}/${verb}`, {});
-      assert.ok(answer.status === 403 || answer.status === 404, `${verb}: ${answer.status} ${JSON.stringify(answer.body)}`);
+      assert.equal(answer.status, 403, `${verb}: ${JSON.stringify(answer.body)}`);
+      assert.equal(answer.body.code, 'NOT_REQUESTER', verb);
     }
   };
   await refusedFor(fx!.people.admin);
@@ -513,10 +542,7 @@ test("an admin can't approve or reject someone else's suggestion", { skip: !url 
   await fx!.client.query('UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2', [fx!.orgId, fx!.people.member]);
   try {
     for (const userId of [fx!.people.admin, fx!.people.owner]) {
-      for (const verb of ['approve', 'reject']) {
-        const answer = await call(userId, 'POST', `/api/agent/actions/${s.actionId}/${verb}`, {});
-        assert.equal(answer.status, 403, `${verb}: ${JSON.stringify(answer.body)}`);
-      }
+      await refusedFor(userId);
       const authority = (await viewerReviewAuthority({ id: userId, org_id: fx!.orgId }, [s.actionId])).get(s.actionId);
       assert.deepEqual(authority, { viewer_can_approve: false, viewer_can_reject: false });
     }
@@ -597,4 +623,194 @@ test('approving from the card after the document changed sends the asker to the 
   assert.equal((await suggestion(u.suggestionId)).status, 'pending');
   assert.deepEqual(await blocks(f.id), [[f.a, 'Alpha'], [f.b, 'Beta (late)'], [f.c, 'Gamma']]);
   assert.equal((await fx!.client.query("SELECT 1 FROM document_versions WHERE action_id = $1 AND kind = 'agent'", [u.actionId])).rowCount, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1 (review I1–I3)
+
+/** Holds the action's approval lease from the test's own connection (not the app's advisory pool) while `run` runs. */
+async function holdingApprovalLease(actionId: string, run: () => Promise<void>): Promise<void> {
+  const key = `agent-approval:${actionId}`;
+  await fx!.client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
+  try {
+    await run();
+  } finally {
+    await fx!.client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+  }
+}
+
+/** How many requests are waiting for an advisory lock in this database. */
+async function lockWaiters(): Promise<number> {
+  const { rows: [row] } = await fx!.client.query(`SELECT count(*)::int AS n FROM pg_locks
+    WHERE locktype = 'advisory' AND NOT granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`);
+  return row.n;
+}
+
+/** Someone removing blocks `ids` from the document, through the one writer. */
+async function removeBlocks(documentId: string, userId: string, ids: string[]): Promise<void> {
+  await writeDocument({
+    orgId: fx!.orgId, documentId, actor: { kind: 'user', userId }, reason: 'restore',
+    mutate: (doc) => {
+      const fragment = doc.getXmlFragment('default');
+      doc.transact(() => {
+        for (const id of ids) {
+          const at = fragment.toArray().findIndex((child) => child instanceof Y.XmlElement && child.getAttribute('id') === id);
+          assert.ok(at >= 0, `block ${id} is in the document`);
+          fragment.delete(at, 1);
+        }
+      });
+    },
+  });
+}
+
+/** A document of one paragraph per text, in the Workspace drive; returns its id and the block ids. */
+async function blocksDoc(...texts: string[]): Promise<{ id: string; ids: string[] }> {
+  const ids = texts.map(() => randomUUID());
+  const id = await fx!.insertDocument({ driveId: fx!.workspaceDriveId, title: 'Plan', json: docOf(...texts.map((text, k) => paragraph(ids[k]!, text))) });
+  return { id, ids };
+}
+
+test('fix round 1 (I1): a card approval holding the approval lease first decides; the apply behind it never touches its choice', { skip: !url && SKIP }, async () => {
+  const d = await threeBlocks();
+  const s = await suggest(d);
+  const at = await revision(d.id);
+  let card: Promise<{ status: number; body: any }> | undefined;
+  let apply: Promise<{ status: number; body: any }> | undefined;
+  await holdingApprovalLease(s.actionId, async () => {
+    card = call(fx!.people.member, 'POST', `/api/agent/actions/${s.actionId}/approve`, {});
+    await pollUntil(async () => (await lockWaiters()) === 1, 'the card waits for the lease');
+    apply = call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: [d.a], revision: at });
+    await pollUntil(async () => (await lockWaiters()) === 2, 'the apply waits behind the card');
+    // Only the lease holder moves the suggestion: nothing has touched it while both wait.
+    const waiting = await suggestion(s.suggestionId);
+    assert.equal(waiting.status, 'pending');
+    assert.equal(waiting.selected_block_ids, null);
+  });
+  const [byCard, byApply] = await Promise.all([card!, apply!]);
+  assert.equal(byCard.status, 200, JSON.stringify(byCard.body));
+  assert.equal(byApply.status, 409, JSON.stringify(byApply.body));
+  assert.equal(byApply.body.code, 'SUGGESTION_ALREADY_RESOLVING');
+  const row = await suggestion(s.suggestionId);
+  assert.equal(row.status, 'accepted', 'the card applied every block, as it showed them');
+  assert.deepEqual(row.selected_block_ids, row.changed_block_ids);
+  assert.deepEqual(row.applied_block_ids, row.changed_block_ids);
+  const added = row.changed_block_ids[1]!;
+  assert.deepEqual(await blocks(d.id), [[d.a, 'Alpha, tightened'], [d.b, 'Beta'], [added, 'A new point']]);
+});
+
+test('fix round 1 (I1): a retried apply and a card retry behind an apply leave its choice as it is', { skip: !url && SKIP }, async () => {
+  const d = await threeBlocks();
+  const s = await suggest(d, { ops: [{ op: 'replace', block_id: d.a, markdown: 'Alpha, tightened' }, { op: 'replace', block_id: d.b, markdown: 'Beta, tightened' }] });
+  const at = await revision(d.id);
+  const answers: Array<Promise<{ status: number; body: any }>> = [];
+  await holdingApprovalLease(s.actionId, async () => {
+    answers.push(call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: [d.a], revision: at }));
+    await pollUntil(async () => (await lockWaiters()) === 1, 'the apply waits for the lease');
+    answers.push(call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: [d.b], revision: at }));
+    await pollUntil(async () => (await lockWaiters()) === 2, 'the retried apply waits behind it');
+    assert.equal((await suggestion(s.suggestionId)).status, 'pending');
+  });
+  const [first, retried] = await Promise.all(answers);
+  assert.equal(first!.status, 200, JSON.stringify(first!.body));
+  assert.deepEqual(first!.body.applied_block_ids, [d.a]);
+  assert.equal(retried!.status, 409, JSON.stringify(retried!.body));
+  assert.equal(retried!.body.code, 'SUGGESTION_ALREADY_RESOLVING');
+  // A card retry afterwards: already decided, the choice unchanged.
+  const card = await call(fx!.people.member, 'POST', `/api/agent/actions/${s.actionId}/approve`, {});
+  assert.equal(card.status, 200, JSON.stringify(card.body));
+  const row = await suggestion(s.suggestionId);
+  assert.equal(row.status, 'partially_accepted');
+  assert.deepEqual(row.selected_block_ids, [d.a]);
+  assert.deepEqual(row.applied_block_ids, [d.a]);
+  assert.deepEqual(await blocks(d.id), [[d.a, 'Alpha, tightened'], [d.b, 'Beta'], [d.c, 'Gamma']]);
+});
+
+test('fix round 1 (I2): a chosen block someone deleted goes back with its proposed content after its previous sibling', { skip: !url && SKIP }, async () => {
+  const d = await threeBlocks();
+  const s = await suggest(d, { ops: [{ op: 'replace', block_id: d.b, markdown: 'Beta, tightened' }] });
+  await removeBlocks(d.id, fx!.people.member2, [d.b]);
+  const review = await call(fx!.people.member, 'GET', reviewPath(d, s));
+  assert.deepEqual(review.body.suggestion.blocks.map((block: { block_id: string; conflict: boolean }) => [block.block_id, block.conflict]), [[d.b, true]]);
+  const applied = await call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: [d.b], revision: review.body.suggestion.revision });
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  assert.equal(applied.body.status, 'accepted');
+  assert.deepEqual(applied.body.applied_block_ids, [d.b]);
+  assert.deepEqual(await blocks(d.id), [[d.a, 'Alpha'], [d.b, 'Beta, tightened'], [d.c, 'Gamma']]);
+  // Undo takes the put-back block out again.
+  const undone = await call(fx!.people.member, 'POST', `/api/documents/agent-edits/${s.actionId}/undo`);
+  assert.deepEqual(undone.body, { restored_block_ids: [d.b], conflicted_block_ids: [] });
+  assert.deepEqual(await blocks(d.id), [[d.a, 'Alpha'], [d.c, 'Gamma']]);
+});
+
+test('fix round 1 (I2): a mixed choice replaces, puts back after the previous sibling or at the end, and counts a deletion already made', { skip: !url && SKIP }, async () => {
+  // A B C D E F; the suggestion replaces A, B and D and deletes E.
+  const doc = await blocksDoc('Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta');
+  const [a, b, c, dd, e, f] = doc.ids as [string, string, string, string, string, string];
+  const d: Doc = { id: doc.id, a, b, c };
+  const s = await suggest(d, { ops: [
+    { op: 'replace', block_id: a, markdown: 'Alpha 2' }, { op: 'replace', block_id: b, markdown: 'Beta 2' },
+    { op: 'replace', block_id: dd, markdown: 'Delta 2' }, { op: 'delete', block_id: e },
+  ] });
+  // Someone removes B, C, D and E: A and F are left.
+  await removeBlocks(doc.id, fx!.people.member2, [b, c, dd, e]);
+  const review = await call(fx!.people.member, 'GET', reviewPath(d, s));
+  assert.deepEqual(review.body.suggestion.blocks.map((block: { block_id: string; conflict: boolean }) => [block.block_id, block.conflict]),
+    [[a, false], [b, true], [dd, true], [e, true]]);
+  // Everything but A: B goes back after A (its previous sibling); D's previous sibling C is gone for good, so D goes to the end; E is already gone.
+  const applied = await call(fx!.people.member, 'POST', applyPath(d, s), { block_ids: [b, dd, e], revision: review.body.suggestion.revision });
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  assert.equal(applied.body.status, 'partially_accepted');
+  assert.deepEqual(applied.body.applied_block_ids, [b, dd, e]);
+  assert.deepEqual(await blocks(doc.id), [[a, 'Alpha'], [b, 'Beta 2'], [f, 'Zeta'], [dd, 'Delta 2']]);
+});
+
+test('fix round 1 (I3): a source that goes away after the action is claimed closes the suggestion with the approval', { skip: !url && SKIP }, async () => {
+  const d = await threeBlocks();
+  const before = await blocks(d.id);
+  const { rows: [{ agent_employee_id: employeeId }] } = await fx!.client.query('SELECT agent_employee_id FROM users WHERE id = $1', [fx!.people.agentUser]);
+  // An employee's edit for the member, citing the member's message to it in the team chat.
+  const messageId = randomUUID();
+  await fx!.client.query("INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES ($1, $2, $3, $4, 'Agent, tighten the plan')",
+    [messageId, fx!.orgId, fx!.spaces.team, fx!.people.member]);
+  const actionId = randomUUID();
+  await fx!.client.query(`INSERT INTO agent_actions (id, org_id, user_id, conversation_id, message_id, source, action, params, approval_tier, approval_status, agent_employee_id)
+    VALUES ($1, $2, $3, $4, $5, 'mcp', 'edit_document', $6, 'quick', 'pending', $7)`,
+  [actionId, fx!.orgId, fx!.people.member, fx!.spaces.team, messageId, JSON.stringify({ document_id: d.id, summary: SUMMARY }), employeeId]);
+  const { suggestionId } = await db.transaction((tx) => proposeDocumentEdit(tx, {
+    orgId: fx!.orgId, documentId: d.id, actionId, askerId: fx!.people.member, agentUserId: fx!.people.agentUser, ops: threeOps(d),
+  }));
+  // The message is deleted after the action is claimed, before the executor runs.
+  _setReviewerRecheckHookForTest(async (point, id) => {
+    if (point === 'before_execute' && id === actionId) await fx!.client.query('UPDATE messages SET is_deleted = true WHERE id = $1', [messageId]);
+  });
+  try {
+    await call(fx!.people.member, 'POST', `/api/agent/actions/${actionId}/approve`, {});
+  } finally {
+    _setReviewerRecheckHookForTest(null);
+  }
+  const closed = await action(actionId);
+  assert.equal(closed.approval_status, 'approved');
+  assert.ok(closed.executed_at);
+  assert.match(String(closed.error), /no longer available/);
+  assert.equal((await suggestion(suggestionId)).status, 'cancelled');
+  assert.deepEqual(await blocks(d.id), before);
+});
+
+test('fix round 1 (I3): an interrupted approval, settled by recovery, closes its suggestion', { skip: !url && SKIP }, async () => {
+  const d = await threeBlocks();
+  const before = await blocks(d.id);
+  const s = await suggest(d);
+  // An approval claimed the action and the suggestion, then its process went away: no outcome was recorded.
+  await fx!.client.query(`UPDATE agent_actions SET approval_status = 'approved', approved_at = clock_timestamp(), approved_by_user_id = $2,
+    result = '{"lifecycle_state":"executing"}' WHERE id = $1`, [s.actionId, fx!.people.member]);
+  await fx!.client.query(`UPDATE document_suggestions SET status = 'applying', selected_block_ids = changed_block_ids, reviewed_revision = base_revision
+    WHERE id = $1`, [s.suggestionId]);
+  // The next approval holds the lease, finds no live executor and settles it as failed.
+  await call(fx!.people.member, 'POST', `/api/agent/actions/${s.actionId}/approve`, {});
+  const settled = await action(s.actionId);
+  assert.equal(settled.approval_status, 'approved');
+  assert.ok(settled.executed_at);
+  assert.equal(settled.error, APPROVAL_INTERRUPTED_ERROR);
+  assert.equal((await suggestion(s.suggestionId)).status, 'cancelled');
+  assert.deepEqual(await blocks(d.id), before);
 });

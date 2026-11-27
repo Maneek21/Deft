@@ -57,9 +57,10 @@
 // same function, with only the blocks the asker chose (`selectedBlockIds`)
 // and AgentEditWriteOptions: reason 'suggestion' (allowed on a drive set to
 // suggestions only), the revision the asker reviewed (`expectedRevision`),
-// operations on blocks deleted since left out (`skipMissing`), and the
-// suggestion's outcome committed in the same transaction. So its version,
-// credit, highlight, audit and undo are a direct edit's.
+// a chosen block someone deleted since put back where it was
+// (`reinsertMissing`, as undo places deleted blocks), and the suggestion's
+// outcome committed in the same transaction. So its version, credit,
+// highlight, audit and undo are a direct edit's.
 //
 // Undo (POST /api/documents/agent-edits/:actionId/undo): through the one
 // writer as the person undoing, reason `restore`, needs edit. For each block
@@ -172,8 +173,21 @@ function blocksOf(markdown: string): JSONContent[] {
  * edit added can't be named. With `idSeed`, new ids are the same on every
  * call; with `selectedBlockIds`, only the changes to those blocks are made.
  * `json` is not changed.
+ *
+ * `reinsertMissing` (an accepted suggestion, lib/document-suggestions.ts)
+ * names the blocks of the content the edit was made on, each with the block
+ * before it there (null for the first). An operation on one of them that is
+ * no longer in `json` isn't missing: a `replace` puts the block back with its
+ * id and new content (and any further blocks after it), an `insert_after`
+ * puts its blocks where the anchor was, and a `delete` does nothing and
+ * counts as a change. They go back after their previous sibling (first when
+ * there was none), as undo puts deleted blocks back; when that neighbour is
+ * gone too, the first block of the run goes to the end and the rest follow
+ * it. Blocks put back count as added (before null), so undo removes them.
  */
-export function applyOpsToJson(json: JSONContent, ops: DocumentEditOp[], opts: { idSeed?: string; selectedBlockIds?: readonly string[] } = {}):
+export function applyOpsToJson(json: JSONContent, ops: DocumentEditOp[], opts: {
+  idSeed?: string; selectedBlockIds?: readonly string[]; reinsertMissing?: Readonly<Record<string, string | null>>;
+} = {}):
   { json: JSONContent; changedBlockIds: string[]; before: Record<string, JSONContent | null>; missingBlockIds: string[] } {
   const original = json.content ?? [];
   const originalById = new Map<string, JSONContent>();
@@ -224,12 +238,59 @@ export function applyOpsToJson(json: JSONContent, ops: DocumentEditOp[], opts: {
     return last;
   };
 
+  // reinsertMissing: runs of blocks to put back, placed once every operation has run (see below).
+  type PutBack = { previous: string | null; nodes: JSONContent[] };
+  const putBacks: PutBack[] = [];
+  /** For each block in a queued run, and each anchor inserted after, the run's last block: an insert after it follows the run. */
+  const putBackLast = new Map<string, string>();
+  const recorded = (id: string): boolean => opts.reinsertMissing !== undefined
+    && Object.hasOwn(opts.reinsertMissing, id) && !originalById.has(id);
+  const recordedPrevious = (id: string): string | null => opts.reinsertMissing![id] ?? null;
+  /** `nodes` with fresh ids, as insertAt gives them (the kept ones only), not placed yet. */
+  const freshNodes = (nodes: JSONContent[], opIndex: number, firstN: number): JSONContent[] => nodes.flatMap((node, k) => {
+    const id = freshId(opIndex, firstN + k);
+    if (!keep(id)) return [];
+    mark(id, null);
+    return [withId(node, id)];
+  });
+  const queuePutBack = (previous: string | null, nodes: JSONContent[]): string | null => {
+    if (nodes.length === 0) return null;
+    const last = idOf(nodes[nodes.length - 1]!)!;
+    putBacks.push({ previous, nodes });
+    for (const node of nodes) putBackLast.set(idOf(node)!, last);
+    return last;
+  };
+
   ops.forEach((op, opIndex) => {
     if (op.op === 'append') {
       insertAt(working.length, blocksOf(op.markdown), opIndex, 0);
       return;
     }
     const at = indexOf(op.block_id);
+    if (recorded(op.block_id)) {
+      // A block of the content the edit was made on that is gone now.
+      const id = op.block_id;
+      if (op.op === 'delete') {
+        if (keep(id)) mark(id, null);
+        return;
+      }
+      const nodes = blocksOf(op.markdown);
+      if (op.op === 'replace') {
+        const [first, ...rest] = nodes;
+        const run: JSONContent[] = [];
+        if (first && keep(id)) {
+          mark(id, null);
+          run.push(withId(first, id));
+        }
+        run.push(...freshNodes(rest, opIndex, 1));
+        queuePutBack(recordedPrevious(id), run);
+        return;
+      }
+      // After the anchor when it is put back too, else where it was.
+      const last = queuePutBack(putBackLast.get(id) ?? recordedPrevious(id), freshNodes(nodes, opIndex, 0));
+      if (last) putBackLast.set(id, last);
+      return;
+    }
     if (at < 0 || !originalById.has(op.block_id)) {
       if (!missing.includes(op.block_id)) missing.push(op.block_id);
       return;
@@ -257,6 +318,39 @@ export function applyOpsToJson(json: JSONContent, ops: DocumentEditOp[], opts: {
     const last = insertAt(after + 1, nodes, opIndex, 0);
     if (last) lastAfter.set(op.block_id, last);
   });
+
+  // The put-back runs, as undo puts deleted blocks back: each after its
+  // previous sibling (after the runs already placed there; first for none),
+  // which may itself be put back. When no run can be placed, the first of a
+  // waiting chain (one whose previous sibling no waiting run brings back)
+  // goes to the end, and the others follow it on the next pass.
+  const placedAfter = new Map<string, string>();
+  const positionAfter = (previous: string | null): number => {
+    const anchor = placedAfter.get(previous ?? '') ?? previous;
+    if (anchor === null) return 0;
+    const i = indexOf(anchor);
+    return i < 0 ? -1 : i + 1;
+  };
+  const place = (run: PutBack, at: number) => {
+    working.splice(at, 0, ...run.nodes);
+    placedAfter.set(run.previous ?? '', idOf(run.nodes[run.nodes.length - 1]!)!);
+  };
+  let waitingRuns = putBacks;
+  while (waitingRuns.length > 0) {
+    const still: PutBack[] = [];
+    for (const run of waitingRuns) {
+      const at = positionAfter(run.previous);
+      if (at < 0) still.push(run);
+      else place(run, at);
+    }
+    if (still.length === waitingRuns.length) {
+      const waitingIds = new Set(still.flatMap((run) => run.nodes.map((node) => idOf(node)!)));
+      const root = still.find((run) => run.previous === null || !waitingIds.has(run.previous)) ?? still[0]!;
+      place(root, working.length);
+      still.splice(still.indexOf(root), 1);
+    }
+    waitingRuns = still;
+  }
 
   return { json: { ...json, content: working }, changedBlockIds: changed, before: Object.fromEntries(before), missingBlockIds: missing };
 }
@@ -349,10 +443,10 @@ function updateHighlights(doc: Y.Doc, change: (current: AgentHighlight[]) => Age
 /** Runs the edit on the live document `doc` (the header); returns its edit_details. */
 function editInDoc(doc: Y.Doc, i: {
   actionId: string; agentUserId: string; askerId: string; summary: string; ops: DocumentEditOp[]; selectedBlockIds?: string[];
-  skipMissing?: boolean;
+  skipMissing?: boolean; reinsertMissing?: Readonly<Record<string, string | null>>;
 }): EditDetails {
   const current = contentOf(doc);
-  const result = applyOpsToJson(current, i.ops, { idSeed: i.actionId, selectedBlockIds: i.selectedBlockIds });
+  const result = applyOpsToJson(current, i.ops, { idSeed: i.actionId, selectedBlockIds: i.selectedBlockIds, reinsertMissing: i.reinsertMissing });
   // With skipMissing, an edit refuses only when nothing at all is left to apply.
   const refused = i.skipMissing ? result.changedBlockIds.length === 0 : result.missingBlockIds.length > 0;
   if (refused) throw new DocumentEditRefused('BLOCK_NOT_FOUND', result.missingBlockIds);
@@ -413,6 +507,8 @@ export type AgentEditWriteOptions = {
   expectedRevision?: number;
   /** Operations naming blocks that are no longer there are left out; BLOCK_NOT_FOUND only when nothing is left to apply. */
   skipMissing?: boolean;
+  /** Blocks of the content the edit was made on, each with its previous sibling: one deleted since is put back (applyOpsToJson). */
+  reinsertMissing?: Readonly<Record<string, string | null>>;
   /** The caller's work in the write's transaction, after the agent version: it commits or rolls back with the edit. */
   inTransaction?: (tx: Tx, applied: { versionId: string; changedBlockIds: string[] }) => Promise<void>;
 };
@@ -446,7 +542,7 @@ opts: AgentEditWriteOptions = {}): Promise<{ versionId: string; changedBlockIds:
       mutate: (doc) => {
         outcome.details = editInDoc(doc, {
           actionId: i.actionId, agentUserId: i.agentUserId, askerId: i.askerId, summary, ops: i.ops, selectedBlockIds: i.selectedBlockIds,
-          skipMissing: opts.skipMissing,
+          skipMissing: opts.skipMissing, reinsertMissing: opts.reinsertMissing,
         });
       },
       // The credit commits with the content, or neither does.
