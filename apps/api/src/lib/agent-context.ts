@@ -74,10 +74,9 @@ import { buildNativeAppActionActor } from './agent-app-action-actor.js';
 import { resolveNativeWikiReader, readNativeWiki, searchNativeWiki } from './native-wiki-owner.js';
 import { liveHumanCalendarEventCondition, liveEmployeeCalendarEventCondition } from './calendar-event-visibility.js';
 import { deftyMessageCitation } from './defty-message-source.js';
-import { isCanonicalDeftyEmployee } from './defty-identity.js';
 import {
   AUDIENCE_HELD_READS, SHARED_CONVERSATION_READ_UNAVAILABLE, SHARED_CONVERSATION_REFUSAL, SHARED_CONVERSATION_TOOLS,
-  deftyConversationAudience, noteVisibleToAudienceSql, projectVisibleToAudienceSql, roomReadableByAudience, roomReadableByAudienceSql,
+  answersAsDefty, deftyConversationAudience, noteVisibleToAudienceSql, projectVisibleToAudienceSql, roomReadableByAudience, roomReadableByAudienceSql,
   sharedAudience, taskVisibleToAudienceSql, type DeftyAudience,
 } from './defty-audience.js';
 
@@ -162,16 +161,6 @@ export async function executeToolCall(
     withheld = false;
   }
   return withheld ? { ...response, withheld: true } : response;
-}
-
-/** Defty runs with no employee, or as its own system employee (defty-identity.ts). */
-async function answersAsDefty(orgId: string, agentEmployeeId?: string): Promise<boolean> {
-  if (!agentEmployeeId) return true;
-  const [employee] = await db.select({ slug: agentEmployees.slug, runtime_kind: agentEmployees.runtime_kind, is_byoa: agentEmployees.is_byoa })
-    .from(agentEmployees)
-    .where(and(eq(agentEmployees.id, agentEmployeeId), eq(agentEmployees.org_id, orgId)))
-    .limit(1);
-  return isCanonicalDeftyEmployee(employee);
 }
 
 async function executeToolCallFor(

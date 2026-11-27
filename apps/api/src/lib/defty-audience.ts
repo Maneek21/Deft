@@ -25,14 +25,13 @@
 // - When a check held something back, Defty's reply ends with LEFT_OUT_LINE.
 // - The readers are worked out once per turn. Someone who joins after the
 //   answer can read it, the same as a person's message quoting a record.
-import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
-import { tasks, projects, wikiPages } from '@deft/db/schema';
+import { and, eq, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { agentEmployees, tasks, projects, wikiPages } from '@deft/db/schema';
 import { db } from './db.js';
-import { DEFTY_EMAIL } from './defty-identity.js';
+import { DEFTY_EMAIL, isCanonicalDeftyEmployee } from './defty-identity.js';
 import { visibleTaskSql, type TaskVisibilityColumns } from './task-visibility.js';
 import { visibleNoteCondition } from './note-visibility.js';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
-import { readableSpaceSql } from './space-visibility.js';
 
 export const SHARED_CONVERSATION_READ_UNAVAILABLE = 'SHARED_CONVERSATION_READ_UNAVAILABLE';
 /** What a refused tool returns in a shared conversation. */
@@ -43,15 +42,16 @@ export const LEFT_OUT_LINE = 'Some items were left out because not everyone here
 /**
  * The read tools that run in a shared conversation, each held to the
  * readers: task reads (one gate, agent-context.ts taskReadConditions),
- * projects, messages, notes and canvas, wiki. Plus Defty's housekeeping
- * writes, whose results carry only what the model gave them. Every other
- * tool is refused there.
+ * projects, messages, notes and canvas, wiki. Plus two of Defty's
+ * housekeeping writes, whose results carry only what the model gave them.
+ * Every other tool is refused there.
  */
 export const AUDIENCE_HELD_READS: ReadonlySet<string> = new Set([
   'search_tasks', 'list_my_tasks', 'get_task_detail', 'get_task_dependencies', 'get_project_progress', 'list_projects',
   'search_messages', 'search_notes', 'read_note', 'read_canvas', 'wiki_search', 'wiki_read',
 ]);
-const SHARED_CONVERSATION_WRITES = ['remember', 'create_plan', 'wiki_suggest_update'] as const;
+// wiki_suggest_update is not one of them: it names the page it looked up by slug.
+const SHARED_CONVERSATION_WRITES = ['remember', 'create_plan'] as const;
 export const SHARED_CONVERSATION_TOOLS: ReadonlySet<string> = new Set([...AUDIENCE_HELD_READS, ...SHARED_CONVERSATION_WRITES]);
 
 export type DeftyAudience = Readonly<{
@@ -91,6 +91,13 @@ export function conversationReadersQuery(orgId: string, conversationId: string):
         WHERE conv.type = 'public' AND conv.is_archived = false
           AND workspace_member.org_id = conv.org_id AND workspace_member.is_active = true
           AND NOT (workspace_member.role = 'guest' AND workspace_user.kind = 'human')
+      UNION
+      -- An active employee reads every active public room over MCP
+      -- (mcp-tools/messages.ts), whatever its agent's membership row says.
+      SELECT workspace_employee.user_id FROM agent_employees workspace_employee
+        WHERE conv.type = 'public' AND conv.is_archived = false
+          AND workspace_employee.org_id = conv.org_id
+          AND workspace_employee.is_active = true AND workspace_employee.is_deleted = false
     ) reader ON true
     LEFT JOIN users reader_user ON reader_user.id = reader.user_id
     LEFT JOIN org_members reader_member ON reader_member.org_id = conv.org_id
@@ -110,12 +117,13 @@ export async function deftyConversationAudience(
     // No conversation of this workspace: shared with nobody known, so nothing is shown.
     return { orgId, conversationId, askerId, shared: true, readerIds: [], narrowReaderIds: [], agentProjectScopes: [] };
   }
-  // An agent reads through its employee: only an active employee's agent is a reader now.
-  const readers = rows.filter((row) => row.user_id && row.role && row.email !== DEFTY_EMAIL && row.kind !== 'system'
-    && (row.kind !== 'agent' || row.active_employee === true));
+  // A person reads while an active member of the workspace. An agent reads
+  // through its employee: it is a reader while the employee is active.
+  const readers = rows.filter((row) => row.user_id && row.email !== DEFTY_EMAIL && row.kind !== 'system'
+    && (row.kind === 'agent' ? row.active_employee === true : Boolean(row.role)));
   const readerIds = [...new Set(readers.map((row) => row.user_id!))].sort();
   const narrowReaderIds = [...new Set(readers
-    .filter((row) => row.kind !== 'human' || !['owner', 'admin', 'member'].includes(row.role!))
+    .filter((row) => row.kind !== 'human' || !['owner', 'admin', 'member'].includes(row.role ?? ''))
     .map((row) => row.user_id!))].sort();
   const agentProjectScopes: string[][] = [];
   for (const row of readers) {
@@ -173,13 +181,38 @@ export function projectVisibleToAudienceSql(audience: DeftyAudience | null | und
   return sql`(true${sql.join(scopes, sql``)})`;
 }
 
+/**
+ * True when `readerId` can read the room `spaceId` of `orgId` today, by the
+ * rule of space-visibility.ts readableSpaceSql: they are in it, or it is a
+ * public, unarchived room and they are an active member of the workspace who
+ * is not a human guest, or an agent whose employee there is active (agents
+ * read every public room over MCP). Every table here has its own alias, so
+ * `spaceId` may be a column of an outer `spaces` (readableSpaceSql's inner
+ * `spaces` would shadow it).
+ */
+export function roomReadableBySql(readerId: SQLWrapper | string, spaceId: SQLWrapper, orgId: SQLWrapper): SQL {
+  return sql`EXISTS (SELECT 1 FROM spaces audience_room
+    WHERE audience_room.id = ${spaceId} AND audience_room.org_id = ${orgId}
+      AND (EXISTS (SELECT 1 FROM space_members audience_room_member
+          WHERE audience_room_member.space_id = audience_room.id AND audience_room_member.user_id = ${readerId})
+        OR (audience_room.type = 'public' AND audience_room.is_archived = false AND (
+          EXISTS (SELECT 1 FROM org_members audience_room_reader
+            JOIN users audience_room_reader_user ON audience_room_reader_user.id = audience_room_reader.user_id
+            WHERE audience_room_reader.org_id = audience_room.org_id AND audience_room_reader.user_id = ${readerId}
+              AND audience_room_reader.is_active = true
+              AND NOT (audience_room_reader.role = 'guest' AND audience_room_reader_user.kind = 'human'))
+          OR EXISTS (SELECT 1 FROM agent_employees audience_room_employee
+            WHERE audience_room_employee.org_id = audience_room.org_id AND audience_room_employee.user_id = ${readerId}
+              AND audience_room_employee.is_active = true AND audience_room_employee.is_deleted = false)))))`;
+}
+
 /** True for a room (of `orgId`) every reader can read. The conversation itself always is. */
 export function roomReadableByAudienceSql(audience: DeftyAudience | null | undefined, spaceId: SQLWrapper, orgId: SQLWrapper): SQL {
   const held = sharedAudience(audience);
   if (!held) return sql`true`;
   if (held.readerIds.length === 0) return sql`false`;
   return sql`(CASE WHEN ${spaceId} = ${held.conversationId} THEN true
-    ELSE ${everyReader(held.readerIds, readableSpaceSql(READER, spaceId, orgId))} END)`;
+    ELSE ${everyReader(held.readerIds, roomReadableBySql(READER, spaceId, orgId))} END)`;
 }
 
 /** True for a note every reader can see (note-visibility.ts). */
@@ -215,6 +248,30 @@ export async function wikiPagesVisibleToAudience(audience: DeftyAudience | null 
   const rows = (await db.execute(sql`SELECT ${wikiPages.id} AS id FROM ${wikiPages}
     WHERE ${wikiPages.org_id} = ${held.orgId} AND ${wikiPages.id} = ANY(${textArray(ids)}) AND ${wikiPageVisibleToAudienceSql(held)}`)).rows as Array<{ id: string }>;
   return new Set(rows.map((row) => row.id));
+}
+
+/** Which of the tasks `taskIds` (of the audience's workspace) every reader can see. */
+export async function tasksVisibleToAudience(audience: DeftyAudience | null | undefined, taskIds: readonly string[]): Promise<Set<string>> {
+  const ids = [...new Set(taskIds)];
+  const held = sharedAudience(audience);
+  if (!held) return new Set(ids);
+  if (ids.length === 0) return new Set();
+  const rows = (await db.execute(sql`SELECT ${tasks.id} AS id FROM ${tasks}
+    WHERE ${tasks.org_id} = ${held.orgId} AND ${tasks.id} = ANY(${textArray(ids)}) AND ${taskVisibleToAudienceSql(held)}`)).rows as Array<{ id: string }>;
+  return new Set(rows.map((row) => row.id));
+}
+
+/**
+ * True when a run with `agentEmployeeId` is Defty: no employee, or Defty's
+ * own system employee (defty-identity.ts). A BYOA employee reads as itself.
+ */
+export async function answersAsDefty(orgId: string, agentEmployeeId?: string | null): Promise<boolean> {
+  if (!agentEmployeeId) return true;
+  const [employee] = await db.select({ slug: agentEmployees.slug, runtime_kind: agentEmployees.runtime_kind, is_byoa: agentEmployees.is_byoa })
+    .from(agentEmployees)
+    .where(and(eq(agentEmployees.id, agentEmployeeId), eq(agentEmployees.org_id, orgId)))
+    .limit(1);
+  return isCanonicalDeftyEmployee(employee);
 }
 
 /** Defty's reply text, with LEFT_OUT_LINE when something was held back. */

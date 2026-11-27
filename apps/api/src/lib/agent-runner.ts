@@ -20,7 +20,7 @@ import { selectVerifiedResponse } from './agent-response-verification.js';
 import { retrieveContext } from './retrieve-context.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
-import { deftyConversationAudience, sharedAudience, wikiPageVisibleToAudienceSql, wikiPagesVisibleToAudience, type DeftyAudience } from './defty-audience.js';
+import { answersAsDefty, deftyConversationAudience, sharedAudience, wikiPagesVisibleToAudience, type DeftyAudience } from './defty-audience.js';
 import { isReadOnlyAgentRequest } from './agent-request-policy.js';
 import { agentToolFailure } from './agent-tool-result.js';
 import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles, containsLinkConstruct, decodedJsonText, decodeHtmlEntities, mentionsApproval, requiresRuntimeActionEvidence, hasRuntimeActionEvidence } from './agent-source-grounding.js';
@@ -387,7 +387,7 @@ export async function runAgentQuery(params: {
   const noTools = params.toolPolicy === 'none';
   // Defty answers to everyone who can read the conversation: worked out once
   // for the turn and handed to every read (defty-audience.ts).
-  const audience: DeftyAudience | null = !agentEmployeeId && params.conversationId
+  const audience: DeftyAudience | null = params.conversationId && await answersAsDefty(orgId, agentEmployeeId)
     ? (params.audience && params.audience.conversationId === params.conversationId && params.audience.askerId === userId
       && params.audience.orgId === orgId
       ? params.audience
@@ -496,9 +496,10 @@ export async function runAgentQuery(params: {
           'please', 'about', 'with', 'that', 'this', 'decision',
         ]).has(term))
         .slice(0, 8);
-      const exactWikiRows = terms.length > 0
+      const askerExactWikiRows = terms.length > 0
         ? await db
             .select({
+              id: wikiPages.id,
               title: wikiPages.title,
               slug: wikiPages.slug,
               type: wikiPages.type,
@@ -514,8 +515,6 @@ export async function runAgentQuery(params: {
               // own wiki visibility (private user/space pages included).
               visibleWikiPageCondition(userId, orgId),
               emailKnowledgeAudienceCondition(orgId, userId, params.conversationId, agentEmployeeId),
-              // In a shared conversation, only pages every reader can see.
-              wikiPageVisibleToAudienceSql(heldAudience),
               or(...terms.map((term) => {
                 const pattern = `%${term}%`;
                 return sql`(
@@ -537,12 +536,16 @@ export async function runAgentQuery(params: {
         types: ['wiki'],
         limit: 3,
       });
+      // In a shared conversation, only pages every reader can see; leaving
+      // one out ends the reply with the left-out line.
       const pagesEveryoneSees = heldAudience
-        ? await wikiPagesVisibleToAudience(heldAudience, retrievedPages.map((page) => page.source_id))
+        ? await wikiPagesVisibleToAudience(heldAudience, [...askerExactWikiRows.map((page) => page.id), ...retrievedPages.map((page) => page.source_id)])
         : null;
+      const exactWikiRows = pagesEveryoneSees ? askerExactWikiRows.filter((page) => pagesEveryoneSees.has(page.id)) : askerExactWikiRows;
       const allRelevantPages = pagesEveryoneSees
         ? retrievedPages.filter((page) => pagesEveryoneSees.has(page.source_id))
         : retrievedPages;
+      if (exactWikiRows.length < askerExactWikiRows.length || allRelevantPages.length < retrievedPages.length) withheld = true;
 
       if (exactWikiRows.length > 0) {
         const exactWikiContext = exactWikiRows.map((p) => {

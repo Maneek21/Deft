@@ -19,7 +19,9 @@ import { env } from '../src/lib/env.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { runAgentQuery } from '../src/lib/agent-runner.js';
 import { ensureDeftyMembership } from '../src/lib/ensure-defty-membership.js';
-import { handleAgentReply } from '../src/workers/handlers/agent-reply.js';
+import { handleAgentReply, resolvePendingActionTargets } from '../src/workers/handlers/agent-reply.js';
+import { compileDeftyActionDraft } from '../src/lib/agent-action-proposals.js';
+import { deftyConversationAudience } from '../src/lib/defty-audience.js';
 import { messageRoutes } from '../src/routes/messages.js';
 import { taskRoutes } from '../src/routes/tasks.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -324,9 +326,90 @@ describe('FIX158 Defty answers to its audience', { skip: !url }, () => {
     assert.ok(text(dmNote).includes(noteCanary), 'in the asker\'s own DM the note is read');
   });
 
+  test('review: a room name only the asker can read is not listed in a shared conversation', async (t) => {
+    if (!ready) { t.skip(unavailable); return; }
+    const roomA = randomUUID(), roomB = randomUUID();
+    await room(roomA, 'private', `payroll-a-${run}`, [owner]);
+    await room(roomB, 'private', `payroll-b-${run}`, [owner]);
+    const shared = await tool('search_messages', { query: 'x', space_name: 'payroll' }, publicRoom);
+    assert.ok(!text(shared).includes(`payroll-a-${run}`) && !text(shared).includes(roomA), 'no private room name or id in a room others read');
+    const own = await tool('search_messages', { query: 'x', space_name: 'payroll' }, deftyDm);
+    assert.ok(text(own).includes(`payroll-a-${run}`), "in the asker's own DM the rooms are still listed");
+    const audience = await deftyConversationAudience(org, publicRoom, owner);
+    const draft = [{ action: 'post_message', params: { space_name: 'payroll', content: 'hi' } }];
+    const held = await resolvePendingActionTargets(org, owner, publicRoom, draft, '', audience);
+    assert.ok(!held.warnings.join(' ').includes(`payroll-a-${run}`), 'the post-target warning names no private room');
+    assert.match(held.warnings.join(' '), /not everyone here can see/);
+  });
+
+  test('review: the action compiler offers only projects every agent reader may see', async (t) => {
+    if (!ready) { t.skip(unavailable); return; }
+    await q('UPDATE agent_employees SET project_ids = $2::text[] WHERE id = $1', [employee, [otherProject]]);
+    const keys = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'OLLAMA_URL'] as const;
+    const savedEnv = Object.fromEntries(keys.map((key) => [key, env[key]]));
+    const savedProcess = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    const configured = { ANTHROPIC_API_KEY: '', OPENAI_API_KEY: 'test', OPENROUTER_API_KEY: '', OLLAMA_URL: '' };
+    Object.assign(env, configured); Object.assign(process.env, configured);
+    const bodies: string[] = [];
+    const fetchMock = t.mock.method(globalThis, 'fetch', async (_address: unknown, init?: RequestInit) => {
+      bodies.push(typeof init?.body === 'string' ? init.body : '');
+      return Response.json({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '{}' }] }],
+        usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+    try {
+      const audience = await deftyConversationAudience(org, agentRoom, owner);
+      await compileDeftyActionDraft({ orgId: org, requesterId: owner, sourceSpaceId: agentRoom, audience,
+        promptContent: 'create a task to review the budget', sourceMessageId: randomUUID() }).catch(() => undefined);
+    } finally {
+      fetchMock.mock.restore();
+      Object.assign(env, savedEnv);
+      for (const key of keys) {
+        if (savedProcess[key] === undefined) delete process.env[key];
+        else process.env[key] = savedProcess[key];
+      }
+      await q('UPDATE agent_employees SET project_ids = $2::text[] WHERE id = $1', [employee, []]);
+    }
+    assert.ok(bodies.length > 0, 'the compiler asked the provider');
+    assert.ok(!bodies.some((body) => body.includes(`Launch pilot ${run}`)), "a project outside the agent reader's scope is not offered");
+    assert.ok(bodies.some((body) => body.includes(`Other ${run}`)), 'a project inside it is');
+  });
+
+  test('review: what the automatic wiki lookup and the room context leave out is said', async (t) => {
+    if (!ready) { t.skip(unavailable); return; }
+    // The owner's own wiki page matches the question; no tool is called.
+    const wiki = await deftyReply(t, { spaceId: privateRoom, content: `@Defty what is ${wikiCanary}?`, toolName: 'no_such_tool', toolInput: {} });
+    assert.ok(!wiki.bodies.some((body) => body.includes(`plan is ${wikiCanary}`)), 'the page never reaches the model in a shared room');
+    assert.ok(wiki.replies[0]?.content.includes(LEFT_OUT), 'the reply says something was left out');
+    // The restricted task is named by key in the room; the room context does not resolve it.
+    await q('INSERT INTO messages (id, org_id, space_id, user_id, content) VALUES (gen_random_uuid()::text, $1, $2, $3, $4)',
+      [org, groupDm, owner, `Remember ${restrictedKey} before Friday`]);
+    const pack = await deftyReply(t, { spaceId: groupDm, content: '@Defty hello there', toolName: 'no_such_tool', toolInput: {} });
+    assert.ok(!pack.bodies.some((body) => body.includes(restrictedTitle)));
+    assert.ok(pack.replies[0]?.content.includes(LEFT_OUT), 'the reply says the room context left something out');
+    const dm = await deftyReply(t, { spaceId: deftyDm, content: `@Defty what is ${wikiCanary}?`, toolName: 'no_such_tool', toolInput: {} });
+    assert.ok(!dm.replies[0]?.content.includes(LEFT_OUT), 'nothing is left out in a private DM');
+  });
+
+  test('review: an active agent with no membership row still reads a public room', async (t) => {
+    if (!ready) { t.skip(unavailable); return; }
+    const bo = randomUUID(), boEmployee = randomUUID();
+    await q(`INSERT INTO users (id, email, name, kind, is_agent) VALUES ($1, $2, 'Bo Agent', 'agent', true)`, [bo, `bo-${run}@audience.test`]);
+    await q(`INSERT INTO agent_employees (id, org_id, user_id, name, slug, role, system_prompt, trust_level, max_daily_actions,
+        daily_action_count, created_by, is_active, is_deleted, project_ids)
+      VALUES ($1, $2, $3, 'Bo Agent', $4, 'custom', 'test', 'standard', 50, 0, $5, true, false, $6::text[])`,
+    [boEmployee, org, bo, `bo-${run}`, owner, [otherProject]]);
+    try {
+      const search = await tool('search_tasks', { query: `zq${run}` }, publicRoom);
+      assert.ok(!text(search).includes(openTitle), "the agent's project scope narrows the public room's answer");
+    } finally {
+      await q('DELETE FROM agent_employees WHERE id = $1', [boEmployee]);
+      await q('DELETE FROM users WHERE id = $1', [bo]);
+    }
+  });
+
   test('every other read tool is refused in a shared conversation with "ask me in a DM"', async (t) => {
     if (!ready) { t.skip(unavailable); return; }
-    for (const name of ['get_team_workload', 'get_user_activity', 'recall', 'check_calendar', 'search_decisions', 'module_list']) {
+    for (const name of ['get_team_workload', 'get_user_activity', 'recall', 'check_calendar', 'search_decisions', 'module_list', 'wiki_suggest_update']) {
       const refused = await tool(name, {}, publicRoom);
       assert.equal((refused.result as any)?.code, 'SHARED_CONVERSATION_READ_UNAVAILABLE', `${name} is refused in a shared room`);
       assert.match(String((refused.result as any)?.error), /direct message/i);

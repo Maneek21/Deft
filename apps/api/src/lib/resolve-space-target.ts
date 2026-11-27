@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, type SQL } from 'drizzle-orm';
 import { spaces } from '@deft/db/schema';
 import { db } from './db.js';
 
@@ -98,6 +98,8 @@ export function resolveSpaceTargetFromRows(
 export async function resolveSpaceTarget(
   orgId: string,
   args: { spaceId?: unknown; spaceName?: unknown },
+  /** An extra condition on the candidate `spaces` rows (who may see them). */
+  where?: SQL,
 ): Promise<SpaceTargetResolution> {
   const rows = await db
     .select({
@@ -107,7 +109,7 @@ export async function resolveSpaceTarget(
       is_archived: spaces.is_archived,
     })
     .from(spaces)
-    .where(and(eq(spaces.org_id, orgId), eq(spaces.is_archived, false)));
+    .where(and(eq(spaces.org_id, orgId), eq(spaces.is_archived, false), where));
 
   return resolveSpaceTargetFromRows(rows, args);
 }

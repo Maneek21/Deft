@@ -9,7 +9,10 @@ import { getApprovalTier } from '../../lib/agent-approval.js';
 import { eq, and, desc, sql, ne, lt, inArray } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
-import { deftyConversationAudience, sharedAudience, taskVisibleToAudienceSql, withLeftOutLine, type DeftyAudience } from '../../lib/defty-audience.js';
+import {
+  deftyConversationAudience, roomReadableByAudienceSql, roomReadableBySql, sharedAudience, taskVisibleToAudienceSql, tasksVisibleToAudience,
+  withLeftOutLine, type DeftyAudience,
+} from '../../lib/defty-audience.js';
 import { buildModuleReadActor } from '../../lib/agent-context.js';
 import {
   authorizedDurableAgentResult,
@@ -291,6 +294,8 @@ export async function resolvePendingActionTargets(
   sourceSpaceId: string,
   actions: any[],
   userRequest = '',
+  /** The source conversation's readers (defty-audience.ts). */
+  audience?: DeftyAudience | null,
 ): Promise<{ actions: any[]; warnings: string[] }> {
   const resolvedActions: any[] = [];
   const warnings: string[] = [];
@@ -409,13 +414,18 @@ export async function resolvePendingActionTargets(
     }
 
     if (action.action === 'post_message') {
+      const heldAudience = sharedAudience(audience);
+      // In a shared conversation the candidates are rooms the asker can read,
+      // and a warning names only the rooms every reader there can read.
       const resolution = await resolveSpaceTarget(orgId, {
         spaceId: action.params.space_id ?? action.params.resolved_space_id,
         spaceName: action.params.space_name,
-      });
+      }, heldAudience ? roomReadableBySql(userId, spaces.id, spaces.org_id) : undefined);
 
       if (resolution.status !== 'resolved') {
-        warnings.push(resolution.message);
+        warnings.push(heldAudience && resolution.status === 'ambiguous'
+          ? await ambiguousSpaceWarningForAudience(heldAudience, resolution.requestedName ?? null, resolution.matches)
+          : resolution.message);
         continue;
       }
 
@@ -2057,7 +2067,7 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     const validatedPendingActions: any[] = [];
     const proposalValidationWarnings: string[] = [...(compiledActionDraft?.warnings ?? [])];
     // Resolve an omitted project before schema validation requires its name.
-    const resolvedPendingActions = await resolvePendingActionTargets(orgId, userId, spaceId, pendingActionsWithProvenance, promptContent);
+    const resolvedPendingActions = await resolvePendingActionTargets(orgId, userId, spaceId, pendingActionsWithProvenance, promptContent, audience);
     for (const action of resolvedPendingActions.actions) {
       const validation = validateRegisteredProposalAction(action);
       if (validation.ok) validatedPendingActions.push(action);
@@ -2098,11 +2108,14 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
       : null;
     const taskTargets = pendingActions.flatMap((action: any) =>
       [action.params?.resolved_task_id, action.params?.task_identifier].filter((id): id is string => typeof id === 'string'));
-    const approvalTasks = taskTargets.length ? await db.select({ id: tasks.id, identifier: sql<string>`${projects.prefix} || '-' || ${tasks.number}`, title: tasks.title })
+    const askerApprovalTasks = taskTargets.length ? await db.select({ id: tasks.id, identifier: sql<string>`${projects.prefix} || '-' || ${tasks.number}`, title: tasks.title })
       .from(tasks).innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, orgId)))
       .where(and(eq(tasks.org_id, orgId), eq(tasks.is_deleted, false), eq(projects.is_deleted, false),
-        eq(projects.is_archived, false), visibleTaskCondition(userId), taskVisibleToAudienceSql(heldAudience),
+        eq(projects.is_archived, false), visibleTaskCondition(userId),
         sql`(${inArray(tasks.id, taskTargets)} OR ${inArray(sql`${projects.prefix} || '-' || ${tasks.number}`, taskTargets)})`)) : [];
+    // The approval text names only tasks every reader of a shared conversation can see.
+    const approvalTasksEveryoneSees = await tasksVisibleToAudience(heldAudience, askerApprovalTasks.map((task) => task.id));
+    const approvalTasks = askerApprovalTasks.filter((task) => approvalTasksEveryoneSees.has(task.id));
     const concreteApprovalReplyText = formatDeftyApprovalReply(pendingActions, approvalTasks);
     const approvalReplyText = concreteApprovalReplyText ?? referentialApprovalReplyText ?? literalPostApprovalReplyText ?? (compiledActions && compiledActionDraft?.summary
       ? normalizeApprovalSurfaceCopy(compiledActionDraft.summary)
@@ -2115,7 +2128,8 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
           approvalReplyText,
           targetClarificationMessage || null,
         ].filter(Boolean).join('\n\n')
-        : writeIntentClarificationMessage || result.text, result.withheld);
+        : writeIntentClarificationMessage || result.text,
+      result.withheld || roomContext?.withheld || approvalTasks.length < askerApprovalTasks.length);
 
     // Insert the agent's reply as a message in the space.
     // Phase 2 — populate agent_blocks / model / tokens so <AgentMessageBlocks/>
@@ -2211,6 +2225,26 @@ async function processAgentReply(job: JobData, agentUserId: string, dependencies
     console.error('[agent-reply] Failed to generate agent reply:');
     throw err; // Re-throw so the PostgreSQL queue worker can retry.
   }
+}
+
+/**
+ * The "several rooms match" warning in a shared conversation: it names only
+ * the matching rooms every reader there can read (FIX158).
+ */
+async function ambiguousSpaceWarningForAudience(
+  audience: DeftyAudience,
+  requestedName: string | null,
+  matches: Array<{ id: string; name: string }>,
+): Promise<string> {
+  const ids = matches.map((match) => match.id);
+  const nameable = ids.length ? new Set((await db.select({ id: spaces.id }).from(spaces)
+    .where(and(inArray(spaces.id, ids), eq(spaces.org_id, audience.orgId), roomReadableByAudienceSql(audience, spaces.id, spaces.org_id))))
+    .map((row) => row.id)) : new Set<string>();
+  const named = matches.filter((match) => nameable.has(match.id)).map((match) => `#${match.name}`);
+  const others = matches.length - named.length;
+  const list = [named.join(', '), others > 0 ? `${others === matches.length ? '' : 'and '}${others} room${others === 1 ? '' : 's'} not everyone here can see` : '']
+    .filter(Boolean).join(' ');
+  return `Multiple spaces match "${requestedName ?? ''}": ${list}. Choose one before approving.`;
 }
 
 async function broadcastAgentReply(params: {

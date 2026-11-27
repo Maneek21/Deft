@@ -9,7 +9,7 @@ import { getOrgAIConfig } from './org-ai-config.js';
 import { resolveProjectTarget } from './resolve-project-target.js';
 import { buildUntrustedWorkspaceContext } from './agent-untrusted-context.js';
 import { visibleTaskCondition } from './task-visibility.js';
-import { taskVisibleToAudienceSql, type DeftyAudience } from './defty-audience.js';
+import { projectVisibleToAudienceSql, sharedAudience, taskVisibleToAudienceSql, type DeftyAudience } from './defty-audience.js';
 import { llm } from './llm.js';
 import { truncatePlainText } from './plain-text.js';
 import { ACTION_TOOLS, AGENT_TOOLS } from './agent-tools.js';
@@ -715,12 +715,18 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
       is_deleted: projects.is_deleted,
     })
     .from(projects)
-    .where(and(eq(projects.org_id, params.orgId), eq(projects.is_archived, false), eq(projects.is_deleted, false)))
+    // In a shared conversation, only projects inside every agent reader's scope (defty-audience.ts).
+    .where(and(eq(projects.org_id, params.orgId), eq(projects.is_archived, false), eq(projects.is_deleted, false),
+      projectVisibleToAudienceSql(params.audience)))
     .limit(50)
     .catch(() => []);
-  const defaultProject = !params.projectNameHint
+  const roomProject = !params.projectNameHint
     ? await resolveProjectTarget(params.orgId, { sourceSpaceId: params.sourceSpaceId, requesterId: params.requesterId }).catch(() => null)
     : null;
+  const defaultProject = roomProject?.status === 'resolved' && sharedAudience(params.audience)
+    && !knownProjects.some((project) => project.id === roomProject.project.id)
+    ? null
+    : roomProject;
   params = {
     ...params,
     projectNameHint: params.projectNameHint || (defaultProject?.status === 'resolved' ? defaultProject.project.name : null),

@@ -4,7 +4,7 @@ import { db } from './db.js';
 import { toPlainText } from './plain-text.js';
 import { visibleTaskCondition } from './task-visibility.js';
 import { deftyMessageCitation, type DeftyMessageCitation } from './defty-message-source.js';
-import { projectVisibleToAudienceSql, taskVisibleToAudienceSql, type DeftyAudience } from './defty-audience.js';
+import { projectVisibleToAudienceSql, tasksVisibleToAudience, type DeftyAudience } from './defty-audience.js';
 
 const MAX_MESSAGES = 30;
 const MAX_BODY_CHARS = 400;
@@ -41,6 +41,8 @@ export type RoomContextWithSources = {
    * re-check Module authority before formatting any identifier into a prompt.
    */
   resultSources: Array<{ id: string; metadata: unknown }>;
+  /** True when a task named in the room was left out because not every reader can see it (defty-audience.ts). */
+  withheld?: boolean;
 };
 
 function relativeTime(time: Date, reference: Date): string {
@@ -181,23 +183,25 @@ export async function buildRoomContextPackWithSources(input: RoomContextInput): 
         return Number.isSafeInteger(number) && number > 0 && number <= 2_147_483_647
           ? [`${match[1]!.toUpperCase()}-${number}`] : [];
       })))];
-  const mentionedTasks = keys.length ? await db.select({ keyPrefix: projects.prefix, number: tasks.number,
+  const askerMentionedTasks = keys.length ? await db.select({ id: tasks.id, keyPrefix: projects.prefix, number: tasks.number,
     title: tasks.title, status: tasks.status, assigneeId: tasks.assignee_id }).from(tasks)
     .innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, input.orgId)))
     .where(and(eq(tasks.org_id, input.orgId), eq(tasks.is_deleted, false), eq(projects.is_deleted, false),
       eq(projects.is_archived, false), visibleTaskCondition(input.requesterId),
-      taskVisibleToAudienceSql(input.audience),
       or(...keys.map(key => {
         const separator = key.lastIndexOf('-');
         return and(eq(projects.prefix, key.slice(0, separator)), eq(tasks.number, Number(key.slice(separator + 1))));
       })))) : [];
+  // A task key is resolved only for a task every reader of the room can see.
+  const everyoneSees = await tasksVisibleToAudience(input.audience, askerMentionedTasks.map(task => task.id));
+  const mentionedTasks = askerMentionedTasks.filter(task => everyoneSees.has(task.id));
   const assigneeIds = [...new Set(mentionedTasks.flatMap(task => task.assigneeId ? [task.assigneeId] : []))];
   const assignees = assigneeIds.length ? await db.select({ id: users.id, name: users.name }).from(users)
     .innerJoin(orgMembers, and(eq(orgMembers.user_id, users.id), eq(orgMembers.org_id, input.orgId), eq(orgMembers.is_active, true)))
     .where(inArray(users.id, assigneeIds)) : [];
   const assigneeNames = new Map(assignees.map(person => [person.id, person.name]));
   const linkedIds = new Set(linkedProjects.map(project => project.id));
-  return formatRoomContextPackWithSources({ spaceId: input.spaceId, triggerTime: trigger.createdAt,
+  const pack = formatRoomContextPackWithSources({ spaceId: input.spaceId, triggerTime: trigger.createdAt,
     people: people.map(person => person.name),
     projects: activeProjects.map(project => ({ ...project, linked: linkedIds.has(project.id) })),
     tasks: mentionedTasks.map(task => ({ key: `${task.keyPrefix}-${task.number}`, title: task.title,
@@ -205,5 +209,6 @@ export async function buildRoomContextPackWithSources(input: RoomContextInput): 
     messages: chronological.map(message => ({ ...message, replyCount: counts.get(message.id) ?? 0 })),
     thread: thread.map(message => ({ ...message, replyCount: counts.get(message.id) ?? 0 })),
   });
+  return mentionedTasks.length < askerMentionedTasks.length ? { ...pack, withheld: true } : pack;
 }
 
