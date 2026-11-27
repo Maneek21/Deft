@@ -10,6 +10,13 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.157] — 2026-11-27 (prerelease)
+
+Changes since `v0.3.0-preview.156`: #624, #625, #626 and #627 (#624 changes only tests).
+Release scope `core` (no Hermes compatibility claim). Cut from master at `763fbccc`. No
+database migration: `packages/db` is unchanged since 156, and `DEFT_SCHEMA_HEAD` stays
+`0.3.0-preview.154`.
+
 ### The welcome "Say hello in #general" is posted
 
 - The last step of the welcome tour, **Say hello in #general**, now posts your hello to
