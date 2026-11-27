@@ -70,22 +70,26 @@ flushSync(() => createRoot(document.getElementById('root')).render(createElement
   };
   await open();
   const checkbox = tab.getByRole('checkbox', { name: 'Email me about this report', exact: true });
-  return { tab, checkbox, sent, open };
+  // The dialog unticks the box in an effect, which can finish after the
+  // reopened dialog is already on screen, so a read straight after opening can
+  // still see the last tick. Wait for the unticked box instead of reading it once.
+  const unticked = tab.getByRole('checkbox', { name: 'Email me about this report', exact: true, checked: false });
+  return { tab, checkbox, unticked, sent, open };
 }
 
 test('closing and reopening the dialog unticks a box the person had ticked', async (t) => {
-  const { tab, checkbox, sent, open } = await mount(t);
-  assert.equal(await checkbox.isChecked(), false);
+  const { tab, checkbox, unticked, sent, open } = await mount(t);
+  await assert.doesNotReject(unticked.waitFor(), 'the box starts unticked');
   await checkbox.check();
   await tab.getByRole('button', { name: 'Cancel', exact: true }).click();
   await tab.getByRole('dialog').waitFor({ state: 'detached' });
   await open();
-  assert.equal(await checkbox.isChecked(), false, 'reopening must untick the box');
+  await assert.doesNotReject(unticked.waitFor(), 'reopening must untick the box');
   assert.equal(sent.length, 0, 'closing and reopening sends nothing');
 });
 
 test('after a report sent with the box ticked, the next report starts unticked', async (t) => {
-  const { tab, checkbox, sent, open } = await mount(t);
+  const { tab, checkbox, unticked, sent, open } = await mount(t);
   await checkbox.check();
   await tab.getByLabel('What happened?').fill('The calendar opens on the wrong week.');
   await tab.getByRole('button', { name: 'Send report', exact: true }).click();
@@ -94,5 +98,5 @@ test('after a report sent with the box ticked, the next report starts unticked',
   await tab.getByRole('button', { name: 'Done', exact: true }).click();
   await tab.getByRole('dialog').waitFor({ state: 'detached' });
   await open();
-  assert.equal(await checkbox.isChecked(), false, 'the next report must not inherit the last choice');
+  await assert.doesNotReject(unticked.waitFor(), 'the next report must not inherit the last choice');
 });
