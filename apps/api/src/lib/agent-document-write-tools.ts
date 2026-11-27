@@ -441,7 +441,8 @@ async function priorEditApplied(orgId: string, actionId: string): Promise<
     .where(and(eq(documentVersions.org_id, orgId), eq(documentVersions.kind, 'agent'), eq(documentVersions.action_id, actionId)))
     .limit(1);
   if (version) {
-    const ids = isRecord(version.edit_details) && Array.isArray(version.edit_details.changed_block_ids) ? version.edit_details.changed_block_ids : [];
+    const details: unknown = version.edit_details;
+    const ids: unknown[] = isRecord(details) && Array.isArray(details.changed_block_ids) ? details.changed_block_ids : [];
     return { kind: 'version', documentId: version.document_id, versionId: version.id, changedBlockIds: ids.filter((id): id is string => typeof id === 'string') };
   }
   const [suggestion] = await db.select({ id: documentSuggestions.id }).from(documentSuggestions)

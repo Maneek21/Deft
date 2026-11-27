@@ -35,7 +35,7 @@ import { actionRequesterIdSql } from './agent-action-requester.js';
 import { closedPendingActionParams, finishClosedModuleAction } from './agent-approval-resolver.js';
 import { resolveAttentionBySource } from './attention.js';
 import { DOCUMENT_EDIT_ACTION, syncSuggestionWithAction } from './document-suggestions.js';
-import { DOCUMENT_DRAFT_ACTION, settledDocumentDraftParamsSql } from './document-draft-params.js';
+import { DOCUMENT_DRAFT_ACTION, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from './document-draft-params.js';
 import { canonicalDeftyActionSql, MODULE_GOVERNED_WRITE_ACTION_NAMES, requesterKeepsSourceRoomsSql } from './module-action-visibility.js';
 import { markWorkIntentsExpiredForActions } from './work-intents.js';
 
@@ -117,6 +117,8 @@ async function closeOneBatch(tx: Tx, scope: { orgId: string; requesterId?: strin
     if (!done) continue;
     // A document edit suggestion closes with its action (lib/document-suggestions.ts).
     if (row.action === DOCUMENT_EDIT_ACTION) await syncSuggestionWithAction(tx, row.id, 'cancelled');
+    // A cancelled document draft's approval items name nothing, in this commit (M7 fix round 3, I3).
+    if (row.action === DOCUMENT_DRAFT_ACTION) await scrubDocumentDraftItems(tx, [row.id]);
     closed.push(done.id);
   }
   return { seen: rows.length, closed };

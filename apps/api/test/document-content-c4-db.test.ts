@@ -245,6 +245,37 @@ test('fix round 2 (I2): every step and the plan\'s context are shown from the al
   for (const leaked of leaks) assert.ok(!endedText.includes(leaked), `an ended plan shows no ${leaked}`);
 });
 
+test('fix round 3: text copied from a private read into a plan\'s literal is shown to the plan\'s creator only, never to an admin who approves it', { skip }, async () => {
+  const { member, admin } = fx.people;
+  const drive = await fx.insertDrive({ kind: 'private', name: 'M7 C4 copied' });
+  const phrase = token('copied');
+  const doc = await fx.insertDocument({ driveId: drive, title: `Private source ${token('ctitle')}`,
+    json: { type: 'doc', content: [paragraph(`c4c-${run}`, `Secret ${phrase}`)] } });
+  await fx.share(doc, { user: member }, 'view');
+  const dm = (await ensureDeftyDm(fx.orgId, member))!;
+  // Defty read the page in the asker's DM and copied its body into the plan's literal Markdown.
+  const { plan_id: planId } = await createPlanRow({
+    org_id: fx.orgId, user_id: member, conversation_id: dm, title: 'Copy plan',
+    steps: [
+      { id: 'read', description: 'Read', tool: 'read_document', params: { document_id: doc } },
+      { id: 'copy', description: 'Copy', tool: 'create_document', params: { title: `Copy ${token('ctitle')}`, markdown: `Secret ${phrase}` } },
+    ],
+  });
+
+  // An admin approving the plan (planManagerScope) is never shown the text: each literal is its size.
+  const approved = await fx.request(admin, 'POST', `/api/agent-plans/${planId}/approve`, {});
+  assert.equal(approved.status, 200, await approved.clone().text());
+  const approvedBody = await approved.json() as any;
+  for (const leaked of [phrase, token('ctitle')]) assert.ok(!text(approvedBody).includes(leaked), `the admin's approval response shows no ${leaked}`);
+  const copy = approvedBody.steps.find((step: any) => step.id === 'copy');
+  assert.equal(copy.params.markdown.content_omitted, true);
+
+  // The plan's creator, who asked for it, still sees it.
+  const mine = await fx.request(member, 'GET', `/api/agent-plans/${planId}`);
+  assert.equal(mine.status, 200);
+  assert.ok((await mine.text()).includes(phrase), 'the creator sees the literal');
+});
+
 test('an MCP note tool\'s replay never serves stored content: it reads the note again with the caller\'s access now', { skip }, async () => {
   const { member } = fx.people;
   const ctx: HumanToolContext = { org_id: fx.orgId, user_id: member, role: 'member', scopes: ['read:workspace', 'write:workspace'], client_id: `m7c4-${run}` };

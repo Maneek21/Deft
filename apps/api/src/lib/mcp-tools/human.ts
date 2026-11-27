@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { discoverPersonalInstalledTools } from './installed-apps.js';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
+import { documentTextParamsForViewer } from '../document-draft-params.js';
 import { z } from 'zod';
 import { NativeMentionSourceSchema, nativeMentionToken } from '@deft/shared';
 import { searchNativeMentions, publishNativeMentions, enqueueNativeMentionPublication } from '../native-mentions.js';
@@ -3922,14 +3923,15 @@ export async function humanApprovalList(args: { status?: string; limit?: number 
   const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), reviewer, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any),
     // Pending approvals are the ones awaiting a person, as on the web.
     status === 'pending' ? inArray(agentActions.approval_tier, ['quick', 'full']) : undefined)).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
-  return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
+  // M7 fix round 3: a document draft's text only for the person who asked (a fallback reviewer sees its size).
+  return textResult(rows.map((row) => ({ ...documentTextParamsForViewer(row, ctx.user_id), url: '/inbox?lane=needs_you' })));
 }
 
 export async function humanApprovalGet(args: { action_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   if (!args.action_id) return errorResult('action_id is required');
   const row = await ownApproval(ctx, args.action_id);
-  return row ? textResult({ ...row, url: '/inbox?lane=needs_you' }) : errorResult('Approval not found');
+  return row ? textResult({ ...documentTextParamsForViewer(row, ctx.user_id), url: '/inbox?lane=needs_you' }) : errorResult('Approval not found');
 }
 
 export async function humanApprovalApprove(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {

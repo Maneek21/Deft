@@ -1017,7 +1017,7 @@ export async function runAgentQuery(params: {
         // the result itself below.
         const read = documentToolCallForStorage(tool.name, tool.input, result);
         // M7 fix round 2: a plan's literal document text is kept by the plan
-        // alone, for its creator and approvers; the call the run keeps (the
+        // alone, for its creator only; the call the run keeps (the
         // room's agent_blocks, the executed actions) holds each text as its size.
         const stored = tool.name === 'create_plan' ? { ...read, input: createPlanInputForStorage(tool.input) } : read;
         executedActions.push({

@@ -29,8 +29,8 @@ import {
 import { ACTION_TOOLS } from './agent-tools.js';
 import { runAgentQuery } from './agent-runner.js';
 import { DOCUMENT_EDIT_ACTION } from './document-suggestions.js';
-import { documentToolCallForStorage, editDocumentInputForStorage, omittedText, storableRef } from './document-audience.js';
-import { settledDocumentDraftParamsSql } from './document-draft-params.js';
+import { documentToolCallForStorage, editDocumentInputForStorage, omittedText, storableRef, type OmittedText } from './document-audience.js';
+import { DOCUMENT_DRAFT_ACTION, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from './document-draft-params.js';
 import type { TrustLevel } from './agent-approval.js';
 import { getIO } from '../socket.js';
 import { getMCPToolsForAgent } from './mcp-tools.js';
@@ -192,7 +192,7 @@ export function documentStepForStorage(tool: string, params: unknown, result: un
  *   creator, through the same access-checked read tool (fix round 2), so a
  *   resumed plan still runs;
  * - a literal written for the plan (fix round 2). It is kept like a pending
- *   draft: shown only to the plan's creator and its approvers
+ *   draft: shown only to the plan's creator, who asked for it (fix round 3)
  *   (routes/agent-plans.ts), and left out once the step completes or the
  *   plan ends, when the step names what it made;
  * - `{ content_omitted, content_bytes }`, which can't run.
@@ -246,22 +246,24 @@ function stepRef(value: unknown): string | null {
 /**
  * A document tool step's params as a plan keeps them: ids, references, and no
  * text. With `literals` (a step not yet completed, of a plan that hasn't
- * ended, as the plan stores it and as its creator and approvers see it: fix
+ * ended, as the plan stores it and as its creator alone sees it: fix
  * round 2), a write's text field written for the plan is kept as written.
  */
 export function documentStepParamsForStorage(tool: string, params: unknown, options: { literals?: boolean } = {}): Record<string, unknown> {
   const record = isPlainRecord(params) ? params : {};
-  const refs = (...keys: string[]) => Object.fromEntries(keys.flatMap((key) => {
+  const refs = (...keys: string[]): Record<string, string> => Object.fromEntries(keys.flatMap((key): Array<[string, string]> => {
     const ref = stepRef(record[key]);
     return ref === null ? [] : [[key, ref]];
   }));
   const shortText = (key: string, max: number) => (typeof record[key] === 'string' ? { [key]: (record[key] as string).slice(0, max) } : {});
-  const textFields = Object.fromEntries((DOCUMENT_TEXT_FIELDS[tool] ?? []).flatMap((key) => {
-    const value = record[key];
-    if (value === undefined) return [];
-    if (isStepReference(value) || (options.literals === true && typeof value === 'string')) return [[key, value]];
-    return [[key, omittedText(value, null)]];
-  }));
+  // A text field is a reference, a literal (with `literals`), or its size: never anything else.
+  const textFields: Record<string, string | OmittedText> = Object.fromEntries((DOCUMENT_TEXT_FIELDS[tool] ?? [])
+    .flatMap((key): Array<[string, string | OmittedText]> => {
+      const value = record[key];
+      if (value === undefined) return [];
+      if (typeof value === 'string' && (isStepReference(value) || options.literals === true)) return [[key, value]];
+      return [[key, omittedText(value, null)]];
+    }));
   switch (tool) {
     case 'read_document': return refs('document_id');
     case 'read_note': return refs('note_id');
@@ -304,7 +306,7 @@ export function planStepsForStorage<S>(steps: S[]): S[] {
 /**
  * A create_plan call as a run keeps it (agent_blocks, the run's executed
  * actions: fix round 2): its document steps without their literal text,
- * which only the plan itself keeps, for its creator and approvers.
+ * which only the plan itself keeps, for its creator alone.
  */
 export function createPlanInputForStorage(input: unknown): unknown {
   if (!isPlainRecord(input) || !Array.isArray(input.steps)) return input;
@@ -374,8 +376,8 @@ function documentStepResultForStorage(tool: string, params: unknown, result: unk
  * - a completed step: its params and result as references
  *   (documentStepForStorage);
  * - any other step: documentStepParamsForStorage's params, keeping the
- *   literals written for the plan only with `literals` (its creator and
- *   approvers, and the executor) and only while the plan hasn't ended;
+ *   literals written for the plan only with `literals` (its creator, and
+ *   the executor) and only while the plan hasn't ended;
  * - each context entry of a document tool step: its result as references.
  */
 export function planWithDocumentReferences<T extends { steps: unknown; context?: unknown; status?: unknown }>(
@@ -481,19 +483,24 @@ async function executeReviewedPlanDependency(params: {
   if (prior) {
     if (prior.action !== params.step.tool || prior.runtime_request_key !== requestKey) {
       if (prior.approval_status === 'pending') {
-        await db
-          .update(agentActions)
-          .set({
-            approval_status: 'expired',
-            error: `Plan step '${params.step.id}' changed after review was requested`,
-            updated_at: new Date(),
-            params: settledDocumentDraftParamsSql(),
-          })
-          .where(and(
-            eq(agentActions.id, prior.id),
-            eq(agentActions.org_id, params.orgId),
-            eq(agentActions.approval_status, 'pending'),
-          ));
+        await db.transaction(async (tx) => {
+          const expired = await tx
+            .update(agentActions)
+            .set({
+              approval_status: 'expired',
+              error: `Plan step '${params.step.id}' changed after review was requested`,
+              updated_at: new Date(),
+              params: settledDocumentDraftParamsSql(),
+            })
+            .where(and(
+              eq(agentActions.id, prior.id),
+              eq(agentActions.org_id, params.orgId),
+              eq(agentActions.approval_status, 'pending'),
+            ))
+            .returning({ id: agentActions.id });
+          // M7 fix round 3 (I3): an expired document draft's approval items name nothing, in this commit.
+          if (expired.length > 0 && prior.action === DOCUMENT_DRAFT_ACTION) await scrubDocumentDraftItems(tx, [prior.id]);
+        });
       }
       throw new PlanApprovalBoundaryError(
         `Plan step '${params.step.id}' input changed after review was requested`,

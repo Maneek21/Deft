@@ -22,7 +22,7 @@ import { nativeDeliveryAccessSql, nativeNotificationAccessSql } from './native-m
 import { taskHiddenFromGuestSql } from './task-visibility.js';
 import { publicSpaceVisibleSql } from './space-visibility.js';
 import { visibleDocumentIdSql } from './document-access.js';
-import { DOCUMENT_DRAFT_ACTION, DOCUMENT_DRAFT_ITEM_BODY } from './document-draft-params.js';
+import { DOCUMENT_DRAFT_ACTION, DOCUMENT_DRAFT_ITEM_BODY, draftItemBodySql } from './document-draft-params.js';
 import type { AnyNotificationType } from './notification-types.js';
 import { actionReviewerCandidateSql, loadActionReviewers } from './agent-action-requester.js';
 import {
@@ -904,6 +904,8 @@ export async function resolveApprovalItemsWithoutReviewer(limit = 500) {
     snoozed_until: null,
     resolved_at: now,
     resolution: 'source_access_removed',
+    // M7 fix round 3 (I3): a document draft's item names nothing once its reviewer loses it, in this same statement.
+    body: draftItemBodySql(),
     version: sql`${attentionItems.version} + 1`,
     updated_at: now,
   }).where(and(inArray(attentionItems.id, scanned.map((row) => row.id)), withoutReviewer))
@@ -1118,10 +1120,7 @@ export async function transitionAttentionItem(params: {
       resolved_at: terminal ? now : null,
       resolution: terminal ? params.resolution ?? null : null,
       // M7 fix round 2 (I3): a document draft's approval item that settles names nothing, whenever it was made.
-      body: terminal
-        ? sql`CASE WHEN ${attentionItems.kind} = 'approval' AND ${attentionItems.metadata} ->> 'action' = ${DOCUMENT_DRAFT_ACTION}
-          THEN ${DOCUMENT_DRAFT_ITEM_BODY}::text ELSE ${attentionItems.body} END`
-        : undefined,
+      body: terminal ? draftItemBodySql() : undefined,
       version: sql`${attentionItems.version} + 1`,
       updated_at: now,
     })

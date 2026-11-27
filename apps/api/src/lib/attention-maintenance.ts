@@ -9,7 +9,7 @@ import {
 import { terminalizePendingModuleActions } from './module-action-terminalization.js';
 import { cancelLostRoomActions } from './lost-room-action-cancellation.js';
 import { DOCUMENT_EDIT_ACTION } from './document-suggestions.js';
-import { settledDocumentDraftParamsSql } from './document-draft-params.js';
+import { DOCUMENT_DRAFT_ACTION, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from './document-draft-params.js';
 
 export const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -53,20 +53,26 @@ export async function maintainAttentionSystem(
   // Preserve the legacy status-only behavior for every non-module action.
   // A document edit suggestion keeps its action for 14 days and expires with
   // it in its own daily job (lib/document-suggestions.ts), never here.
-  const expired = await db
-    .update(agentActions)
-    // A document draft keeps no title or Markdown once it expires (M7 fix round 1, I3).
-    .set({ approval_status: 'expired', params: settledDocumentDraftParamsSql() })
-    .where(and(
-      eq(agentActions.approval_status, 'pending'),
-      lt(agentActions.created_at, cutoff),
-      notInArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES, DOCUMENT_EDIT_ACTION]),
-    ))
-    .returning({
-      id: agentActions.id,
-      org_id: agentActions.org_id,
-      params: agentActions.params,
-    });
+  const expired = await db.transaction(async (tx) => {
+    const rows = await tx
+      .update(agentActions)
+      // A document draft keeps no title or Markdown once it expires (M7 fix round 1, I3).
+      .set({ approval_status: 'expired', params: settledDocumentDraftParamsSql() })
+      .where(and(
+        eq(agentActions.approval_status, 'pending'),
+        lt(agentActions.created_at, cutoff),
+        notInArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES, DOCUMENT_EDIT_ACTION]),
+      ))
+      .returning({
+        id: agentActions.id,
+        org_id: agentActions.org_id,
+        action: agentActions.action,
+        params: agentActions.params,
+      });
+    // M7 fix round 3 (I3): and its approval items name nothing, in this same commit.
+    await scrubDocumentDraftItems(tx, rows.filter((row) => row.action === DOCUMENT_DRAFT_ACTION).map((row) => row.id));
+    return rows;
+  });
 
   const byOrg = new Map<string, Array<{ id: string; params: unknown }>>();
   for (const action of expired) {

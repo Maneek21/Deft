@@ -93,7 +93,9 @@ import {
   sanitizeDocumentSendParams,
 } from '../lib/document-send.js';
 import { clientSafeErrorText } from '../lib/client-safe-error.js';
-import { DOCUMENT_DRAFT_ACTION, settledDocumentDraftParamsSql } from '../lib/document-draft-params.js';
+import {
+  DOCUMENT_DRAFT_ACTION, documentTextParamsForViewer, scrubDocumentDraftItems, settledDocumentDraftParamsSql,
+} from '../lib/document-draft-params.js';
 
 export const agentRoutes = new Hono();
 
@@ -823,7 +825,8 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
         .map((a) => ({
           id: a.id,
           action: a.action,
-          params: a.params,
+          // M7 fix round 3: a document draft's text only for the person who asked.
+          params: documentTextParamsForViewer(a, user.id).params,
           approval_tier: a.approval_tier,
           status: a.approval_status,
           result: a.result,
@@ -844,9 +847,10 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
 // The UI uses the `proposer` field + `employee_name` to show a source badge.
 agentRoutes.get('/actions/pending', async (c) => {
   const user = c.get('user');
-  const rows = await db
+  const requested = await db
     .select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       params: agentActions.params,
       source: agentActions.source,
@@ -878,6 +882,11 @@ agentRoutes.get('/actions/pending', async (c) => {
     )
     .orderBy(desc(agentActions.created_at))
     .limit(50);
+  // M7 fix round 3: a document draft's text only for the person who asked (a fallback reviewer sees its size).
+  const rows = requested.map((row) => {
+    const { user_id: _requester, ...shown } = documentTextParamsForViewer(row, user.id);
+    return shown;
+  });
 
   const rowsWithSources = await attachSourceMessagePreviews(user, rows);
   const actions = rowsWithSources.map((r) => ({
@@ -952,7 +961,9 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
     `);
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 
-  const normalizedRows = rows.rows.map((row: any) => {
+  const normalizedRows = rows.rows.map((raw: any) => {
+    // M7 fix round 3: a document draft's text only for the person who asked (a fallback reviewer sees its size).
+    const row = documentTextParamsForViewer(raw, user.id);
     const normalizeTimestamp = (value: unknown) => {
       if (value instanceof Date) return value.toISOString();
       if (typeof value !== 'string' || value.length === 0) return value;
@@ -1031,9 +1042,10 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
     };
   });
 
-  const actions = await db
+  const actionRows = await db
     .select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       message_id: agentActions.message_id,
       action: agentActions.action,
       params: agentActions.params,
@@ -1051,6 +1063,11 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
       visibleActionSql(user),
     ))
     .orderBy(agentActions.created_at);
+  // M7 fix round 3: a document draft's text only for the person who asked.
+  const actions = actionRows.map((row) => {
+    const { user_id: _requester, ...shown } = documentTextParamsForViewer(row, user.id);
+    return shown;
+  });
 
   const trace = {
     format: 'deft.agent_trace.v1',
@@ -1093,6 +1110,7 @@ agentRoutes.get('/actions/recent', async (c) => {
   const rows = await db
     .select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       params: agentActions.params,
       source: agentActions.source,
@@ -1116,10 +1134,14 @@ agentRoutes.get('/actions/recent', async (c) => {
     .limit(limit);
 
   return c.json({
-    actions: rows.map((r) => ({
-      ...r,
-      proposer: hasHumanMcpBulkProvenance(r) ? 'user' : r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
-    })),
+    actions: rows.map((r) => {
+      // M7 fix round 3: a document draft's text only for the person who asked.
+      const { user_id: _requester, ...shown } = documentTextParamsForViewer(r, user.id);
+      return {
+        ...shown,
+        proposer: hasHumanMcpBulkProvenance(r) ? 'user' : r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
+      };
+    }),
   });
 });
 
@@ -1691,28 +1713,33 @@ export async function rejectActionAsReviewer(
   // The rejection applies only while the caller still holds the review right.
   const reviewer = await currentReviewerSql(user);
   if (!reviewer) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-  const [updatedAction] = await db
-    .update(agentActions)
-    .set({
-      approval_status: 'rejected',
-      error: reason ?? null,
-      // M7 fix round 1 (I3): a rejected document draft keeps no title or Markdown.
-      ...(action.action === DOCUMENT_DRAFT_ACTION ? { params: settledDocumentDraftParamsSql() } : {}),
-      ...(isModuleTaskLinkWriteAction(action.action)
-        || isModuleWriteActionName(action.action)
-        || isModuleRecordBulkCreateAction(action.action)
-        || action.action === WORKSPACE_PLAN_IMPORT_ACTION
-        || action.action === DOCUMENT_SEND_ACTION
-        ? { params: rejectedParams, executed_at: new Date() }
-        : {}),
-    })
-    .where(and(
-      eq(agentActions.id, actionId),
-      eq(agentActions.org_id, user.org_id),
-      eq(agentActions.approval_status, 'pending'),
-      reviewer,
-    ))
-    .returning({ id: agentActions.id });
+  const [updatedAction] = await db.transaction(async (tx) => {
+    const rejected = await tx
+      .update(agentActions)
+      .set({
+        approval_status: 'rejected',
+        error: reason ?? null,
+        // M7 fix round 1 (I3): a rejected document draft keeps no title or Markdown.
+        ...(action.action === DOCUMENT_DRAFT_ACTION ? { params: settledDocumentDraftParamsSql() } : {}),
+        ...(isModuleTaskLinkWriteAction(action.action)
+          || isModuleWriteActionName(action.action)
+          || isModuleRecordBulkCreateAction(action.action)
+          || action.action === WORKSPACE_PLAN_IMPORT_ACTION
+          || action.action === DOCUMENT_SEND_ACTION
+          ? { params: rejectedParams, executed_at: new Date() }
+          : {}),
+      })
+      .where(and(
+        eq(agentActions.id, actionId),
+        eq(agentActions.org_id, user.org_id),
+        eq(agentActions.approval_status, 'pending'),
+        reviewer,
+      ))
+      .returning({ id: agentActions.id });
+    // M7 fix round 3 (I3): and its approval items name nothing, in this same commit.
+    if (rejected.length > 0 && action.action === DOCUMENT_DRAFT_ACTION) await scrubDocumentDraftItems(tx, [actionId]);
+    return rejected;
+  });
   if (!updatedAction) {
     const latest = await loadReviewableAction(actionId, user);
     if (!latest || latest.approval_status === 'pending') return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
@@ -2050,7 +2077,8 @@ agentRoutes.get('/actions', async (c) => {
     LIMIT 100
   `);
   const rawRows = (rows as { rows?: unknown[] }).rows ?? (rows as unknown as unknown[]);
-  return c.json(rawRows);
+  // M7 fix round 3: a document draft's text only for the person who asked.
+  return c.json(rawRows.map((row) => documentTextParamsForViewer(row as { action: string; params?: unknown; user_id?: string | null }, user.id)));
 });
 
 // Phase 7 — fetch the most-recent receipt for an action and report whether

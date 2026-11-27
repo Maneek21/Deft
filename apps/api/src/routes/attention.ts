@@ -8,6 +8,7 @@ import {
   attentionItems,
 } from '@deft/db/schema';
 import { db } from '../lib/db.js';
+import { documentTextParamsForViewer } from '../lib/document-draft-params.js';
 import { readReviewGateScope } from '../lib/agent-action-review-gate.js';
 import {
   currentApprovalRecipientSql,
@@ -102,6 +103,7 @@ async function hydrateApprovals(
   const actions = await db.transaction(async (tx) => tx
     .select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       source: agentActions.source,
       has_receipt: sql<boolean>`EXISTS (SELECT 1 FROM action_receipts r WHERE r.action_id = ${agentActions.id})`,
@@ -126,9 +128,11 @@ async function hydrateApprovals(
   // can tell. The ids keep the page's order.
   const visible = new Set(actions.map((action) => action.id));
   const reviewAuthority = await viewerReviewAuthority(viewer, actionIds.filter((id) => visible.has(id)));
-  const byId = new Map(actions.map((action) => [action.id, {...action,proposer:attentionActionProposer(action),
-    ...reviewAuthority.get(action.id),
-  }]));
+  const byId = new Map(actions.map((action) => {
+    // M7 fix round 3: a document draft's text only for the person who asked (a fallback reviewer sees its size).
+    const { user_id: _requester, ...shown } = documentTextParamsForViewer(action, viewer.id);
+    return [action.id, { ...shown, proposer: attentionActionProposer(action), ...reviewAuthority.get(action.id) }] as const;
+  }));
   return rows.filter((item) => item.source_type !== 'agent_action' || byId.has(item.source_id)).map((item) => ({
     ...projectAttentionItem(item),
     approval: item.source_type === 'agent_action' ? byId.get(item.source_id) ?? null : null,

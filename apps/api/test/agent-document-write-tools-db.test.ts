@@ -80,6 +80,10 @@ const { ensureDeftyDm, ensureDeftyMembership } = await import('../src/lib/ensure
 const { handleAgentReply } = await import('../src/workers/handlers/agent-reply.js');
 const { agentRoutes } = await import('../src/routes/agent.js');
 const { agentPlanRoutes } = await import('../src/routes/agent-plans.js');
+const { inboxRoutes } = await import('../src/routes/inbox.js');
+const { attentionRoutes } = await import('../src/routes/attention.js');
+const { humanApprovalGet } = await import('../src/lib/mcp-tools/human.js');
+const { resolveApprovalItemsWithoutReviewer } = await import('../src/lib/attention.js');
 const { documentRoutes } = await import('../src/routes/documents.js');
 const { closeDb } = await import('../src/lib/db.js');
 const { documentToolCallForStorage } = await import('../src/lib/document-audience.js');
@@ -102,7 +106,8 @@ type JSONContent = Parameters<typeof jsonToText>[0];
 before(async () => {
   if (skip) return;
   fx = await setupDrivesFixture('m7', {
-    routes: [{ path: '/api/agent', app: agentRoutes }, { path: '/api/documents', app: documentRoutes }, { path: '/api/agent-plans', app: agentPlanRoutes }],
+    routes: [{ path: '/api/agent', app: agentRoutes }, { path: '/api/documents', app: documentRoutes }, { path: '/api/agent-plans', app: agentPlanRoutes },
+      { path: '/api/inbox', app: inboxRoutes }, { path: '/api/attention', app: attentionRoutes }],
   });
   srv = await startCollabTestServer(fx);
   deftyId = await ensureDeftyMembership(fx.orgId);
@@ -991,4 +996,116 @@ test('fix round 2: a plan Defty drafts in a shared room keeps its literal text i
   assert.equal(theirs.status, 404);
   const listed = await fx.request(member2, 'GET', '/api/agent-plans');
   assert.ok(!(await listed.text()).includes(literal));
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 3
+
+/** A pending create_document Defty proposed for `asker` in `spaceId`, and its approval items. */
+async function pendingDraft(asker: string, spaceId: string, label: string, title: string, markdown: string) {
+  const callId = `toolu_m7_${label}_${run}`;
+  await askDefty({ asker, spaceId, content: 'Create a document with the agenda',
+    turns: [[{ id: callId, name: 'create_document', input: { title, markdown } }]] });
+  const { rows: [action] } = await fx.client.query('SELECT id, approval_status FROM agent_actions WHERE org_id = $1 AND tool_use_id = $2', [fx.orgId, callId]);
+  assert.equal(action?.approval_status, 'pending');
+  const items = async () => (await fx.client.query(`SELECT id, user_id, body, state FROM attention_items
+    WHERE org_id = $1 AND source_type = 'agent_action' AND source_id = $2 ORDER BY created_at, id`, [fx.orgId, action.id])).rows;
+  await pollUntil(async () => (await items()).length > 0, 'the draft has its approval item');
+  return { id: action.id as string, items };
+}
+
+/** An approval item made before fix round 2, which named the draft (and, for `state`, one the reviewer-loss sweep had already closed). */
+async function makeLegacy(actionId: string, title: string, state?: 'resolved'): Promise<void> {
+  await fx.client.query(`UPDATE attention_items SET body = $3${state ? ", state = 'resolved', resolved_at = now(), resolution = 'source_access_removed'" : ''}
+    WHERE org_id = $1 AND source_type = 'agent_action' AND source_id = $2`, [fx.orgId, actionId, title]);
+}
+
+async function setMemberActive(userId: string, active: boolean): Promise<void> {
+  await fx.client.query('UPDATE org_members SET is_active = $3 WHERE org_id = $1 AND user_id = $2', [fx.orgId, userId, active]);
+}
+
+test('fix round 3 (I3): rejecting a draft scrubs every one of its items in the same commit, a legacy item already closed included', { skip }, async () => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  const title = `Legacy ${token('lrtitle')}`;
+  const room = await insertChat([member]);
+  const draft = await pendingDraft(member, room, 'lreject', title, `# ${token('lrbody')}`);
+  // The reviewer-loss sweep closed this item before its body was scrubbed (round 2): no later transition reaches it.
+  await makeLegacy(draft.id, title, 'resolved');
+  const response = await fx.request(member, 'POST', `/api/agent/actions/${draft.id}/reject`, {});
+  assert.equal(response.status, 200, await response.clone().text());
+  const items = await draft.items();
+  assert.ok(items.length > 0);
+  for (const item of items) {
+    assert.equal(item.body, 'Document draft', text(item));
+    assert.ok(!text(item).includes(token('lrtitle')));
+  }
+});
+
+test('fix round 3 (I3): the reviewer-loss sweep scrubs a legacy item in the statement that closes it', { skip }, async (t) => {
+  const { member } = fx.people;
+  await setTrust('standard');
+  const title = `Swept ${token('swtitle')}`;
+  const room = await insertChat([member]);
+  const draft = await pendingDraft(member, room, 'sweep', title, `# ${token('swbody')}`);
+  // An item made before round 2 named the draft. The asker leaves the workspace, so they no longer review it.
+  await makeLegacy(draft.id, title);
+  t.after(() => setMemberActive(member, true));
+  await setMemberActive(member, false);
+  await resolveApprovalItemsWithoutReviewer(100_000);
+  await resolveApprovalItemsWithoutReviewer(100_000);
+  await setMemberActive(member, true);
+  const memberItems = (await draft.items()).filter((item) => item.user_id === member);
+  assert.ok(memberItems.length > 0);
+  for (const item of memberItems) {
+    assert.equal(item.state, 'resolved', text(item));
+    assert.equal(item.body, 'Document draft', text(item));
+  }
+});
+
+test('fix round 3: a pending draft\'s text is shown only to the person who asked; a fallback admin reviewer sees its size', { skip }, async (t) => {
+  const { member, admin } = fx.people;
+  await setTrust('standard');
+  const title = `Private ${token('fbtitle')}`;
+  const body = `Copied from a private page: ${token('fbbody')}`;
+  const leaks = [token('fbtitle'), token('fbbody')];
+  // A public room: a fallback reviewer must be able to read the room the request came from.
+  const room = await insertChat([member]);
+  const draft = await pendingDraft(member, room, 'fallback', title, body);
+  const card = async (userId: string) => {
+    const response = await fx.request(userId, 'GET', '/api/agent/actions/pending');
+    assert.equal(response.status, 200);
+    return ((await response.json()) as { actions: any[] }).actions.find((action) => action.id === draft.id);
+  };
+
+  // The person who asked sees the draft on its card.
+  const mine = await card(member);
+  assert.equal(mine?.params?.title, title);
+  assert.equal(mine?.params?.markdown, body);
+
+  // The asker leaves the workspace: an admin becomes the reviewer.
+  t.after(() => setMemberActive(member, true));
+  await setMemberActive(member, false);
+
+  // The fallback admin reviews the draft without its text, wherever the approval is shown.
+  const theirs = await card(admin);
+  assert.ok(theirs, 'the admin reviews it');
+  assert.match(String(theirs.params?.summary), /^Document draft, \d+ bytes$/);
+  assert.equal(theirs.params?.title?.content_omitted, true);
+  const shown: Array<[string, unknown]> = [['pending card', theirs]];
+  for (const path of ['/api/agent/actions', '/api/agent/actions/recent?limit=50', '/api/inbox', '/api/attention']) {
+    const response = await fx.request(admin, 'GET', path);
+    shown.push([path, await response.text()]);
+  }
+  const mcp = await humanApprovalGet({ action_id: draft.id }, { org_id: fx.orgId, user_id: admin, role: 'admin', scopes: ['read:workspace'] } as any);
+  assert.notEqual(mcp.isError, true, text(mcp));
+  assert.ok(text(mcp).includes(draft.id));
+  shown.push(['MCP approval_get', mcp]);
+  for (const [where, value] of shown) {
+    for (const leaked of leaks) assert.ok(!text(value).includes(leaked), `${where} shows the admin no ${leaked}`);
+  }
+
+  // The asker, back, sees it again.
+  await setMemberActive(member, true);
+  assert.equal((await card(member))?.params?.title, title);
 });

@@ -55,17 +55,16 @@ async function stopReply(plan: typeof agentPlans.$inferSelect | undefined, viewe
 }
 
 /**
- * M7 fix round 2: whether `viewerId` sees the literal document text written
- * for a plan's steps (kept like a pending draft until the step completes):
- * only its creator, who asked for it, and its approvers (an owner or admin
- * of its workspace, planManagerScope). Anyone else, and everyone once the
- * plan has ended, sees each text as its size.
+ * M7 fix rounds 2 and 3: whether `viewerId` sees the literal document text
+ * written for a plan's steps (kept like a pending draft until the step
+ * completes): only its creator, who asked for it. Nothing shows where that
+ * text came from (Defty may have copied it from a document only the creator
+ * can open), so anyone else, an owner or admin who approves, starts or
+ * aborts the plan (planManagerScope) included, and everyone once the plan
+ * has ended, sees each text as its size.
  */
-async function readsPlanLiterals(plan: { user_id?: string; org_id?: string }, viewerId: string): Promise<boolean> {
-  if (plan.user_id === viewerId) return true;
-  if (!plan.org_id) return false;
-  const membership = await getActiveOrgMembership(plan.org_id, viewerId);
-  return membership?.role === 'owner' || membership?.role === 'admin';
+function readsPlanLiterals(plan: { user_id?: string }, viewerId: string): boolean {
+  return plan.user_id === viewerId;
 }
 
 function planAccessRefusal(err: unknown) {
@@ -87,12 +86,12 @@ async function withDestructiveMarks<T extends {
   steps: unknown; org_id?: string; user_id?: string; status?: string; agent_employee_id?: string | null;
 } | undefined>(stored: T, viewerId: string): Promise<T> {
   if (!stored || !Array.isArray(stored.steps)) return stored;
-  // M7 (rule C4, fix round 2): every document step and its context entry is
-  // shown as references, whenever it was stored; a literal written for a step
-  // not yet run only to the plan's creator and approvers
+  // M7 (rule C4, fix rounds 2 and 3): every document step and its context
+  // entry is shown as references, whenever it was stored; a literal written
+  // for a step not yet run only to the plan's creator
   // (lib/agent-plans.ts planWithDocumentReferences).
   const plan = planWithDocumentReferences(stored as NonNullable<T> & { steps: unknown[] },
-    { literals: await readsPlanLiterals(stored, viewerId) });
+    { literals: readsPlanLiterals(stored, viewerId) });
   const hasMcpStep = plan.steps.some((step: any) => String(step?.tool ?? '').startsWith('mcp__'));
   const liveTools = hasMcpStep && plan.org_id
     ? await getMCPToolsForAgent(plan.org_id, plan.agent_employee_id ?? undefined).catch(() => [])

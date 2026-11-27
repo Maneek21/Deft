@@ -2,6 +2,7 @@ import {visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gte, inArray, count } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { documentTextParamsForViewer } from '../lib/document-draft-params.js';
 import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, peopleExpertise, peopleInteractions, peoplePatterns, agentActions, agentEmployees, wikiPages } from '@deft/db/schema';
 import { generateDailyStandup, standupReadableBy } from '../lib/standup-automation.js';
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
@@ -651,9 +652,10 @@ dashboardRoutes.get('/my-insights', async (c) => {
 dashboardRoutes.get('/agent-activity', async (c) => {
   const user = c.get('user');
 
-  const recentActions = await db
+  const activityRows = await db
     .select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       params: agentActions.params,
       result: agentActions.result,
@@ -675,6 +677,11 @@ dashboardRoutes.get('/agent-activity', async (c) => {
     )
     .orderBy(desc(agentActions.created_at))
     .limit(20);
+  // M7 fix round 3: a document draft's text only for the person who asked.
+  const recentActions = activityRows.map((row) => {
+    const { user_id: _requester, ...shown } = documentTextParamsForViewer(row, user.id);
+    return shown;
+  });
 
   return c.json(await withViewerCanReview(user, recentActions));
 });

@@ -67,7 +67,7 @@ import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-s
 import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-preflight.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { invalidatePlatformContextCacheFor } from '../lib/mcp-tools/context.js';
-import { settledDocumentDraftParamsSql } from '../lib/document-draft-params.js';
+import { DOCUMENT_DRAFT_ACTION, scrubDocumentDraftItems, settledDocumentDraftParamsSql } from '../lib/document-draft-params.js';
 import {
   isCanonicalDeftyEmployee,
   isReservedDeftyEmployeeSlug,
@@ -2600,18 +2600,23 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
 
     // Preserve the existing status-only lifecycle for non-module actions
     // (a document draft keeps no title or Markdown: M7 fix round 1, I3).
-    const expiredActions = await db
-      .update(agentActions)
-      .set({ approval_status: 'expired', params: settledDocumentDraftParamsSql() })
-      .where(
-        and(
-          eq(agentActions.org_id, user.org_id),
-          eq(agentActions.agent_employee_id, id),
-          eq(agentActions.approval_status, 'pending'),
-          notInArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES]),
-        ),
-      )
-      .returning({ id: agentActions.id, params: agentActions.params });
+    const expiredActions = await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(agentActions)
+        .set({ approval_status: 'expired', params: settledDocumentDraftParamsSql() })
+        .where(
+          and(
+            eq(agentActions.org_id, user.org_id),
+            eq(agentActions.agent_employee_id, id),
+            eq(agentActions.approval_status, 'pending'),
+            notInArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES]),
+          ),
+        )
+        .returning({ id: agentActions.id, action: agentActions.action, params: agentActions.params });
+      // M7 fix round 3 (I3): an expired document draft's approval items name nothing, in this commit.
+      await scrubDocumentDraftItems(tx, rows.filter((row) => row.action === DOCUMENT_DRAFT_ACTION).map((row) => row.id));
+      return rows.map(({ id: actionId, params }) => ({ id: actionId, params }));
+    });
     await markWorkIntentsExpiredForActions({
       orgId: user.org_id,
       actions: expiredActions,

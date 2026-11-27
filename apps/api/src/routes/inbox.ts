@@ -4,6 +4,7 @@ import { withoutUnverifiableReplyText } from '../lib/reply-notification-text.js'
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gt, inArray, or } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { documentTextParamsForViewer } from '../lib/document-draft-params.js';
 import {
   notifications,
   spaces,
@@ -262,6 +263,7 @@ inboxRoutes.get('/', async (c) => {
     }).from(agentActions).where(approvalWhere);
     const approvalRows = !wantsApprovals || countOnly ? [] : await db.select({
       id: agentActions.id,
+      user_id: agentActions.user_id,
       action: agentActions.action,
       params: agentActions.params,
       action_source: agentActions.source,
@@ -302,7 +304,8 @@ inboxRoutes.get('/', async (c) => {
         approval: {
           action_id: r.id,
           action: r.action,
-          params: (r.params ?? {}) as Record<string, unknown>,
+          // M7 fix round 3: a document draft's text only for the person who asked (a fallback reviewer sees its size).
+          params: (documentTextParamsForViewer(r, user.id).params ?? {}) as Record<string, unknown>,
           approval_tier: r.approval_tier as 'auto' | 'quick' | 'full',
           agent_employee_id: r.agent_employee_id,
           employee_name: r.employee_name,
