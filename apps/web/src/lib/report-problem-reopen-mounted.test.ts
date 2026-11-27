@@ -70,9 +70,9 @@ flushSync(() => createRoot(document.getElementById('root')).render(createElement
   };
   await open();
   const checkbox = tab.getByRole('checkbox', { name: 'Email me about this report', exact: true });
-  // The dialog unticks the box in an effect that React runs after the first
-  // frame is painted, so a read straight after opening can still see the last
-  // tick. Wait for the unticked box instead of reading it once.
+  // The dialog unticks the box in an effect, which can finish after the
+  // reopened dialog is already on screen, so a read straight after opening can
+  // still see the last tick. Wait for the unticked box instead of reading it once.
   const unticked = tab.getByRole('checkbox', { name: 'Email me about this report', exact: true, checked: false });
   return { tab, checkbox, unticked, sent, open };
 }
