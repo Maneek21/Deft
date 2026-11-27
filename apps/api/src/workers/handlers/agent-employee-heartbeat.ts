@@ -17,7 +17,7 @@ import {
   agentEmployees,
   agentHeartbeatTurns,
 } from '@deft/db/schema';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, gt, inArray, sql } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { HEARTBEAT_PROMPT_FORMAT } from '../../lib/heartbeat-tick-scrub.js';
 
@@ -100,24 +100,47 @@ async function lastTurnFor(employeeId: string): Promise<
   return row ?? null;
 }
 
+/** The writes the loop detector compares: task creation and chat posts, by every name they are recorded under. */
+const LOOP_TASK_WRITES = ['create_task', 'task_create'] as const;
+const LOOP_MESSAGE_WRITES = ['post_message', 'message_post', 'send_message'] as const;
+const LOOP_WRITES = [...LOOP_TASK_WRITES, ...LOOP_MESSAGE_WRITES];
+
 /**
- * Loop detector. Looks at the most recent N `agent_actions` attributed
- * to the employee (where `action` is a create/post shape) and compares
- * the canonical payload. If five in a row produce the same task title
- * OR the same message text, the employee is trapped in a feedback loop;
- * trip the breaker so a human has to unwedge it.
+ * Loop detector. Looks at the employee's five most recent writes (task
+ * creation and chat posts, LOOP_WRITES) and compares the canonical
+ * payload. If all five carry the same task title OR the same message
+ * text, the employee is trapped in a feedback loop; trip the breaker so
+ * a human has to unwedge it. Only writes are read: the work rows Deft
+ * queues for the employee (`heartbeat_tick`, `chat_mention`,
+ * `trigger_dispatch`, `task_assigned`) are not the employee's own
+ * actions, and used to hide every loop (RC13B on 157). Writes before the
+ * employee's latest skipped_unhealthy turn are not read: once an owner or
+ * admin clears the breaker, the loop that tripped it does not trip it again.
  */
 async function detectActionLoop(
   employeeId: string,
 ): Promise<{ loop: true; reason: string } | { loop: false }> {
   try {
+    const [lastBreak] = await db
+      .select({ at: agentHeartbeatTurns.fired_at })
+      .from(agentHeartbeatTurns)
+      .where(and(
+        eq(agentHeartbeatTurns.agent_employee_id, employeeId),
+        eq(agentHeartbeatTurns.outcome, 'skipped_unhealthy'),
+      ))
+      .orderBy(desc(agentHeartbeatTurns.fired_at))
+      .limit(1);
     const rows = await db
       .select({
         action: agentActions.action,
         params: agentActions.params,
       })
       .from(agentActions)
-      .where(eq(agentActions.agent_employee_id, employeeId))
+      .where(and(
+        eq(agentActions.agent_employee_id, employeeId),
+        inArray(agentActions.action, LOOP_WRITES),
+        lastBreak?.at ? gt(agentActions.created_at, lastBreak.at) : undefined,
+      ))
       .orderBy(desc(agentActions.created_at))
       .limit(5);
 
@@ -126,14 +149,11 @@ async function detectActionLoop(
     const signals: string[] = [];
     for (const row of rows) {
       const params = (row.params ?? {}) as Record<string, unknown>;
-      if (row.action === 'create_task' || row.action === 'task_create') {
+      if ((LOOP_TASK_WRITES as readonly string[]).includes(row.action)) {
         const title = typeof params.title === 'string' ? params.title : '';
         if (!title) return { loop: false };
         signals.push(`task::${title.trim().toLowerCase()}`);
-      } else if (
-        row.action === 'post_message' ||
-        row.action === 'message_post'
-      ) {
+      } else if ((LOOP_MESSAGE_WRITES as readonly string[]).includes(row.action)) {
         const content = typeof params.content === 'string' ? params.content : '';
         if (!content) return { loop: false };
         signals.push(`msg::${content.trim().slice(0, 120).toLowerCase()}`);
@@ -281,6 +301,33 @@ export async function handleAgentEmployeeHeartbeat(_job: JobData): Promise<void>
         continue;
       }
 
+      // ─── Loop detector ─────────────────────────────────────────────────
+      // Before the tick is queued: when the employee's last five writes
+      // repeat one task title or message text, trip the breaker so a
+      // human can unwedge the agent, and queue no new work for it.
+      const loop = await detectActionLoop(employee.id);
+      if (loop.loop) {
+        await db
+          .update(agentEmployees)
+          .set({
+            unhealthy: true,
+            unhealthy_reason: loop.reason,
+            last_heartbeat_at: new Date(),
+          })
+          .where(eq(agentEmployees.id, employee.id));
+        console.warn("[heartbeat] <redacted>: <redacted>"
+        );
+        await logHeartbeatTurn({
+          orgId: employee.org_id,
+          employeeId: employee.id,
+          cadenceMinutes,
+          promptSha: prompt_sha,
+          outcome: 'skipped_unhealthy',
+          outcomeReason: loop.reason,
+        });
+        continue;
+      }
+
       // ─── Queue the heartbeat tick for BYOA pickup ─────────────────────
       const dueAt = new Date().toISOString();
       try {
@@ -315,22 +362,6 @@ export async function handleAgentEmployeeHeartbeat(_job: JobData): Promise<void>
         actionCount: 1,
         summary: prompt.slice(0, 200),
       });
-
-      // Loop detector — check whether the last five actions point at the
-      // same task title or message text; if so, trip the breaker so a
-      // human can unwedge the agent.
-      const loop = await detectActionLoop(employee.id);
-      if (loop.loop) {
-        await db
-          .update(agentEmployees)
-          .set({
-            unhealthy: true,
-            unhealthy_reason: loop.reason,
-          })
-          .where(eq(agentEmployees.id, employee.id));
-        console.warn("[heartbeat] <redacted>: <redacted>"
-        );
-      }
 
       await db
         .update(agentEmployees)
