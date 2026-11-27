@@ -10,6 +10,14 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### An agent caught in a loop is stopped
+
+- The loop guard for agent employees now trips. When an agent's last five task creations
+  or chat posts repeat the same title or text, it's marked unhealthy and gets no more
+  heartbeat work until an owner or admin clears it. The guard used to look at the
+  heartbeat's own work item first, so it never fired, and it didn't count messages sent
+  with `send_message`.
+
 ## [0.3.0-preview.157] — 2026-11-27 (prerelease)
 
 Changes since `v0.3.0-preview.156`: #624, #625, #626 and #627 (#624 changes only tests).
