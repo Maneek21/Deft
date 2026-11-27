@@ -50,6 +50,8 @@ async function uploadRefusal(res: Response): Promise<string> {
   return body && typeof body.error === 'string' && body.error.trim() ? body.error : `The image could not be uploaded (${res.status}).`;
 }
 
+const DEFTY_EMAIL = 'deft-agent@system.local';
+
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
 registerAICommands();
@@ -231,6 +233,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const [showShareModal, setShowShareModal] = useState(false);
   const [shares, setShares] = useState<any[]>([]);
   const [members, setMembers] = useState<any[]>([]);
+  const [shareError, setShareError] = useState<string | null>(null);
   // Task 5.1 — inline list of tasks this note references (PREFIX-N chips)
   const [references, setReferences] = useState<Array<{
     id: string;
@@ -438,9 +441,19 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     }
   };
 
-  const handleShare = async (userId: string) => {
+  const openShareModal = () => {
+    setShareError(null);
+    setShowShareModal(true);
+    fetchShares();
+    fetchMembers();
+  };
+
+  // /api/members lists each person by `id`.
+  const handleShare = async (member: { id: string; name?: string | null; email?: string | null }) => {
     if (!noteId) return;
-    await api.post(`/api/daily-notes/${noteId}/shares`, { user_id: userId });
+    setShareError(null);
+    const res = await api.post(`/api/daily-notes/${noteId}/shares`, { user_id: member.id }).catch(() => null);
+    if (!res?.ok) setShareError(`Couldn't share the note with ${member.name || member.email || 'that person'}. Try again.`);
     fetchShares();
   };
 
@@ -709,7 +722,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 ...(isOwner ? [{
                   label: 'Share',
                   icon: <Share2 size={14} />,
-                  onClick: () => { setShowShareModal(true); fetchShares(); fetchMembers(); },
+                  onClick: openShareModal,
                 }] : []),
                 {
                   label: showHistory ? 'Hide history' : 'Version history',
@@ -737,7 +750,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
 
             {/* Desktop: keep buttons inline */}
             {isOwner && (
-              <button onClick={() => { setShowShareModal(true); fetchShares(); fetchMembers(); }} className="hidden md:inline-flex items-center justify-center md:p-1.5 rounded-lg"
+              <button onClick={openShareModal} className="hidden md:inline-flex items-center justify-center md:p-1.5 rounded-lg"
                 aria-label="Share note"
                 style={{ color: 'var(--muted)' }} title="Share note">
                 <Share2 size={15} />
@@ -843,15 +856,19 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--muted)' }}>Add people</div>
                 <div className="max-h-40 overflow-y-auto space-y-1">
                   {members
-                    .filter((m: any) => m.user_id !== user?.id && !shares.some((s: any) => s.user_id === m.user_id))
+                    // Defty reads notes as the person asking it, so a share gives it nothing.
+                    .filter((m: any) => m.id !== user?.id && m.email !== DEFTY_EMAIL && !shares.some((s: any) => s.user_id === m.id))
                     .map((m: any) => (
-                      <button key={m.user_id} onClick={() => handleShare(m.user_id)}
+                      <button key={m.id} onClick={() => handleShare(m)}
                         className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded-md text-[12px] hover:opacity-80"
                         style={{ color: 'var(--foreground)', background: 'var(--surface-container-low)' }}>
                         <Users size={12} /> {m.name || m.email}
                       </button>
                     ))}
                 </div>
+                {shareError && (
+                  <p role="alert" className="mt-2 text-[11px]" style={{ color: 'var(--error)' }}>{shareError}</p>
+                )}
                 <button onClick={() => setShowShareModal(false)}
                   className="mt-3 w-full py-1.5 rounded-lg text-[12px] font-medium"
                   style={{ background: 'var(--surface-container-low)', color: 'var(--muted)' }}>Done</button>

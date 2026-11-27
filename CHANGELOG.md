@@ -10,6 +10,15 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Sharing a note with a person works
+
+- **Share note** now shares the note with the person you pick. The dialog sent no one
+  (the server answered "user_id required"), so a note couldn't be shared with a person;
+  only **Org** visibility worked. **Add people** now leaves out you, the people the note is
+  already shared with, and Defty, which reads notes as the person asking it and so gains
+  nothing from a share. If a share is refused, the dialog says "Couldn't share the note
+  with *name*. Try again."
+
 ## [0.3.0-preview.156] — 2026-11-27 (prerelease)
 
 Changes since `v0.3.0-preview.155`: #620, #621 and #622. Release scope `core` (no Hermes
