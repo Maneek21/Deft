@@ -60,7 +60,8 @@
 // and a version read show it as "{agent}, at {asker}'s request: {summary}"
 // for each viewer, each name through the people-visibility rules and "A
 // collaborator" for someone hidden from them (a guest with edit who shares no
-// chat with the asker, say).
+// chat with the asker, say). Defty, the built-in assistant (the canonical
+// Defty user), is no person and is named "Defty" to everyone.
 //
 // `document_attachments.in_current` (consult change) is kept by a second
 // stored listener: on every derived store, for that document only, a row is
@@ -92,6 +93,7 @@ import { readCurrentDocument } from '../collab/server.js';
 import { db } from './db.js';
 import { documentRoleFor, roleAtLeast } from './document-access.js';
 import { emitDocumentUpdated } from './document-access-events.js';
+import { DEFTY_EMAIL, DEFTY_NAME } from './defty-identity.js';
 import { DocumentRefusal } from './documents.js';
 import { DocumentWriteRefused, writeDocument } from './document-writer.js';
 import { canSeePerson, peopleViewer, visiblePersonIds } from './people-visibility.js';
@@ -423,9 +425,15 @@ async function creditedFor<T extends { name: string | null }>(tx: Tx, orgId: str
   let display = (_id: string) => HIDDEN_PERSON_NAME;
   if (people.size > 0) {
     const visible = await visiblePersonIds(await peopleViewer(orgId, userId, tx), tx);
-    const named = await tx.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, [...people]));
+    const named = await tx.select({ id: users.id, name: users.name, email: users.email, kind: users.kind }).from(users)
+      .where(inArray(users.id, [...people]));
     const names = new Map(named.map((person) => [person.id, person.name]));
-    display = (id) => (canSeePerson(visible, id) ? names.get(id) ?? HIDDEN_PERSON_NAME : HIDDEN_PERSON_NAME);
+    // Defty, the workspace's built-in assistant, is no person: it is named to everyone, guests included.
+    const defty = new Set(named.filter((person) => person.email === DEFTY_EMAIL && person.kind === 'agent').map((person) => person.id));
+    display = (id) => {
+      if (defty.has(id)) return DEFTY_NAME;
+      return canSeePerson(visible, id) ? names.get(id) ?? HIDDEN_PERSON_NAME : HIDDEN_PERSON_NAME;
+    };
   }
   return rows.map(({ credit_agent_id: agentId, credit_asker_id: askerId, credit_summary: summary, ...rest }) => {
     const row = rest as unknown as T;

@@ -679,7 +679,7 @@ test('I3: a guest with edit who cannot see the asker gets no name from the live 
   assert.equal(list.status, 200);
   assert.ok(!JSON.stringify(list.body).includes('Zelda'), 'no name in the version list');
   const listed = list.body.versions.find((row: { id: string }) => row.id === versionId);
-  assert.equal(listed.name, "A collaborator, at A collaborator's request: Tidy the opening");
+  assert.equal(listed.name, "Defty, at A collaborator's request: Tidy the opening", 'Defty is named to everyone; the hidden asker is not');
   const detail = await call(people.guest, 'GET', `/api/documents/${doc}/versions/${versionId}`);
   assert.equal(detail.status, 200);
   assert.ok(!JSON.stringify(detail.body).includes('Zelda'), 'no name in the version detail');
