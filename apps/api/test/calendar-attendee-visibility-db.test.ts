@@ -87,7 +87,10 @@ before(async () => {
     await c.query(`INSERT INTO agent_employees (id, org_id, user_id, name, slug, role, system_prompt, trust_level, is_byoa, is_active, created_by)
       VALUES ($1, $2, $3, $4, $5, 'custom', 'test', 'standard', true, true, $6)`, [employee, org, user, `${slug} ${run}`, `cav-${slug}-${run}`, sam]);
   }
-  const attendees = (ids: string[]) => JSON.stringify(ids.map((id) => ({ email: id === raj ? emailOf(id).toUpperCase() : emailOf(id), displayName: id })));
+  const attendees = (ids: string[], others: string[] = []) => JSON.stringify([
+    ...ids.map((id) => ({ email: id === raj ? emailOf(id).toUpperCase() : emailOf(id), displayName: id })),
+    ...others.map((email) => ({ email, displayName: email })),
+  ]);
   const insertEvent = (id: string, source: string, title: string, metadataAttendees: string, extra: Record<string, unknown> = {}) => {
     titles[title] = id;
     return c.query(
@@ -99,7 +102,7 @@ before(async () => {
   };
   // Raj (by an upper-cased address), the guest, the deactivated member, Olga
   // (not a member here), an outsider and the helper agent are invited.
-  await insertEvent(event, 'native', TITLE, attendees([raj, gus, dee, olga, helperUser]).replace(']', `,{"email":"outsider-${run}@example.test"}]`));
+  await insertEvent(event, 'native', TITLE, attendees([raj, gus, dee, olga, helperUser], [`outsider-${run}@example.test`]));
   // An imported event lists Raj too; imported calendars stay their owner's.
   await insertEvent(imported, 'google_calendar', `${TITLE} imported`, attendees([raj]));
   // Attendees that are not a list must not break any read.
