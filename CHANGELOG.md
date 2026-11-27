@@ -10,6 +10,17 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Calendar events show on their attendees' calendars
+
+- An event you create with attendees now also shows, read-only, on the calendar of each
+  attendee who is an owner, admin or member of the workspace: on **Calendar**, on the
+  dashboard, in their published calendar feed, and to Defty and MCP tools reading their
+  calendar. Before, it was stored only on your calendar and attendees never saw it.
+  Attendees are matched by email address. Only you can change or delete the event, and
+  attendees see no **Edit** or **Delete**. A guest, a deactivated member, someone outside
+  the workspace and members who aren't attendees see nothing. Events imported from another
+  calendar are unchanged. Nobody is notified.
+
 ## [0.3.0-preview.156] — 2026-11-27 (prerelease)
 
 Changes since `v0.3.0-preview.155`: #620, #621 and #622. Release scope `core` (no Hermes

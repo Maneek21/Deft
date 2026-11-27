@@ -32,6 +32,8 @@ export function EventDetailModal({
   const [deleting, setDeleting] = useState(false);
 
   const isNative = event.source === 'native';
+  // Only the event's own user can change it; an attendee sees it read-only.
+  const canEdit = isNative && event.viewer_is_owner !== false;
   const sourceColor = getEventSourceColor(event.source);
   const sourceLabel = getEventSourceLabel(event);
   const meta = event.metadata || {};
@@ -55,7 +57,7 @@ export function EventDetailModal({
     } catch {} finally { setDeleting(false); }
   };
 
-  if (showEdit && isNative) {
+  if (showEdit && canEdit) {
     return (
       <CreateEventModal
         onClose={() => setShowEdit(false)}
@@ -198,7 +200,7 @@ export function EventDetailModal({
               </a>
             )}
           </div>
-          {isNative && (
+          {canEdit && (
             <div className="flex items-center gap-2">
               <button onClick={() => setShowEdit(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium hover:opacity-80"

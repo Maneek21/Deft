@@ -7,6 +7,7 @@ import { generateDailyStandup, standupReadableBy } from '../lib/standup-automati
 import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 import { viewerReviewAuthority } from '../lib/agent-approval-resolver.js';
 import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
+import { liveHumanCalendarEventCondition } from '../lib/calendar-event-visibility.js';
 import { getDayBoundaries, resolveViewerTimezone } from '../lib/task-dates.js';
 import { visibleTaskCondition, visibleTaskSql } from '../lib/task-visibility.js';
 import { noticeNamesGuestHiddenTaskSql } from '../lib/native-mention-visibility.js';
@@ -368,8 +369,7 @@ dashboardRoutes.get('/', async (c) => {
       })
         .from(events)
         .where(and(
-          eq(events.org_id, user.org_id),
-          eq(events.user_id, user.id),
+          liveHumanCalendarEventCondition(user.org_id, user.id),
           inArray(events.source, ['native', 'ics', 'google_calendar']),
           eq(events.event_type, 'calendar_event'),
           gte(events.timestamp, todayStart),

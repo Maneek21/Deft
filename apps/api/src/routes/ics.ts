@@ -8,6 +8,7 @@ import { generateICS, humanizeIcsError, newPublishToken, parseICS, extractICSCal
 import { syncOne } from '../workers/handlers/ics-sync.js';
 import { env } from '../lib/env.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { liveHumanCalendarEventCondition } from '../lib/calendar-event-visibility.js';
 import { PublicFetchError, calendarFeedFetchUrl, fetchCalendarFeedText, isAllowedCalendarFeedAddress } from '../lib/public-http-fetch.js';
 import { WorkspaceLimitError, limitResponse } from '../lib/workspace-limits.js';
 
@@ -116,8 +117,7 @@ icsPublicRoutes.get('/feed/:token', guarded('GET /feed', async (c) => {
     .from(events)
     .where(
       and(
-        eq(events.org_id, orgId),
-        eq(events.user_id, user.id),
+        liveHumanCalendarEventCondition(orgId, user.id),
         inArray(events.source, ['native', 'ics']),
         eq(events.event_type, 'calendar_event'),
         gte(events.timestamp, horizonStart),

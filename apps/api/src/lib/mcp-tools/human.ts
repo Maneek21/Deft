@@ -8,7 +8,6 @@ import { searchNativeMentions, publishNativeMentions, enqueueNativeMentionPublic
 import { nativeNotificationAccessSql } from '../native-mention-visibility.js';
 import { withoutUnverifiableReplyText } from '../reply-notification-text.js';
 import {
-  connectedAccounts,
   agentActions,
   agentEmployees,
   attentionItems,
@@ -45,6 +44,7 @@ import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../t
 import { isTaskStatus, taskPriorityError, type TaskStatus } from '../task-priority.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
+import { liveHumanCalendarEventCondition } from '../calendar-event-visibility.js';
 import { syncNoteFiles } from '../note-file-claims.js';
 import { canReadSpace, readableSpaceSql } from '../space-membership.js';
 import { Context } from 'hono';
@@ -168,12 +168,7 @@ async function userCanSeeEvent(ctx: HumanToolContext, eventId: string): Promise<
   const [row] = await db
     .select({ id: events.id })
     .from(events)
-    .leftJoin(connectedAccounts, eq(events.connected_account_id, connectedAccounts.id))
-    .where(and(
-      eq(events.id, eventId),
-      eq(events.org_id, ctx.org_id),
-      sql`(${events.user_id} = ${ctx.user_id} OR ${connectedAccounts.user_id} = ${ctx.user_id})`,
-    ))
+    .where(and(eq(events.id, eventId), liveHumanCalendarEventCondition(ctx.org_id, ctx.user_id)))
     .limit(1);
   return Boolean(row);
 }
@@ -1471,9 +1466,7 @@ export async function humanSearch(args: { query?: string; limit?: number }, ctx:
              ('/calendar?event=' || events.id) AS url,
              COALESCE(events.timestamp, events.created_at) AS updated_at
       FROM events
-      LEFT JOIN connected_accounts ca ON ca.id = events.connected_account_id
-      WHERE events.org_id = ${ctx.org_id}
-        AND (events.user_id = ${ctx.user_id} OR ca.user_id = ${ctx.user_id})
+      WHERE ${liveHumanCalendarEventCondition(ctx.org_id, ctx.user_id)}
         AND (lower(COALESCE(events.title, '')) LIKE ${pattern} OR lower(COALESCE(events.body, '')) LIKE ${pattern})
       ORDER BY events.timestamp DESC NULLS LAST, events.created_at DESC
       LIMIT ${limit}
@@ -3282,9 +3275,7 @@ export async function humanEventsQuery(args: { limit?: number }, ctx: HumanToolC
   const rows = await db.execute(sql`
     SELECT events.id, events.event_type, events.source, events.title, events.body, events.url, events.actor, events.timestamp, events.metadata, events.created_at
     FROM events
-    LEFT JOIN connected_accounts ca ON ca.id = events.connected_account_id
-    WHERE events.org_id = ${ctx.org_id}
-      AND (events.user_id = ${ctx.user_id} OR ca.user_id = ${ctx.user_id})
+    WHERE ${liveHumanCalendarEventCondition(ctx.org_id, ctx.user_id)}
     ORDER BY events.timestamp DESC NULLS LAST, events.created_at DESC
     LIMIT ${Math.min(Math.max(1, args.limit ?? 50), 200)}
   `);
@@ -3439,10 +3430,10 @@ export async function humanCalendarList(args: { from?: string; until?: string; l
   const until = args.until ? new Date(args.until) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   if (Number.isNaN(from.getTime()) || Number.isNaN(until.getTime()) || until <= from) return errorResult('from/until must be a valid increasing ISO range');
   const rows = await db.execute(sql`
-    SELECT e.* FROM events e LEFT JOIN connected_accounts ca ON ca.id = e.connected_account_id
-    WHERE e.org_id = ${ctx.org_id} AND (e.user_id = ${ctx.user_id} OR ca.user_id = ${ctx.user_id})
-      AND e.event_type = 'calendar_event' AND e.timestamp >= ${from} AND e.timestamp <= ${until}
-    ORDER BY e.timestamp ASC LIMIT ${Math.min(Math.max(1, args.limit ?? 100), 200)}
+    SELECT events.* FROM events
+    WHERE ${liveHumanCalendarEventCondition(ctx.org_id, ctx.user_id)}
+      AND events.event_type = 'calendar_event' AND events.timestamp >= ${from} AND events.timestamp <= ${until}
+    ORDER BY events.timestamp ASC LIMIT ${Math.min(Math.max(1, args.limit ?? 100), 200)}
   `);
   return textResult((rows as any).rows ?? []);
 }
